@@ -1,0 +1,433 @@
+<!doctype html>
+<!--
+  PROTOTYPE — throwaway. Three TUI layout variants for a lazygit-inspired
+  changelist manager, switchable via ?variant=A|B|C or the floating bar / arrow keys.
+  Question being answered: "What should the changelist TUI look like?"
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gitchange — TUI prototype</title>
+<style>
+  :root {
+    --bg: #1b1d1e;
+    --panel-bg: #1b1d1e;
+    --fg: #d5c4a1;
+    --dim: #665c54;
+    --border: #504945;
+    --border-focus: #7fbf5e;
+    --title: #7daea3;
+    --green: #a9b665;
+    --yellow: #d8a657;
+    --red: #ea6962;
+    --blue: #7daea3;
+    --magenta: #d3869b;
+    --orange: #e78a4e;
+    --sel-bg: #32302f;
+    --active-bg: #2a3225;
+    --add: #a9b665;
+    --del: #ea6962;
+    --hunk: #7daea3;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    font-size: 13px;
+    line-height: 1.45;
+    overflow: hidden;
+  }
+  #app { height: 100vh; display: flex; flex-direction: column; padding: 8px 6px 0; }
+  .variant-root { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+
+  /* ── panels ─────────────────────────────────────────── */
+  .panel {
+    position: relative;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 6px 8px 6px;
+    margin: 6px 4px 4px;
+    display: flex; flex-direction: column;
+    min-height: 0;
+  }
+  .panel.focused { border-color: var(--border-focus); }
+  .panel > .ptitle {
+    position: absolute;
+    top: -9px; left: 8px;
+    background: var(--bg);
+    padding: 0 5px;
+    color: var(--title);
+    white-space: nowrap;
+  }
+  .panel.focused > .ptitle { color: var(--border-focus); }
+  .panel > .ptitle .pnum { color: var(--dim); }
+  .panel > .ptitle .alt { color: var(--dim); }
+  .panel > .pcount {
+    position: absolute;
+    bottom: -1px; right: 10px;
+    background: var(--bg);
+    padding: 0 5px;
+    color: var(--dim);
+    font-size: 12px;
+    line-height: 1;
+  }
+  .pbody { overflow-y: auto; flex: 1; min-height: 0; padding-top: 3px; }
+  .pbody::-webkit-scrollbar { width: 0; }
+
+  /* ── rows ───────────────────────────────────────────── */
+  .row { white-space: pre; padding: 0 4px; cursor: default; }
+  .row.sel { background: var(--sel-bg); }
+  .row.activebg { background: var(--active-bg); }
+  .row .st-m { color: var(--yellow); }
+  .row .st-a { color: var(--green); }
+  .row .st-d { color: var(--red); }
+  .row .st-r { color: var(--blue); }
+  .row .staged { color: var(--green); }
+  .row .dim { color: var(--dim); }
+  .row .name { color: var(--fg); }
+  .row .cl-active { color: var(--green); font-weight: 600; }
+  .row .cl-name { color: var(--magenta); }
+  .row .branch { color: var(--yellow); }
+  .row .warn { color: var(--orange); }
+
+  /* ── diff ───────────────────────────────────────────── */
+  .diff { white-space: pre; font-size: 12.5px; }
+  .diff .fh { color: var(--dim); }
+  .diff .hh { color: var(--hunk); background: rgba(125,174,163,.08); display: block; }
+  .diff .add { color: var(--add); }
+  .diff .del { color: var(--del); }
+  .diff .ctx { color: var(--fg); opacity: .75; }
+  .diff .hunktag {
+    float: right; color: var(--magenta); background: var(--bg);
+    padding: 0 4px; font-size: 11px; border: 1px solid var(--border); border-radius: 3px;
+  }
+  .diff .hunktag.unassigned { color: var(--orange); }
+  .diff .hunk-sel { outline: 1px solid var(--border-focus); outline-offset: -1px; }
+
+  /* ── keybar ─────────────────────────────────────────── */
+  .keybar {
+    display: flex; gap: 16px; flex-wrap: wrap;
+    padding: 4px 10px 8px;
+    color: var(--dim); font-size: 12px;
+  }
+  .keybar b { color: var(--orange); font-weight: normal; }
+  .keybar .spacer { flex: 1; }
+  .keybar .brand { color: var(--dim); }
+
+  /* ── modal (variant C move popup) ───────────────────── */
+  .modal-overlay {
+    position: absolute; inset: 0;
+    background: rgba(0,0,0,.45);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 5;
+  }
+  .modal {
+    background: var(--bg);
+    border: 1px solid var(--border-focus);
+    border-radius: 3px;
+    padding: 14px 16px 10px;
+    min-width: 340px;
+    position: relative;
+  }
+  .modal .ptitle {
+    position: absolute; top: -9px; left: 8px;
+    background: var(--bg); padding: 0 5px; color: var(--border-focus);
+  }
+
+  /* ── layout helpers ─────────────────────────────────── */
+  .cols { display: flex; flex: 1; min-height: 0; }
+  .col { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+
+  /* ── switcher bar ───────────────────────────────────── */
+  #switcher {
+    position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 10px;
+    background: #e7dec6; color: #1b1d1e;
+    border-radius: 999px; padding: 6px 14px;
+    font-size: 12.5px; font-weight: 600;
+    box-shadow: 0 4px 18px rgba(0,0,0,.5);
+    z-index: 50; user-select: none;
+  }
+  #switcher button {
+    all: unset; cursor: pointer; padding: 0 6px; font-weight: 700;
+  }
+  #switcher button:hover { color: #a9440e; }
+  #switcher .vlabel { min-width: 250px; text-align: center; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<div id="switcher">
+  <button id="prev" title="Previous variant (←)">◀</button>
+  <span class="vlabel" id="vlabel"></span>
+  <button id="next" title="Next variant (→)">▶</button>
+</div>
+
+<script>
+/* ═══════════════ shared mock data ═══════════════ */
+const S = {
+  branch: 'feat/print-page-v2',
+  changelists: [
+    { id: 'cl1', name: 'print-page-v2 fixes', active: true,
+      comment: 'viewport sizing + region buttons',
+      files: [
+        { path: 'src/components/PrintPage.astro', st: 'M', staged: true,  hunks: 3, stagedHunks: 3 },
+        { path: 'src/styles/print.css',           st: 'M', staged: 'partial', hunks: 4, stagedHunks: 2 },
+        { path: 'src/pages/print/[id].astro',     st: 'A', staged: false, hunks: 1, stagedHunks: 0 },
+      ]},
+    { id: 'cl2', name: 'subscription refactor', active: false,
+      comment: 'session handling cleanup',
+      files: [
+        { path: 'src/lib/subscription/session.ts', st: 'M', staged: false, hunks: 5, stagedHunks: 0 },
+        { path: 'src/lib/subscription/types.ts',   st: 'M', staged: false, hunks: 1, stagedHunks: 0 },
+      ]},
+    { id: 'cl3', name: 'formatting chores', active: false,
+      comment: '',
+      files: [
+        { path: 'scripts/format-check.sh', st: 'A', staged: false, hunks: 1, stagedHunks: 0 },
+      ]},
+  ],
+  unassigned: [
+    { path: 'src/components/Nav.astro', st: 'M', staged: false, hunks: 2, stagedHunks: 0 },
+    { path: 'README.md',                st: 'M', staged: false, hunks: 1, stagedHunks: 0 },
+  ],
+  commits: [
+    { sha: '91a05c13', msg: "Merge branch 'feat/print-page-v2' into development" },
+    { sha: '351c6cfc', msg: 'fix: across viewport size percentage sizing' },
+    { sha: '8257d46a', msg: 'fix: size subscribe buttons correctly' },
+    { sha: '6248746f', msg: 'fix: prevent spreads gallery overflowing' },
+    { sha: '326f803b', msg: 'fix: revert print v2 region buttons' },
+  ],
+};
+
+const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+
+function stSpan(st) {
+  const cls = { M: 'st-m', A: 'st-a', D: 'st-d', R: 'st-r' }[st] || 'dim';
+  return `<span class="${cls}">${st}</span>`;
+}
+function stagedMark(f) {
+  if (f.staged === true) return `<span class="staged">●</span>`;
+  if (f.staged === 'partial') return `<span class="staged">◐</span>`;
+  return `<span class="dim">○</span>`;
+}
+
+const DIFF_PLAIN = `<span class="fh">--- a/src/styles/print.css
++++ b/src/styles/print.css</span>
+<span class="hh">@@ -14,7 +14,7 @@ .print-page {</span>
+<span class="ctx">   .print-region {</span>
+<span class="del">-    width: 320px;</span>
+<span class="add">+    width: clamp(280px, 42vw, 360px);</span>
+<span class="ctx">     display: flex;</span>
+<span class="ctx">   }</span>
+<span class="hh">@@ -41,6 +41,10 @@ .print-toolbar {</span>
+<span class="ctx">   .print-toolbar button {</span>
+<span class="add">+    min-height: 44px;</span>
+<span class="add">+  }</span>
+<span class="add">+</span>
+<span class="add">+  .print-toolbar select {</span>
+<span class="ctx">     font-size: 0.9rem;</span>
+<span class="ctx">   }</span>
+<span class="hh">@@ -63,3 +67,8 @@ @media print {</span>
+<span class="ctx">   .no-print { display: none; }</span>
+<span class="add">+  .print-region { break-inside: avoid; }</span>
+<span class="add">+  .print-toolbar { display: none; }</span>
+<span class="ctx"> }</span>`;
+
+function diffWithTags() {
+  return `<span class="fh">--- a/src/styles/print.css
++++ b/src/styles/print.css</span>
+<span class="hh hunk-sel">@@ -14,7 +14,7 @@ .print-region sizing <span class="hunktag">print-page-v2 fixes ●</span></span>
+<span class="ctx">   .print-region {</span>
+<span class="del">-    width: 320px;</span>
+<span class="add">+    width: clamp(280px, 42vw, 360px);</span>
+<span class="ctx">   }</span>
+<span class="hh">@@ -41,6 +41,10 @@ toolbar touch targets <span class="hunktag">print-page-v2 fixes ○</span></span>
+<span class="ctx">   .print-toolbar button {</span>
+<span class="add">+    min-height: 44px;</span>
+<span class="add">+  }</span>
+<span class="hh">@@ -63,3 +67,8 @@ @media print rules <span class="hunktag unassigned">unassigned</span></span>
+<span class="ctx">   .no-print { display: none; }</span>
+<span class="add">+  .print-region { break-inside: avoid; }</span>
+<span class="ctx"> }</span>`;
+}
+
+function panel({ num, title, alt = '', count = '', focused = false, body, style = '' }) {
+  return `<div class="panel${focused ? ' focused' : ''}" style="${style}">
+    <span class="ptitle">${num !== undefined ? `<span class="pnum">[${num}]─</span>` : ''}${title}${alt ? ` <span class="alt">- ${alt}</span>` : ''}</span>
+    ${count ? `<span class="pcount">${count}</span>` : ''}
+    <div class="pbody">${body}</div>
+  </div>`;
+}
+
+/* ═══════════════ Variant A — lazygit-faithful panel stack ═══════════════ */
+/* Changelists get a numbered side panel; Files panel shows the SELECTED
+   changelist's files; diff dominates the right, like lazygit. */
+function variantA() {
+  const statusBody = `<div class="row">✓ works-in-progress → <span class="branch">${S.branch}</span></div>`;
+
+  const clBody = S.changelists.map((cl, i) =>
+    `<div class="row${i === 0 ? ' sel activebg' : ''}">${cl.active ? '<span class="cl-active">*</span>' : ' '} <span class="cl-name">${esc(cl.name)}</span> <span class="dim">(${cl.files.length})</span></div>`
+  ).join('') +
+  `<div class="row"><span class="warn">!</span> <span class="warn">unassigned</span> <span class="dim">(${S.unassigned.length})</span></div>`;
+
+  const cl = S.changelists[0];
+  const filesBody = cl.files.map((f, i) =>
+    `<div class="row${i === 1 ? ' sel' : ''}">${stagedMark(f)} ${stSpan(f.st)} <span class="name">${esc(f.path)}</span></div>`
+  ).join('');
+
+  const commitsBody = S.commits.map(c =>
+    `<div class="row"><span class="branch">${c.sha}</span> <span class="dim">JD</span> ${esc(c.msg)}</div>`
+  ).join('');
+
+  return `<div class="cols">
+    <div class="col" style="flex: 0 0 44%;">
+      ${panel({ num: 1, title: 'Status', body: statusBody, style: 'flex: 0 0 auto;' })}
+      ${panel({ num: 2, title: 'Changelists', count: '1 of 4', body: clBody, style: 'flex: 0 0 auto;' })}
+      ${panel({ num: 3, title: 'Files', alt: 'print-page-v2 fixes', count: '2 of 3', focused: true, body: filesBody, style: 'flex: 1;' })}
+      ${panel({ num: 4, title: 'Commits', count: '1 of 300', body: commitsBody, style: 'flex: 0 0 30%;' })}
+    </div>
+    <div class="col" style="flex: 1;">
+      ${panel({ num: 0, title: 'Diff', alt: 'src/styles/print.css (2/4 hunks staged)', body: `<div class="diff">${DIFF_PLAIN}</div>`, style: 'flex: 1;' })}
+    </div>
+  </div>
+  <div class="keybar">
+    <span><b>n</b> new changelist</span><span><b>d</b> delete</span><span><b>r</b> rename</span>
+    <span><b>m</b> move to changelist</span><span><b>space</b> stage</span><span><b>enter</b> stage hunks</span>
+    <span><b>c</b> commit changelist</span><span><b>a</b> set active</span><span><b>?</b> keybindings</span>
+    <span class="spacer"></span><span class="brand">gitchange 0.1.0-proto</span>
+  </div>`;
+}
+
+/* ═══════════════ Variant B — IntelliJ-style changelist tree ═══════════════ */
+/* One dominant tree panel: changelists are collapsible groups with files
+   nested inside. Commit message box lives under the tree. Diff right. */
+function variantB() {
+  let tree = '';
+  S.changelists.forEach((cl, ci) => {
+    const open = ci === 0;
+    tree += `<div class="row${ci === 0 ? ' activebg' : ''}">${open ? '▾' : '▸'} ${cl.active ? '<span class="cl-active">●</span>' : '<span class="dim">○</span>'} <span class="cl-name">${esc(cl.name)}</span> <span class="dim">${cl.files.length} files${cl.comment ? ' · ' + esc(cl.comment) : ''}${cl.active ? ' · active' : ''}</span></div>`;
+    if (open) {
+      cl.files.forEach((f, fi) => {
+        tree += `<div class="row${fi === 1 ? ' sel' : ''}">    ${stagedMark(f)} ${stSpan(f.st)} <span class="name">${esc(f.path)}</span> <span class="dim">${f.stagedHunks}/${f.hunks} hunks</span></div>`;
+      });
+    }
+  });
+  tree += `<div class="row">▾ <span class="warn">⚠ unassigned</span> <span class="dim">${S.unassigned.length} files</span></div>`;
+  S.unassigned.forEach(f => {
+    tree += `<div class="row">    ${stagedMark(f)} ${stSpan(f.st)} <span class="name dim">${esc(f.path)}</span></div>`;
+  });
+
+  const commitBody =
+    `<div class="row dim">fix: clamp print region widths across viewports</div>
+     <div class="row dim">│</div>
+     <div class="row"><span class="dim">will commit</span> <span class="staged">2 staged</span> <span class="dim">of 3 files in</span> <span class="cl-name">print-page-v2 fixes</span></div>`;
+
+  return `<div class="cols">
+    <div class="col" style="flex: 0 0 52%;">
+      ${panel({ num: 1, title: 'Changelists', alt: 'tree', count: '5 of 11', focused: true, body: tree, style: 'flex: 1;' })}
+      ${panel({ num: 2, title: 'Commit', alt: 'print-page-v2 fixes', body: commitBody, style: 'flex: 0 0 auto;' })}
+    </div>
+    <div class="col" style="flex: 1;">
+      ${panel({ num: 0, title: 'Diff', alt: 'src/styles/print.css', body: `<div class="diff">${DIFF_PLAIN}</div>`, style: 'flex: 1;' })}
+    </div>
+  </div>
+  <div class="keybar">
+    <span><b>tab</b> collapse/expand</span><span><b>n</b> new</span><span><b>F6</b> move to changelist</span>
+    <span><b>space</b> stage file</span><span><b>c</b> commit active changelist</span><span><b>a</b> set active</span>
+    <span><b>x</b> delete changelist</span><span><b>?</b> keybindings</span>
+    <span class="spacer"></span><span class="brand">gitchange 0.1.0-proto</span>
+  </div>`;
+}
+
+/* ═══════════════ Variant C — Miller columns + hunk-level tags ═══════════════ */
+/* Changelists | files | hunks as three navigable columns. Hunks are
+   first-class: each hunk shows its changelist tag; a move popup is open. */
+function variantC() {
+  const clBody = S.changelists.map((cl, i) =>
+    `<div class="row${i === 0 ? ' sel activebg' : ''}">${cl.active ? '<span class="cl-active">●</span>' : '<span class="dim">○</span>'} <span class="cl-name">${esc(cl.name)}</span>
+<span class="dim">   ${cl.files.length} files · ${cl.files.reduce((a, f) => a + f.stagedHunks, 0)}/${cl.files.reduce((a, f) => a + f.hunks, 0)} hunks staged</span></div>`
+  ).join('') +
+  `<div class="row"><span class="warn">⚠</span> <span class="warn">unassigned</span>
+<span class="dim">   ${S.unassigned.length} files · needs sorting</span></div>`;
+
+  const cl = S.changelists[0];
+  const filesBody = cl.files.map((f, i) =>
+    `<div class="row${i === 1 ? ' sel' : ''}">${stagedMark(f)} ${stSpan(f.st)} <span class="name">${esc(f.path.split('/').pop())}</span>
+<span class="dim">   ${esc(f.path.split('/').slice(0, -1).join('/'))} · ${f.stagedHunks}/${f.hunks}</span></div>`
+  ).join('');
+
+  const modal = `<div class="modal-overlay">
+    <div class="modal">
+      <span class="ptitle">Move hunk to changelist</span>
+      <div class="row dim" style="margin-bottom: 6px;">@@ -63,3 +67,8 @@ @media print rules</div>
+      <div class="row">  <span class="cl-name">print-page-v2 fixes</span> <span class="dim">(active)</span></div>
+      <div class="row sel">▸ <span class="cl-name">subscription refactor</span></div>
+      <div class="row">  <span class="cl-name">formatting chores</span></div>
+      <div class="row">  <span class="warn">unassigned</span></div>
+      <div class="row dim" style="margin-top: 8px;">──────────────────────────</div>
+      <div class="row">  <span class="staged">+</span> create new changelist…</div>
+      <div class="row dim" style="margin-top: 6px;"><b style="color: var(--orange); font-weight: normal;">enter</b> move · <b style="color: var(--orange); font-weight: normal;">esc</b> cancel</div>
+    </div>
+  </div>`;
+
+  return `<div class="cols" style="position: relative;">
+    <div class="col" style="flex: 0 0 26%;">
+      ${panel({ num: 1, title: 'Changelists', count: '1 of 4', body: clBody, style: 'flex: 1;' })}
+    </div>
+    <div class="col" style="flex: 0 0 26%;">
+      ${panel({ num: 2, title: 'Files', alt: 'print-page-v2 fixes', count: '2 of 3', body: filesBody, style: 'flex: 1;' })}
+    </div>
+    <div class="col" style="flex: 1;">
+      ${panel({ num: 3, title: 'Hunks', alt: 'print.css — tags show owning changelist', focused: true, body: `<div class="diff">${diffWithTags()}</div>`, style: 'flex: 1;' })}
+    </div>
+    ${modal}
+  </div>
+  <div class="keybar">
+    <span><b>h/l</b> column</span><span><b>j/k</b> item</span><span><b>m</b> move to changelist</span>
+    <span><b>space</b> stage hunk</span><span><b>c</b> commit changelist</span><span><b>n</b> new</span>
+    <span><b>a</b> set active</span><span><b>?</b> keybindings</span>
+    <span class="spacer"></span><span class="brand">gitchange 0.1.0-proto</span>
+  </div>`;
+}
+
+/* ═══════════════ switcher ═══════════════ */
+const VARIANTS = [
+  { key: 'A', name: 'Lazygit panel stack', render: variantA },
+  { key: 'B', name: 'IntelliJ changelist tree', render: variantB },
+  { key: 'C', name: 'Miller columns + hunk tags', render: variantC },
+];
+
+function currentKey() {
+  const k = new URLSearchParams(location.search).get('variant');
+  return VARIANTS.some(v => v.key === k) ? k : 'A';
+}
+function render() {
+  const v = VARIANTS.find(x => x.key === currentKey());
+  document.getElementById('app').innerHTML = `<div class="variant-root">${v.render()}</div>`;
+  document.getElementById('vlabel').textContent = `${v.key} — ${v.name}`;
+}
+function cycle(dir) {
+  const i = VARIANTS.findIndex(x => x.key === currentKey());
+  const next = VARIANTS[(i + dir + VARIANTS.length) % VARIANTS.length];
+  const url = new URL(location.href);
+  url.searchParams.set('variant', next.key);
+  history.replaceState(null, '', url);
+  render();
+}
+document.getElementById('prev').addEventListener('click', () => cycle(-1));
+document.getElementById('next').addEventListener('click', () => cycle(1));
+document.addEventListener('keydown', e => {
+  const t = e.target;
+  if (t.matches('input, textarea, [contenteditable]')) return;
+  if (e.key === 'ArrowLeft') cycle(-1);
+  if (e.key === 'ArrowRight') cycle(1);
+});
+render();
+</script>
+</body>
+</html>
