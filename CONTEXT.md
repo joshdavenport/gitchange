@@ -160,6 +160,14 @@ diff panel shows a placeholder. Everything else stays live; records
 re-enter normal matching when the file resolves.
 _Avoid_: freeze (global), lockdown, hiding
 
+**Apply-correctness corpus**:
+The data-driven test suite in core covering hunk-apply edge cases (no
+trailing newline, CRLF, adjacent hunks, mode changes, …): each case states
+base content, edit, hunk selection, and expected result. A v0.1 exit
+criterion; also the certification suite any future `GitBackend` adapter
+must pass.
+_Avoid_: edge-case tests, apply tests (alone)
+
 **Operation guard**:
 Commit disabled while any git operation is in progress (merge, rebase,
 cherry-pick, revert, am) — the next commit would conclude that operation
