@@ -68,6 +68,10 @@ design requirement, not a nice-to-have.
   `print.css (2/4 staged · 1 hunk elsewhere)` — staged counts in a
   drilled-in view refer to the *changelist's own* hunks, not the file's
   total (confirmed reading).
+- There is no theming so colour scheme should not be opinionated, but lean
+  on sensible defaults. Token use should be employed for ease of maintenance.
+- Glyph choices (`●◐○`, `*`, `!`, `≡`) are decided, but should also be easily
+  replaceable.
 
 ## 4. Prototype assumptions — embedded but not explicitly confirmed
 
@@ -78,8 +82,6 @@ Treat these as defaults to challenge, not requirements:
   whole changelist atomically.
 - Commits panel and Status panel content mirror lazygit; nothing
   changelist-specific was designed for them.
-- Colour scheme / glyph choices (`●◐○`, `*`, `!`, `≡`) are placeholder
-  aesthetics, gruvbox-ish, matched to lazygit conventions.
 
 ## 5. Deliberately deferred (not designed yet)
 
