@@ -1,8 +1,10 @@
 <!doctype html>
 <!--
-  PROTOTYPE — throwaway. Three TUI layout variants for a lazygit-inspired
-  changelist manager, switchable via ?variant=A|B|C or the floating bar / arrow keys.
-  Question being answered: "What should the changelist TUI look like?"
+  PROTOTYPE — throwaway. Lazygit-style panel-stack layout (round-1 winner) for a
+  changelist manager. ?variant=A|B|C now cycles the layout's three key STATES:
+  A drilled into a changelist, B the "all" meta-view with per-hunk changelist
+  tags, C unassigned selected with the move-to-changelist popup open.
+  Round-1 layout alternatives live in the first git commit.
 -->
 <html lang="en">
 <head>
@@ -238,6 +240,20 @@ const DIFF_PLAIN = `<span class="fh">--- a/src/styles/print.css
 <span class="add">+  .print-toolbar { display: none; }</span>
 <span class="ctx"> }</span>`;
 
+const DIFF_NAV = `<span class="fh">--- a/src/components/Nav.astro
++++ b/src/components/Nav.astro</span>
+<span class="hh">@@ -8,7 +8,7 @@ const { currentPath } = Astro.props;</span>
+<span class="ctx"> &lt;nav class="site-nav"&gt;</span>
+<span class="del">-  &lt;a href="/" class="logo"&gt;Home&lt;/a&gt;</span>
+<span class="add">+  &lt;a href="/" class="logo" aria-label="Home"&gt;Home&lt;/a&gt;</span>
+<span class="ctx">   &lt;ul&gt;</span>
+<span class="hh">@@ -22,6 +22,9 @@ const { currentPath } = Astro.props;</span>
+<span class="ctx">   &lt;/ul&gt;</span>
+<span class="add">+  &lt;button class="nav-toggle" aria-expanded="false"&gt;</span>
+<span class="add">+    Menu</span>
+<span class="add">+  &lt;/button&gt;</span>
+<span class="ctx"> &lt;/nav&gt;</span>`;
+
 function diffWithTags() {
   return `<span class="fh">--- a/src/styles/print.css
 +++ b/src/styles/print.css</span>
@@ -264,142 +280,123 @@ function panel({ num, title, alt = '', count = '', focused = false, body, style 
   </div>`;
 }
 
-/* ═══════════════ Variant A — lazygit-faithful panel stack ═══════════════ */
-/* Changelists get a numbered side panel; Files panel shows the SELECTED
-   changelist's files; diff dominates the right, like lazygit. */
-function variantA() {
-  const statusBody = `<div class="row">✓ works-in-progress → <span class="branch">${S.branch}</span></div>`;
+/* ═══════════════ Round 2 — variant A layout won. ═══════════════
+   The switcher now cycles the three key STATES of that layout:
+   A: drilled into a changelist   B: "all" meta-view   C: unassigned + move flow.
+   Panel 2 order: all → changelists → unassigned. */
 
-  const clBody = S.changelists.map((cl, i) =>
-    `<div class="row${i === 0 ? ' sel activebg' : ''}">${cl.active ? '<span class="cl-active">*</span>' : ' '} <span class="cl-name">${esc(cl.name)}</span> <span class="dim">(${cl.files.length})</span></div>`
-  ).join('') +
-  `<div class="row"><span class="warn">!</span> <span class="warn">unassigned</span> <span class="dim">(${S.unassigned.length})</span></div>`;
-
-  const cl = S.changelists[0];
-  const filesBody = cl.files.map((f, i) =>
-    `<div class="row${i === 1 ? ' sel' : ''}">${stagedMark(f)} ${stSpan(f.st)} <span class="name">${esc(f.path)}</span></div>`
-  ).join('');
-
-  const commitsBody = S.commits.map(c =>
-    `<div class="row"><span class="branch">${c.sha}</span> <span class="dim">JD</span> ${esc(c.msg)}</div>`
-  ).join('');
-
-  return `<div class="cols">
-    <div class="col" style="flex: 0 0 44%;">
-      ${panel({ num: 1, title: 'Status', body: statusBody, style: 'flex: 0 0 auto;' })}
-      ${panel({ num: 2, title: 'Changelists', count: '1 of 4', body: clBody, style: 'flex: 0 0 auto;' })}
-      ${panel({ num: 3, title: 'Files', alt: 'print-page-v2 fixes', count: '2 of 3', focused: true, body: filesBody, style: 'flex: 1;' })}
-      ${panel({ num: 4, title: 'Commits', count: '1 of 300', body: commitsBody, style: 'flex: 0 0 30%;' })}
-    </div>
-    <div class="col" style="flex: 1;">
-      ${panel({ num: 0, title: 'Diff', alt: 'src/styles/print.css (2/4 hunks staged)', body: `<div class="diff">${DIFF_PLAIN}</div>`, style: 'flex: 1;' })}
-    </div>
-  </div>
-  <div class="keybar">
+const KEYBAR = `<div class="keybar">
     <span><b>n</b> new changelist</span><span><b>d</b> delete</span><span><b>r</b> rename</span>
-    <span><b>m</b> move to changelist</span><span><b>space</b> stage</span><span><b>enter</b> stage hunks</span>
+    <span><b>m</b> move to changelist</span><span><b>space</b> stage file</span><span><b>enter</b> hunks</span>
     <span><b>c</b> commit changelist</span><span><b>a</b> set active</span><span><b>?</b> keybindings</span>
     <span class="spacer"></span><span class="brand">gitchange 0.1.0-proto</span>
   </div>`;
+
+function totalFiles() {
+  return S.changelists.reduce((a, cl) => a + cl.files.length, 0) + S.unassigned.length;
 }
 
-/* ═══════════════ Variant B — IntelliJ-style changelist tree ═══════════════ */
-/* One dominant tree panel: changelists are collapsible groups with files
-   nested inside. Commit message box lives under the tree. Diff right. */
-function variantB() {
-  let tree = '';
-  S.changelists.forEach((cl, ci) => {
-    const open = ci === 0;
-    tree += `<div class="row${ci === 0 ? ' activebg' : ''}">${open ? '▾' : '▸'} ${cl.active ? '<span class="cl-active">●</span>' : '<span class="dim">○</span>'} <span class="cl-name">${esc(cl.name)}</span> <span class="dim">${cl.files.length} files${cl.comment ? ' · ' + esc(cl.comment) : ''}${cl.active ? ' · active' : ''}</span></div>`;
-    if (open) {
-      cl.files.forEach((f, fi) => {
-        tree += `<div class="row${fi === 1 ? ' sel' : ''}">    ${stagedMark(f)} ${stSpan(f.st)} <span class="name">${esc(f.path)}</span> <span class="dim">${f.stagedHunks}/${f.hunks} hunks</span></div>`;
-      });
-    }
-  });
-  tree += `<div class="row">▾ <span class="warn">⚠ unassigned</span> <span class="dim">${S.unassigned.length} files</span></div>`;
-  S.unassigned.forEach(f => {
-    tree += `<div class="row">    ${stagedMark(f)} ${stSpan(f.st)} <span class="name dim">${esc(f.path)}</span></div>`;
-  });
+function clPanelBody(sel) {
+  const rows = [];
+  rows.push({ key: 'all',
+    html: `<span class="dim">≡</span> <span class="name">all</span> <span class="dim">(${totalFiles()})</span>` });
+  S.changelists.forEach(cl => rows.push({ key: cl.id,
+    html: `${cl.active ? '<span class="cl-active">*</span>' : ' '} <span class="cl-name">${esc(cl.name)}</span> <span class="dim">(${cl.files.length})</span>` }));
+  rows.push({ key: 'unassigned',
+    html: `<span class="warn">!</span> <span class="warn">unassigned</span> <span class="dim">(${S.unassigned.length})</span>` });
+  return rows.map(r => `<div class="row${r.key === sel ? ' sel activebg' : ''}">${r.html}</div>`).join('');
+}
 
-  const commitBody =
-    `<div class="row dim">fix: clamp print region widths across viewports</div>
-     <div class="row dim">│</div>
-     <div class="row"><span class="dim">will commit</span> <span class="staged">2 staged</span> <span class="dim">of 3 files in</span> <span class="cl-name">print-page-v2 fixes</span></div>`;
+function fileRow(f, selected) {
+  return `<div class="row${selected ? ' sel' : ''}">${stagedMark(f)} ${stSpan(f.st)} <span class="name">${esc(f.path)}</span> <span class="dim">${f.stagedHunks}/${f.hunks}</span></div>`;
+}
 
-  return `<div class="cols">
-    <div class="col" style="flex: 0 0 52%;">
-      ${panel({ num: 1, title: 'Changelists', alt: 'tree', count: '5 of 11', focused: true, body: tree, style: 'flex: 1;' })}
-      ${panel({ num: 2, title: 'Commit', alt: 'print-page-v2 fixes', body: commitBody, style: 'flex: 0 0 auto;' })}
+function layoutA({ clSel, clPos, filesAlt, filesBody, filesCount, filesFocused = true, diffAlt, diffBody, overlay = '' }) {
+  const statusBody = `<div class="row">✓ works-in-progress → <span class="branch">${S.branch}</span></div>`;
+  const commitsBody = S.commits.map(c =>
+    `<div class="row"><span class="branch">${c.sha}</span> <span class="dim">JD</span> ${esc(c.msg)}</div>`
+  ).join('');
+  return `<div class="cols" style="position: relative;">
+    <div class="col" style="flex: 0 0 44%;">
+      ${panel({ num: 1, title: 'Status', body: statusBody, style: 'flex: 0 0 auto;' })}
+      ${panel({ num: 2, title: 'Changelists', count: clPos, focused: !filesFocused, body: clPanelBody(clSel), style: 'flex: 0 0 auto;' })}
+      ${panel({ num: 3, title: 'Files', alt: filesAlt, count: filesCount, focused: filesFocused, body: filesBody, style: 'flex: 1;' })}
+      ${panel({ num: 4, title: 'Commits', count: '1 of 300', body: commitsBody, style: 'flex: 0 0 26%;' })}
     </div>
     <div class="col" style="flex: 1;">
-      ${panel({ num: 0, title: 'Diff', alt: 'src/styles/print.css', body: `<div class="diff">${DIFF_PLAIN}</div>`, style: 'flex: 1;' })}
+      ${panel({ num: 0, title: 'Diff', alt: diffAlt, body: `<div class="diff">${diffBody}</div>`, style: 'flex: 1;' })}
     </div>
-  </div>
-  <div class="keybar">
-    <span><b>tab</b> collapse/expand</span><span><b>n</b> new</span><span><b>F6</b> move to changelist</span>
-    <span><b>space</b> stage file</span><span><b>c</b> commit active changelist</span><span><b>a</b> set active</span>
-    <span><b>x</b> delete changelist</span><span><b>?</b> keybindings</span>
-    <span class="spacer"></span><span class="brand">gitchange 0.1.0-proto</span>
-  </div>`;
+    ${overlay}
+  </div>${KEYBAR}`;
 }
 
-/* ═══════════════ Variant C — Miller columns + hunk-level tags ═══════════════ */
-/* Changelists | files | hunks as three navigable columns. Hunks are
-   first-class: each hunk shows its changelist tag; a move popup is open. */
-function variantC() {
-  const clBody = S.changelists.map((cl, i) =>
-    `<div class="row${i === 0 ? ' sel activebg' : ''}">${cl.active ? '<span class="cl-active">●</span>' : '<span class="dim">○</span>'} <span class="cl-name">${esc(cl.name)}</span>
-<span class="dim">   ${cl.files.length} files · ${cl.files.reduce((a, f) => a + f.stagedHunks, 0)}/${cl.files.reduce((a, f) => a + f.hunks, 0)} hunks staged</span></div>`
-  ).join('') +
-  `<div class="row"><span class="warn">⚠</span> <span class="warn">unassigned</span>
-<span class="dim">   ${S.unassigned.length} files · needs sorting</span></div>`;
-
+/* ── State A: drilled into a changelist (2 → select → 3 → operate) ── */
+function stateChangelist() {
   const cl = S.changelists[0];
-  const filesBody = cl.files.map((f, i) =>
-    `<div class="row${i === 1 ? ' sel' : ''}">${stagedMark(f)} ${stSpan(f.st)} <span class="name">${esc(f.path.split('/').pop())}</span>
-<span class="dim">   ${esc(f.path.split('/').slice(0, -1).join('/'))} · ${f.stagedHunks}/${f.hunks}</span></div>`
-  ).join('');
+  return layoutA({
+    clSel: cl.id,
+    clPos: '2 of 5',
+    filesAlt: cl.name,
+    filesCount: '2 of 3',
+    filesBody: cl.files.map((f, i) => fileRow(f, i === 1)).join(''),
+    diffAlt: 'src/styles/print.css (2/4 hunks staged)',
+    diffBody: DIFF_PLAIN,
+  });
+}
 
+/* ── State B: "all" meta-view — files grouped by changelist, diff hunks tagged ── */
+function stateAll() {
+  let body = '';
+  const group = (label, cls, files, selPath) => {
+    body += `<div class="row"><span class="${cls}">▾ ${esc(label)}</span></div>`;
+    files.forEach(f => {
+      body += `<div class="row${f.path === selPath ? ' sel' : ''}">  ${stagedMark(f)} ${stSpan(f.st)} <span class="name">${esc(f.path)}</span> <span class="dim">${f.stagedHunks}/${f.hunks}</span></div>`;
+    });
+  };
+  S.changelists.forEach(cl => group(cl.name + (cl.active ? ' *' : ''), 'cl-name', cl.files, 'src/styles/print.css'));
+  group('unassigned', 'warn', S.unassigned, null);
+  return layoutA({
+    clSel: 'all',
+    clPos: '1 of 5',
+    filesAlt: 'all changelists',
+    filesCount: '3 of 8',
+    filesBody: body,
+    diffAlt: 'print.css — hunk tags show owning changelist',
+    diffBody: diffWithTags(),
+  });
+}
+
+/* ── State C: unassigned selected, move-to-changelist popup open ── */
+function stateUnassigned() {
   const modal = `<div class="modal-overlay">
     <div class="modal">
-      <span class="ptitle">Move hunk to changelist</span>
-      <div class="row dim" style="margin-bottom: 6px;">@@ -63,3 +67,8 @@ @media print rules</div>
+      <span class="ptitle">Move to changelist</span>
+      <div class="row dim" style="margin-bottom: 6px;">M src/components/Nav.astro</div>
       <div class="row">  <span class="cl-name">print-page-v2 fixes</span> <span class="dim">(active)</span></div>
       <div class="row sel">▸ <span class="cl-name">subscription refactor</span></div>
       <div class="row">  <span class="cl-name">formatting chores</span></div>
-      <div class="row">  <span class="warn">unassigned</span></div>
       <div class="row dim" style="margin-top: 8px;">──────────────────────────</div>
       <div class="row">  <span class="staged">+</span> create new changelist…</div>
       <div class="row dim" style="margin-top: 6px;"><b style="color: var(--orange); font-weight: normal;">enter</b> move · <b style="color: var(--orange); font-weight: normal;">esc</b> cancel</div>
     </div>
   </div>`;
-
-  return `<div class="cols" style="position: relative;">
-    <div class="col" style="flex: 0 0 26%;">
-      ${panel({ num: 1, title: 'Changelists', count: '1 of 4', body: clBody, style: 'flex: 1;' })}
-    </div>
-    <div class="col" style="flex: 0 0 26%;">
-      ${panel({ num: 2, title: 'Files', alt: 'print-page-v2 fixes', count: '2 of 3', body: filesBody, style: 'flex: 1;' })}
-    </div>
-    <div class="col" style="flex: 1;">
-      ${panel({ num: 3, title: 'Hunks', alt: 'print.css — tags show owning changelist', focused: true, body: `<div class="diff">${diffWithTags()}</div>`, style: 'flex: 1;' })}
-    </div>
-    ${modal}
-  </div>
-  <div class="keybar">
-    <span><b>h/l</b> column</span><span><b>j/k</b> item</span><span><b>m</b> move to changelist</span>
-    <span><b>space</b> stage hunk</span><span><b>c</b> commit changelist</span><span><b>n</b> new</span>
-    <span><b>a</b> set active</span><span><b>?</b> keybindings</span>
-    <span class="spacer"></span><span class="brand">gitchange 0.1.0-proto</span>
-  </div>`;
+  return layoutA({
+    clSel: 'unassigned',
+    clPos: '5 of 5',
+    filesAlt: 'unassigned',
+    filesCount: '1 of 2',
+    filesBody: S.unassigned.map((f, i) => fileRow(f, i === 0)).join(''),
+    diffAlt: 'src/components/Nav.astro (0/2 hunks staged)',
+    diffBody: DIFF_NAV,
+    overlay: modal,
+  });
 }
 
 /* ═══════════════ switcher ═══════════════ */
 const VARIANTS = [
-  { key: 'A', name: 'Lazygit panel stack', render: variantA },
-  { key: 'B', name: 'IntelliJ changelist tree', render: variantB },
-  { key: 'C', name: 'Miller columns + hunk tags', render: variantC },
+  { key: 'A', name: 'State: changelist drill-down', render: stateChangelist },
+  { key: 'B', name: 'State: "all" view + hunk tags', render: stateAll },
+  { key: 'C', name: 'State: unassigned + move flow', render: stateUnassigned },
 ];
 
 function currentKey() {
