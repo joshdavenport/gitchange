@@ -107,7 +107,10 @@
     padding: 0 4px; font-size: 11px; border: 1px solid var(--border); border-radius: 3px;
   }
   .diff .hunktag.unassigned { color: var(--orange); }
-  .diff .hunk-sel { outline: 1px solid var(--border-focus); outline-offset: -1px; }
+  .diff .hunktag.dimtag { color: var(--dim); border-color: var(--border); opacity: .9; }
+  .diff .hunkwrap { display: block; margin-bottom: 8px; }
+  .diff .hunkwrap.foreign { opacity: .45; }
+  .diff .hunk-sel { outline: 1px solid var(--border-focus); outline-offset: 1px; background: rgba(127,191,94,.06); }
 
   /* ── keybar ─────────────────────────────────────────── */
   .keybar {
@@ -218,27 +221,49 @@ function stagedMark(f) {
   return `<span class="dim">○</span>`;
 }
 
-const DIFF_PLAIN = `<span class="fh">--- a/src/styles/print.css
-+++ b/src/styles/print.css</span>
-<span class="hh">@@ -14,7 +14,7 @@ .print-page {</span>
-<span class="ctx">   .print-region {</span>
-<span class="del">-    width: 320px;</span>
-<span class="add">+    width: clamp(280px, 42vw, 360px);</span>
-<span class="ctx">     display: flex;</span>
-<span class="ctx">   }</span>
-<span class="hh">@@ -41,6 +41,10 @@ .print-toolbar {</span>
-<span class="ctx">   .print-toolbar button {</span>
-<span class="add">+    min-height: 44px;</span>
-<span class="add">+  }</span>
-<span class="add">+</span>
-<span class="add">+  .print-toolbar select {</span>
-<span class="ctx">     font-size: 0.9rem;</span>
-<span class="ctx">   }</span>
-<span class="hh">@@ -63,3 +67,8 @@ @media print {</span>
-<span class="ctx">   .no-print { display: none; }</span>
-<span class="add">+  .print-region { break-inside: avoid; }</span>
-<span class="add">+  .print-toolbar { display: none; }</span>
-<span class="ctx"> }</span>`;
+const PRINT_CSS_HUNKS = [
+  { header: '@@ -14,7 +14,7 @@ .print-region sizing', cl: 'print-page-v2 fixes', staged: true,
+    lines: [
+      ['ctx', '   .print-region {'],
+      ['del', '-    width: 320px;'],
+      ['add', '+    width: clamp(280px, 42vw, 360px);'],
+      ['ctx', '     display: flex;'],
+      ['ctx', '   }'],
+    ]},
+  { header: '@@ -41,6 +41,10 @@ toolbar touch targets', cl: 'print-page-v2 fixes', staged: false,
+    lines: [
+      ['ctx', '   .print-toolbar button {'],
+      ['add', '+    min-height: 44px;'],
+      ['add', '+  }'],
+      ['add', '+'],
+      ['add', '+  .print-toolbar select {'],
+      ['ctx', '     font-size: 0.9rem;'],
+      ['ctx', '   }'],
+    ]},
+  { header: '@@ -63,3 +67,8 @@ @media print rules', cl: 'unassigned', staged: false,
+    lines: [
+      ['ctx', '   .no-print { display: none; }'],
+      ['add', '+  .print-region { break-inside: avoid; }'],
+      ['add', '+  .print-toolbar { display: none; }'],
+      ['ctx', ' }'],
+    ]},
+];
+
+/* context = the drilled-in changelist name, or 'all'.
+   Foreign hunks (owned by a different changelist) are dimmed with a dim tag. */
+function renderDiff(hunks, { context = 'all', selected = null } = {}) {
+  let out = `<span class="fh">--- a/src/styles/print.css\n+++ b/src/styles/print.css</span>\n`;
+  hunks.forEach((h, i) => {
+    const foreign = context !== 'all' && h.cl !== context;
+    const showTag = context === 'all' || foreign;
+    const tag = showTag
+      ? `<span class="hunktag${h.cl === 'unassigned' ? ' unassigned' : ''}${foreign ? ' dimtag' : ''}">${esc(h.cl)}${h.cl === 'unassigned' ? '' : (h.staged ? ' ●' : ' ○')}</span>`
+      : '';
+    const lines = h.lines.map(([t, s]) => `<span class="${t}">${esc(s)}</span>`).join('\n');
+    out += `<span class="hunkwrap${foreign ? ' foreign' : ''}${i === selected ? ' hunk-sel' : ''}"><span class="hh">${esc(h.header)} ${tag}</span>\n${lines}</span>`;
+  });
+  return out;
+}
 
 const DIFF_NAV = `<span class="fh">--- a/src/components/Nav.astro
 +++ b/src/components/Nav.astro</span>
@@ -254,23 +279,6 @@ const DIFF_NAV = `<span class="fh">--- a/src/components/Nav.astro
 <span class="add">+  &lt;/button&gt;</span>
 <span class="ctx"> &lt;/nav&gt;</span>`;
 
-function diffWithTags() {
-  return `<span class="fh">--- a/src/styles/print.css
-+++ b/src/styles/print.css</span>
-<span class="hh hunk-sel">@@ -14,7 +14,7 @@ .print-region sizing <span class="hunktag">print-page-v2 fixes ●</span></span>
-<span class="ctx">   .print-region {</span>
-<span class="del">-    width: 320px;</span>
-<span class="add">+    width: clamp(280px, 42vw, 360px);</span>
-<span class="ctx">   }</span>
-<span class="hh">@@ -41,6 +41,10 @@ toolbar touch targets <span class="hunktag">print-page-v2 fixes ○</span></span>
-<span class="ctx">   .print-toolbar button {</span>
-<span class="add">+    min-height: 44px;</span>
-<span class="add">+  }</span>
-<span class="hh">@@ -63,3 +67,8 @@ @media print rules <span class="hunktag unassigned">unassigned</span></span>
-<span class="ctx">   .no-print { display: none; }</span>
-<span class="add">+  .print-region { break-inside: avoid; }</span>
-<span class="ctx"> }</span>`;
-}
 
 function panel({ num, title, alt = '', count = '', focused = false, body, style = '' }) {
   return `<div class="panel${focused ? ' focused' : ''}" style="${style}">
@@ -289,6 +297,14 @@ const KEYBAR = `<div class="keybar">
     <span><b>n</b> new changelist</span><span><b>d</b> delete</span><span><b>r</b> rename</span>
     <span><b>m</b> move to changelist</span><span><b>space</b> stage file</span><span><b>enter</b> hunks</span>
     <span><b>c</b> commit changelist</span><span><b>a</b> set active</span><span><b>?</b> keybindings</span>
+    <span class="spacer"></span><span class="brand">gitchange 0.1.0-proto</span>
+  </div>`;
+
+/* contextual keybar while the diff panel is focused (hunk mode) */
+const KEYBAR_HUNK = `<div class="keybar">
+    <span><b>j/k</b> next/prev hunk</span><span><b>space</b> stage hunk</span>
+    <span><b>enter</b> add all hunks to changelist</span><span><b>shift+enter</b> add hunk to changelist</span>
+    <span><b>esc</b> back to files</span><span><b>?</b> keybindings</span>
     <span class="spacer"></span><span class="brand">gitchange 0.1.0-proto</span>
   </div>`;
 
@@ -311,7 +327,7 @@ function fileRow(f, selected) {
   return `<div class="row${selected ? ' sel' : ''}">${stagedMark(f)} ${stSpan(f.st)} <span class="name">${esc(f.path)}</span> <span class="dim">${f.stagedHunks}/${f.hunks}</span></div>`;
 }
 
-function layoutA({ clSel, clPos, filesAlt, filesBody, filesCount, filesFocused = true, diffAlt, diffBody, overlay = '' }) {
+function layoutA({ clSel, clPos, filesAlt, filesBody, filesCount, filesFocused = true, diffFocused = false, diffAlt, diffBody, keybar = KEYBAR, overlay = '' }) {
   const statusBody = `<div class="row">✓ works-in-progress → <span class="branch">${S.branch}</span></div>`;
   const commitsBody = S.commits.map(c =>
     `<div class="row"><span class="branch">${c.sha}</span> <span class="dim">JD</span> ${esc(c.msg)}</div>`
@@ -319,18 +335,19 @@ function layoutA({ clSel, clPos, filesAlt, filesBody, filesCount, filesFocused =
   return `<div class="cols" style="position: relative;">
     <div class="col" style="flex: 0 0 44%;">
       ${panel({ num: 1, title: 'Status', body: statusBody, style: 'flex: 0 0 auto;' })}
-      ${panel({ num: 2, title: 'Changelists', count: clPos, focused: !filesFocused, body: clPanelBody(clSel), style: 'flex: 0 0 auto;' })}
+      ${panel({ num: 2, title: 'Changelists', count: clPos, focused: !filesFocused && !diffFocused, body: clPanelBody(clSel), style: 'flex: 0 0 auto;' })}
       ${panel({ num: 3, title: 'Files', alt: filesAlt, count: filesCount, focused: filesFocused, body: filesBody, style: 'flex: 1;' })}
       ${panel({ num: 4, title: 'Commits', count: '1 of 300', body: commitsBody, style: 'flex: 0 0 26%;' })}
     </div>
     <div class="col" style="flex: 1;">
-      ${panel({ num: 0, title: 'Diff', alt: diffAlt, body: `<div class="diff">${diffBody}</div>`, style: 'flex: 1;' })}
+      ${panel({ num: 0, title: 'Diff', alt: diffAlt, focused: diffFocused, body: `<div class="diff">${diffBody}</div>`, style: 'flex: 1;' })}
     </div>
     ${overlay}
-  </div>${KEYBAR}`;
+  </div>${keybar}`;
 }
 
-/* ── State A: drilled into a changelist (2 → select → 3 → operate) ── */
+/* ── Drilled into a changelist (2 → select → 3 → operate).
+   Foreign hunks (owned by another changelist) render dimmed with a dim tag. ── */
 function stateChangelist() {
   const cl = S.changelists[0];
   return layoutA({
@@ -339,12 +356,29 @@ function stateChangelist() {
     filesAlt: cl.name,
     filesCount: '2 of 3',
     filesBody: cl.files.map((f, i) => fileRow(f, i === 1)).join(''),
-    diffAlt: 'src/styles/print.css (2/4 hunks staged)',
-    diffBody: DIFF_PLAIN,
+    diffAlt: 'print.css (2/4 staged · 1 hunk elsewhere)',
+    diffBody: renderDiff(PRINT_CSS_HUNKS, { context: cl.name }),
   });
 }
 
-/* ── State B: "all" meta-view — files grouped by changelist, diff hunks tagged ── */
+/* ── Diff panel focused: hunk mode (enter from Files) ── */
+function stateHunkMode() {
+  const cl = S.changelists[0];
+  return layoutA({
+    clSel: cl.id,
+    clPos: '2 of 5',
+    filesAlt: cl.name,
+    filesCount: '2 of 3',
+    filesFocused: false,
+    diffFocused: true,
+    filesBody: cl.files.map((f, i) => fileRow(f, i === 1)).join(''),
+    diffAlt: 'print.css — hunk 2 of 3',
+    diffBody: renderDiff(PRINT_CSS_HUNKS, { context: cl.name, selected: 1 }),
+    keybar: KEYBAR_HUNK,
+  });
+}
+
+/* ── "all" meta-view — launch default; files grouped by changelist, all hunks tagged ── */
 function stateAll() {
   let body = '';
   const group = (label, cls, files, selPath) => {
@@ -360,9 +394,10 @@ function stateAll() {
     clPos: '1 of 5',
     filesAlt: 'all changelists',
     filesCount: '3 of 8',
+    filesFocused: false,
     filesBody: body,
     diffAlt: 'print.css — hunk tags show owning changelist',
-    diffBody: diffWithTags(),
+    diffBody: renderDiff(PRINT_CSS_HUNKS, { context: 'all' }),
   });
 }
 
@@ -394,9 +429,10 @@ function stateUnassigned() {
 
 /* ═══════════════ switcher ═══════════════ */
 const VARIANTS = [
-  { key: 'A', name: 'State: changelist drill-down', render: stateChangelist },
-  { key: 'B', name: 'State: "all" view + hunk tags', render: stateAll },
-  { key: 'C', name: 'State: unassigned + move flow', render: stateUnassigned },
+  { key: 'A', name: 'Launch: "all" overview', render: stateAll },
+  { key: 'B', name: 'Changelist drill-down', render: stateChangelist },
+  { key: 'C', name: 'Hunk mode (diff focused)', render: stateHunkMode },
+  { key: 'D', name: 'Unassigned + move flow', render: stateUnassigned },
 ];
 
 function currentKey() {
