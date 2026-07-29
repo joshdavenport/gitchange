@@ -42,6 +42,14 @@ belong to different changelists; a file is "in" a changelist when it has at
 least one hunk owned by it.
 _Avoid_: file membership
 
+**Whole-file hunk**:
+The degenerate single hunk a changed binary file presents: one membership
+record spanning the file, anchored by a blob-OID pair instead of verbatim
+lines. Follows normal assignment/move rules; keeps membership by path
+continuity while the path stays binary-changed; `◐` unreachable, `◑` derives
+by OID compare; hunk-mode entry is a polite no-op.
+_Avoid_: binary hunk, file-level membership (as a general mode)
+
 **Membership record**:
 The persisted claim that a changelist owns a hunk: file path, line
 coordinates, owning changelist, and a content anchor.
