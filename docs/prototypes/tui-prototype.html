@@ -1,10 +1,17 @@
 <!doctype html>
 <!--
   PROTOTYPE — throwaway. Lazygit-style panel-stack layout (round-1 winner) for a
-  changelist manager. ?variant=A|B|C now cycles the layout's three key STATES:
+  changelist manager. ?variant=A|B|C|D cycles the layout's key STATES:
   A drilled into a changelist, B the "all" meta-view with per-hunk changelist
   tags, C unassigned selected with the move-to-changelist popup open.
   Round-1 layout alternatives live in the first git commit.
+
+  Round 3 (ticket #18): Log panel per ADR 0007 — the tinted-pin-banner
+  treatment won. The Log panel [5] now renders in every state (at-rest
+  stream, ~20% of the right column); ?variant=E is the busy rebase state
+  (pin banner grows the panel, conflicts group, all three severities).
+  Losing treatments (inline pins + rule, separate Conditions panel) live
+  in git history.
 -->
 <html lang="en">
 <head>
@@ -111,6 +118,29 @@
   .diff .hunkwrap { display: block; margin-bottom: 8px; }
   .diff .hunkwrap.foreign { opacity: .45; }
   .diff .hunk-sel { outline: 1px solid var(--border-focus); outline-offset: 1px; background: rgba(127,191,94,.06); }
+
+  /* ── log panel (round 3, ADR 0007) ──────────────────── */
+  .pbody:has(> .log) { overflow: hidden; display: flex; flex-direction: column; }
+  .log { font-size: 12.5px; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .log .lstream { overflow-y: auto; min-height: 0; flex: 1; }
+  .log .lstream::-webkit-scrollbar { width: 0; }
+  .log .lrow { white-space: pre-wrap; padding: 0 4px; }
+  .log .g-info { color: var(--dim); }
+  .log .t-info { color: var(--dim); }
+  .log .t-cmd { color: var(--fg); opacity: .6; }
+  .log .g-notice { color: var(--orange); }
+  .log .t-notice { color: var(--fg); opacity: .85; }
+  .log .g-error { color: var(--red); }
+  .log .t-error { color: var(--red); opacity: .9; }
+  /* pins — conditions that currently hold */
+  .log .pinhold { flex: 0 0 auto; }
+  .log .pinrow { white-space: pre-wrap; padding: 0 4px; color: var(--yellow); }
+  .log .pinbanner { background: rgba(216,166,87,.10); margin: 0 0 3px; padding: 1px 0; }
+  .log .pinbanner .pinrow { color: var(--yellow); }
+
+  /* ── conflicts group (files panel) ──────────────────── */
+  .row .conflict { color: var(--red); }
+  .row .st-u { color: var(--red); }
 
   /* ── keybar ─────────────────────────────────────────── */
   .keybar {
@@ -327,7 +357,8 @@ function fileRow(f, selected) {
   return `<div class="row${selected ? ' sel' : ''}">${stagedMark(f)} ${stSpan(f.st)} <span class="name">${esc(f.path)}</span> <span class="dim">${f.stagedHunks}/${f.hunks}</span></div>`;
 }
 
-function layoutA({ clSel, clPos, filesAlt, filesBody, filesCount, filesFocused = true, diffFocused = false, diffAlt, diffBody, keybar = KEYBAR, overlay = '' }) {
+function layoutA({ clSel, clPos, filesAlt, filesBody, filesCount, filesFocused = true, diffFocused = false, diffAlt, diffBody, keybar = KEYBAR, overlay = '', log = undefined }) {
+  if (log === undefined) { log = logPanel({ entries: LOG_REST }); }
   const statusBody = `<div class="row">✓ works-in-progress → <span class="branch">${S.branch}</span></div>`;
   const commitsBody = S.commits.map(c =>
     `<div class="row"><span class="branch">${c.sha}</span> <span class="dim">JD</span> ${esc(c.msg)}</div>`
@@ -341,9 +372,101 @@ function layoutA({ clSel, clPos, filesAlt, filesBody, filesCount, filesFocused =
     </div>
     <div class="col" style="flex: 1;">
       ${panel({ num: 0, title: 'Diff', alt: diffAlt, focused: diffFocused, body: `<div class="diff">${diffBody}</div>`, style: 'flex: 1;' })}
+      ${log}
     </div>
     ${overlay}
   </div>${keybar}`;
+}
+
+/* ═══════════════ Round 3 — Log panel (ADR 0007, ticket #18) ═══════════════
+   Three severities: · info (dim, incl. git-op echo) / ! notice / ✗ error.
+   Pins = conditions that currently hold, always at top, self-clearing —
+   rendered as a tinted banner block; the panel grows one row per pin so
+   pins never eat history. ~20% of the right column at rest. */
+
+const SEV_GLYPH = { info: '·', cmd: '·', notice: '!', error: '✗' };
+function logRows(entries) {
+  const rows = entries.map(([sev, txt]) => {
+    const g = sev === 'cmd' ? 'info' : sev;
+    return `<div class="lrow"><span class="g-${g}">${SEV_GLYPH[sev]}</span> <span class="t-${sev}">${esc(txt)}</span></div>`;
+  }).join('');
+  return `<div class="lstream">${rows}</div>`;
+}
+function pinRows(pins) {
+  return pins.map(p => `<div class="pinrow">▲ ${esc(p)}</div>`).join('');
+}
+function logPanel({ pins = [], entries }) {
+  const pinBlock = pins.length
+    ? `<div class="pinhold"><div class="pinbanner">${pinRows(pins)}</div></div>`
+    : '';
+  const height = pins.length ? 20 + pins.length * 4 : 20;
+  return panel({ num: 5, title: 'Log',
+    body: `<div class="log">${pinBlock}${logRows(entries)}</div>`,
+    style: `flex: 0 0 ${height}%;` });
+}
+
+const PINS_BUSY = [
+  'rebase in progress — 2 conflicted',
+  'watcher unavailable — polling',
+];
+
+const LOG_BUSY = [
+  ['info',   'staged hunk — src/styles/print.css @@ -41,6'],
+  ['cmd',    'git commit (temp index — print-page-v2 fixes, 4 hunks)'],
+  ['error',  'commit failed — pre-commit hook exited 1'],
+  ['cmd',    'git commit --no-verify (temp index — print-page-v2 fixes, 4 hunks)'],
+  ['info',   'committed 3f2a91c "fix: viewport sizing"'],
+  ['notice', 'watcher unavailable — falling back to 5s polling'],
+  ['info',   'refresh — 14 files · 31 hunks'],
+  ['notice', 'rebase detected — 2 files conflicted, commit disabled'],
+  ['info',   'refresh — 14 files · 29 hunks (2 conflicted)'],
+];
+
+const LOG_REST = [
+  ['info',   'refresh — 8 files · 19 hunks'],
+  ['info',   'staged hunk — src/styles/print.css @@ -14,7'],
+  ['info',   'staged file — src/components/PrintPage.astro'],
+  ['cmd',    'git commit (temp index — print-page-v2 fixes, 6 hunks)'],
+  ['info',   'committed 91a05c1 "fix: across viewport size percentage sizing"'],
+  ['notice', 'auto-captured 1 hunk → print-page-v2 fixes (ambiguous overlap)'],
+  ['info',   'refresh — 6 files · 14 hunks'],
+];
+
+/* files panel body for the busy state: conflicts group first (quarantined —
+   no staged mark, files leave their changelist groups while unmerged) */
+function busyFilesBody() {
+  let body = '';
+  body += `<div class="row"><span class="conflict">▾ conflicts</span> <span class="dim">(2)</span></div>`;
+  body += `<div class="row sel">  <span class="st-u">U</span> <span class="name">src/lib/subscription/session.ts</span></div>`;
+  body += `<div class="row">  <span class="st-u">U</span> <span class="name">src/styles/print.css</span></div>`;
+  const group = (label, cls, files) => {
+    body += `<div class="row"><span class="${cls}">▾ ${esc(label)}</span></div>`;
+    files.forEach(f => {
+      body += `<div class="row">  ${stagedMark(f)} ${stSpan(f.st)} <span class="name">${esc(f.path)}</span> <span class="dim">${f.stagedHunks}/${f.hunks}</span></div>`;
+    });
+  };
+  group('print-page-v2 fixes *', 'cl-name', [S.changelists[0].files[0], S.changelists[0].files[2]]);
+  group('subscription refactor', 'cl-name', [S.changelists[1].files[1]]);
+  group('formatting chores', 'cl-name', S.changelists[2].files);
+  group('unassigned', 'warn', S.unassigned);
+  return body;
+}
+
+const DIFF_CONFLICTED = `<span class="fh">src/lib/subscription/session.ts</span>
+<span style="color: var(--red); opacity: .85;">conflicted — resolve outside gitchange</span>`;
+
+/* ── busy rebase state: pin banner + conflicts group + full severity mix ── */
+function stateBusy() {
+  return layoutA({
+    clSel: 'all',
+    clPos: '1 of 5',
+    filesAlt: 'all changelists',
+    filesCount: '1 of 8',
+    filesBody: busyFilesBody(),
+    diffAlt: 'session.ts (conflicted)',
+    diffBody: DIFF_CONFLICTED,
+    log: logPanel({ pins: PINS_BUSY, entries: LOG_BUSY }),
+  });
 }
 
 /* ── Drilled into a changelist (2 → select → 3 → operate).
@@ -433,6 +556,7 @@ const VARIANTS = [
   { key: 'B', name: 'Changelist drill-down', render: stateChangelist },
   { key: 'C', name: 'Hunk mode (diff focused)', render: stateHunkMode },
   { key: 'D', name: 'Unassigned + move flow', render: stateUnassigned },
+  { key: 'E', name: 'Busy: rebase pins + conflicts', render: stateBusy },
 ];
 
 function currentKey() {
@@ -443,6 +567,10 @@ function render() {
   const v = VARIANTS.find(x => x.key === currentKey());
   document.getElementById('app').innerHTML = `<div class="variant-root">${v.render()}</div>`;
   document.getElementById('vlabel').textContent = `${v.key} — ${v.name}`;
+  /* log streams sit scrolled to the newest entry, like a real TUI */
+  document.querySelectorAll('.log .lstream').forEach(el => {
+    el.scrollTop = el.scrollHeight;
+  });
 }
 function cycle(dir) {
   const i = VARIANTS.findIndex(x => x.key === currentKey());
