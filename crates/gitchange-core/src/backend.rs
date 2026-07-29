@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use crate::error::Error;
 
 /// The seam between core and any git implementation (ADR 0006). The git2
@@ -7,6 +9,11 @@ pub trait GitBackend {
     /// Every path that differs from HEAD in the worktree or the index,
     /// including untracked files.
     fn changed_files(&self) -> Result<Vec<ChangedFile>, Error>;
+
+    /// The per-worktree `gitchange` directory (ADR 0002): `gitchange`
+    /// under the private git dir, so linked worktrees get independent
+    /// state for free.
+    fn state_dir(&self) -> PathBuf;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

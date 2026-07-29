@@ -10,6 +10,8 @@ repository.workspace = true
 # solely through this crate's interface.
 git2 = { version = "0.20", default-features = false }
 thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

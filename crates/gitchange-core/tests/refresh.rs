@@ -44,6 +44,19 @@ fn refresh_in_a_clean_repo_is_empty() {
 }
 
 #[test]
+fn a_non_utf8_path_fails_refresh_loudly_never_lossily() {
+    // ADR 0010: non-UTF-8 paths are unsupported — refresh errors rather
+    // than persisting a mangled path that would break identity matching.
+    let fixture = RepoFixture::new();
+    fixture.write("a.txt", "content\n").commit_all("init");
+    fixture.stage_blob_at_raw_path(b"bad-\xff-path.txt", "content\n");
+
+    let repo = Repo::discover(fixture.path()).unwrap();
+    let err = repo.refresh().unwrap_err();
+    assert!(matches!(err, Error::NonUtf8Path { .. }), "{err:?}");
+}
+
+#[test]
 fn discover_outside_a_repo_is_not_a_repository() {
     let dir = tempfile::tempdir().unwrap();
     let Err(err) = Repo::discover(dir.path()).map(|_| ()) else {

@@ -17,8 +17,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// List changed files in the current repository
+    /// List changelists and changed files in the current repository
     Status,
+    /// Set the active changelist
+    Switch {
+        /// Name of the changelist to make active
+        name: String,
+    },
 }
 
 fn main() -> ExitCode {
@@ -26,6 +31,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
         Some(Command::Status) => status(),
+        Some(Command::Switch { name }) => switch(&name),
         None => gitchange_tui::run().map_err(anyhow::Error::from),
     };
     match result {
@@ -38,13 +44,35 @@ fn main() -> ExitCode {
 }
 
 fn status() -> anyhow::Result<()> {
-    let cwd = std::env::current_dir()?;
-    let repo = Repo::discover(&cwd)?;
+    let repo = open_repo()?;
     let snapshot = repo.refresh()?;
+    for changelist in &snapshot.changelists {
+        let marker = if snapshot.active.as_deref() == Some(changelist.name.as_str()) {
+            '*'
+        } else {
+            ' '
+        };
+        println!("{marker} {}", changelist.name);
+    }
+    if !snapshot.changelists.is_empty() && !snapshot.files.is_empty() {
+        println!();
+    }
     for file in &snapshot.files {
         println!("{} {}", sigil(file.kind), file.path);
     }
     Ok(())
+}
+
+fn switch(name: &str) -> anyhow::Result<()> {
+    let repo = open_repo()?;
+    repo.switch(name)?;
+    println!("Switched to changelist '{name}'");
+    Ok(())
+}
+
+fn open_repo() -> anyhow::Result<Repo> {
+    let cwd = std::env::current_dir()?;
+    Ok(Repo::discover(&cwd)?)
 }
 
 fn sigil(kind: ChangeKind) -> char {

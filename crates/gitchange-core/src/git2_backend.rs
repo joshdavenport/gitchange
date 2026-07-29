@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::backend::{ChangeKind, ChangedFile, GitBackend};
 use crate::error::Error;
@@ -36,10 +36,26 @@ impl GitBackend for Git2Backend {
             let Some(kind) = change_kind(entry.status()) else {
                 continue;
             };
-            let path = String::from_utf8_lossy(entry.path_bytes()).into_owned();
+            // ADR 0010: paths are UTF-8 or a loud failure — a lossy path
+            // would break byte-level identity against future refreshes.
+            let path = match std::str::from_utf8(entry.path_bytes()) {
+                Ok(path) => path.to_owned(),
+                Err(_) => {
+                    return Err(Error::NonUtf8Path {
+                        path: entry.path_bytes().to_vec(),
+                    });
+                }
+            };
             files.push(ChangedFile { path, kind });
         }
         Ok(files)
+    }
+
+    fn state_dir(&self) -> PathBuf {
+        // `Repository::path()` is the private git dir — for a linked
+        // worktree that is `.git/worktrees/<id>/`, matching git's
+        // `--git-path gitchange` resolution (ADR 0002).
+        self.repo.path().join("gitchange")
     }
 }
 

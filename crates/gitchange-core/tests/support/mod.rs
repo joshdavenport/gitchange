@@ -41,6 +41,42 @@ impl RepoFixture {
         self
     }
 
+    /// Add a linked worktree named `name`, returning its path. Requires
+    /// at least one commit (git refuses worktrees on unborn branches).
+    #[allow(dead_code)]
+    pub fn add_worktree(&self, name: &str) -> std::path::PathBuf {
+        let path = self.dir.path().join(format!("{name}-worktree"));
+        self.repo
+            .worktree(name, &path, None)
+            .expect("add linked worktree");
+        path
+    }
+
+    /// Stage a blob at a repo-relative path given as raw bytes, without
+    /// touching the worktree — the only portable way to conjure a
+    /// non-UTF-8 path into a repository.
+    #[allow(dead_code)]
+    pub fn stage_blob_at_raw_path(&self, path_bytes: &[u8], content: &str) -> &Self {
+        let mut index = self.repo.index().unwrap();
+        let entry = git2::IndexEntry {
+            ctime: git2::IndexTime::new(0, 0),
+            mtime: git2::IndexTime::new(0, 0),
+            dev: 0,
+            ino: 0,
+            mode: 0o100644,
+            uid: 0,
+            gid: 0,
+            file_size: content.len() as u32,
+            id: git2::Oid::zero(),
+            flags: 0,
+            flags_extended: 0,
+            path: path_bytes.to_vec(),
+        };
+        index.add_frombuffer(&entry, content.as_bytes()).unwrap();
+        index.write().unwrap();
+        self
+    }
+
     /// Stage everything and commit it.
     pub fn commit_all(&self, message: &str) -> &Self {
         let mut index = self.repo.index().unwrap();
