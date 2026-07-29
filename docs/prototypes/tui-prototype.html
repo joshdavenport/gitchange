@@ -10,8 +10,9 @@
   treatment won. The Log panel [5] now renders in every state (at-rest
   stream, ~20% of the right column); ?variant=E is the busy rebase state
   (pin banner grows the panel, conflicts group, all three severities).
-  Losing treatments (inline pins + rule, separate Conditions panel) live
-  in git history.
+  THIS BRANCH (prototype/log-panel-round1) preserves the losing round-1
+  treatments as ?variant=F (inline pins + rule, fixed height) and
+  ?variant=G (separate Conditions panel) for comparison against E.
 -->
 <html lang="en">
 <head>
@@ -136,6 +137,7 @@
   .log .pinhold { flex: 0 0 auto; }
   .log .pinrow { white-space: pre-wrap; padding: 0 4px; color: var(--yellow); }
   .log .pinbanner { background: rgba(216,166,87,.10); margin: 0 0 3px; padding: 1px 0; }
+  .log .pinrule { color: var(--border); padding: 0 4px; overflow: hidden; white-space: nowrap; }
   .log .pinbanner .pinrow { color: var(--yellow); }
 
   /* ── conflicts group (files panel) ──────────────────── */
@@ -456,7 +458,7 @@ const DIFF_CONFLICTED = `<span class="fh">src/lib/subscription/session.ts</span>
 <span style="color: var(--red); opacity: .85;">conflicted — resolve outside gitchange</span>`;
 
 /* ── busy rebase state: pin banner + conflicts group + full severity mix ── */
-function stateBusy() {
+function stateBusy(log = logPanel({ pins: PINS_BUSY, entries: LOG_BUSY })) {
   return layoutA({
     clSel: 'all',
     clPos: '1 of 5',
@@ -465,8 +467,23 @@ function stateBusy() {
     filesBody: busyFilesBody(),
     diffAlt: 'session.ts (conflicted)',
     diffBody: DIFF_CONFLICTED,
-    log: logPanel({ pins: PINS_BUSY, entries: LOG_BUSY }),
+    log,
   });
+}
+
+/* ── round-1 loser: pins inline at top of the stream, dim rule below, fixed height ── */
+function stateLogInlinePins() {
+  const body = `<div class="pinhold">${pinRows(PINS_BUSY)}<div class="pinrule">${'─'.repeat(120)}</div></div>${logRows(LOG_BUSY)}`;
+  return stateBusy(panel({ num: 5, title: 'Log', body: `<div class="log">${body}</div>`, style: 'flex: 0 0 24%;' }));
+}
+
+/* ── round-1 loser: conditions get their own bordered mini-panel above the log ── */
+function stateLogConditionsPanel() {
+  const conditions = panel({ title: 'Conditions', body: `<div class="log">${pinRows(PINS_BUSY)}</div>`,
+    style: 'flex: 0 0 auto; border-color: var(--yellow);' })
+    .replace('class="ptitle"', 'class="ptitle" style="color: var(--yellow);"');
+  const log = panel({ num: 5, title: 'Log', body: `<div class="log">${logRows(LOG_BUSY)}</div>`, style: 'flex: 0 0 22%;' });
+  return stateBusy(conditions + log);
 }
 
 /* ── Drilled into a changelist (2 → select → 3 → operate).
@@ -556,7 +573,9 @@ const VARIANTS = [
   { key: 'B', name: 'Changelist drill-down', render: stateChangelist },
   { key: 'C', name: 'Hunk mode (diff focused)', render: stateHunkMode },
   { key: 'D', name: 'Unassigned + move flow', render: stateUnassigned },
-  { key: 'E', name: 'Busy: rebase pins + conflicts', render: stateBusy },
+  { key: 'E', name: 'Busy: rebase pins + conflicts', render: () => stateBusy() },
+  { key: 'F', name: 'Loser: inline pins + rule (fixed height)', render: stateLogInlinePins },
+  { key: 'G', name: 'Loser: separate Conditions panel', render: stateLogConditionsPanel },
 ];
 
 function currentKey() {
