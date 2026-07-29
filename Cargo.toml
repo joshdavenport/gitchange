@@ -1,0 +1,21 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/gitchange-core",
+  "crates/gitchange-tui",
+  "crates/gitchange",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/joshdavenport/gitchange"
+
+[workspace.dependencies]
+gitchange-core = { path = "crates/gitchange-core" }
+gitchange-tui = { path = "crates/gitchange-tui" }
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+tempfile = "3"

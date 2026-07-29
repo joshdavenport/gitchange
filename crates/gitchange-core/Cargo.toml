@@ -1,0 +1,15 @@
+[package]
+name = "gitchange-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# The only git2 edge in the workspace (ADR 0006): frontends reach git
+# solely through this crate's interface.
+git2 = { version = "0.20", default-features = false }
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
