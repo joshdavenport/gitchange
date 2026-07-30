@@ -135,16 +135,24 @@ impl GitBackend for Git2Backend {
             .pathspec(path)
             .disable_pathspec_match(true)
             .include_typechange(true)
-            .ignore_submodules(true);
+            .ignore_submodules(true)
+            // One context line, not the default three: this diff's base
+            // (the index) differs from the universe's (HEAD), so an
+            // index-only delta sitting between two universe hunks would
+            // merge context-3 hunks across it — and hunk-wise apply is
+            // all-or-nothing, staging more than the hunk asked for. One
+            // line keeps such regions split while still anchoring pure
+            // deletions (libgit2 anchors a hunk at `new_start`, which for
+            // a zero-context deletion names the line *before* it — off by
+            // one, and the apply fails).
+            .context_lines(1);
         let diff = self
             .repo
             .diff_index_to_workdir(None, Some(&mut options))
             .map_err(backend_error)?;
         // Both this diff's new side and the caller's range address the
         // same worktree file, so line numbers compare directly.
-        self.apply_to_index(&diff, |hunk| {
-            ranges_overlap((hunk.new_start(), hunk.new_lines()), new_range)
-        })
+        self.apply_to_index(&diff, new_range)
     }
 
     fn unstage_head_range(&self, path: &str, old_range: (u32, u32)) -> Result<(), Error> {
@@ -155,16 +163,18 @@ impl GitBackend for Git2Backend {
             .disable_pathspec_match(true)
             .reverse(true)
             .include_typechange(true)
-            .ignore_submodules(true);
+            .ignore_submodules(true)
+            // One context line, same reasoning as stage_worktree_range: a
+            // staged region between two universe hunks must not merge the
+            // apply's hunks across it.
+            .context_lines(1);
         let diff = self
             .repo
             .diff_tree_to_index(head_tree.as_ref(), None, Some(&mut options))
             .map_err(backend_error)?;
         // Reversed, so sides swap: the hunks' new side addresses HEAD —
         // the space the caller's range lives in.
-        self.apply_to_index(&diff, |hunk| {
-            ranges_overlap((hunk.new_start(), hunk.new_lines()), old_range)
-        })
+        self.apply_to_index(&diff, old_range)
     }
 
     fn stage_path(&self, path: &str) -> Result<(), Error> {
@@ -218,20 +228,119 @@ impl GitBackend for Git2Backend {
 }
 
 impl Git2Backend {
-    /// Apply `diff` to the live index, keeping only the hunks `keep`
-    /// selects. libgit2 computes every postimage before writing, so a
-    /// failure changes nothing.
-    fn apply_to_index(
-        &self,
-        diff: &git2::Diff,
-        mut keep: impl FnMut(&git2::DiffHunk) -> bool,
-    ) -> Result<(), Error> {
+    /// Apply `diff` to the live index, keeping only hunks whose change
+    /// core — the +/- lines, context skirts excluded — overlaps `target`
+    /// on the diff's new side. Selection must ignore context because this
+    /// diff's base differs from the universe's: a padded header range can
+    /// brush a neighbouring universe hunk's region and over-apply.
+    /// libgit2 computes every postimage before writing, so a failure
+    /// changes nothing.
+    fn apply_to_index(&self, diff: &git2::Diff, target: (u32, u32)) -> Result<(), Error> {
+        let cores = hunk_change_cores(diff)?;
         let mut options = git2::ApplyOptions::new();
-        options.hunk_callback(move |hunk| hunk.as_ref().is_some_and(&mut keep));
+        options.hunk_callback(move |hunk| {
+            hunk.as_ref().is_some_and(|hunk| {
+                let header = hunk_header(hunk);
+                cores
+                    .iter()
+                    .find(|core| core.header == header)
+                    .is_some_and(|core| ranges_overlap(core.range, target))
+            })
+        });
         self.repo
             .apply(diff, git2::ApplyLocation::Index, Some(&mut options))
             .map_err(backend_error)
     }
+}
+
+/// A hunk's identity within one diff — headers are unique because hunks
+/// never overlap.
+type HunkHeader = (u32, u32, u32, u32);
+
+fn hunk_header(hunk: &git2::DiffHunk) -> HunkHeader {
+    (
+        hunk.old_start(),
+        hunk.old_lines(),
+        hunk.new_start(),
+        hunk.new_lines(),
+    )
+}
+
+struct HunkCore {
+    header: HunkHeader,
+    /// New-side (start, lines) spanned by the hunk's actual +/- lines; a
+    /// pure deletion is zero-length at the gap it leaves.
+    range: (u32, u32),
+}
+
+/// The change core of every hunk in `diff`: where its +/- lines land on
+/// the new side, context excluded.
+fn hunk_change_cores(diff: &git2::Diff) -> Result<Vec<HunkCore>, Error> {
+    let mut cores = Vec::new();
+    for delta_index in 0..diff.deltas().len() {
+        let Some(patch) = git2::Patch::from_diff(diff, delta_index).map_err(backend_error)? else {
+            continue;
+        };
+        for hunk_index in 0..patch.num_hunks() {
+            let (hunk, line_count) = patch.hunk(hunk_index).map_err(backend_error)?;
+            // The new-side line most recently passed. A change run with
+            // additions is located by them; a pure-deletion run occupies
+            // the gap after `last_new` and counts as touching both
+            // neighbouring lines — line-before vs line-after conventions
+            // differ between producers, and a gap has no width to settle
+            // it.
+            let mut last_new = hunk.new_start().saturating_sub(1);
+            let mut start = u32::MAX;
+            let mut end = 0u32;
+            let mut deletion_run_anchor: Option<u32> = None;
+            let settle_deletion_run = |anchor: Option<u32>, start: &mut u32, end: &mut u32| {
+                if let Some(anchor) = anchor {
+                    // [anchor, anchor + 2): the line before the gap and
+                    // the line after it.
+                    *start = (*start).min(anchor);
+                    *end = (*end).max(anchor + 2);
+                }
+            };
+            for line_index in 0..line_count {
+                let line = patch
+                    .line_in_hunk(hunk_index, line_index)
+                    .map_err(backend_error)?;
+                match line.origin() {
+                    '+' => {
+                        let new_line = line.new_lineno().unwrap_or(last_new + 1);
+                        start = start.min(new_line);
+                        end = end.max(new_line + 1);
+                        last_new = new_line;
+                        // The additions locate this run: it replaces, not
+                        // purely deletes.
+                        deletion_run_anchor = None;
+                    }
+                    '-' => {
+                        deletion_run_anchor.get_or_insert(last_new);
+                    }
+                    ' ' => {
+                        settle_deletion_run(deletion_run_anchor.take(), &mut start, &mut end);
+                        if let Some(new_line) = line.new_lineno() {
+                            last_new = new_line;
+                        }
+                    }
+                    // EOFNL markers belong to the +/- run above them.
+                    _ => {}
+                }
+            }
+            settle_deletion_run(deletion_run_anchor, &mut start, &mut end);
+            let range = if start == u32::MAX {
+                (hunk.new_start(), hunk.new_lines())
+            } else {
+                (start, end.saturating_sub(start))
+            };
+            cores.push(HunkCore {
+                header: hunk_header(&hunk),
+                range,
+            });
+        }
+    }
+    Ok(cores)
 }
 
 /// Overlap on (start, lines) ranges, widening empty ranges (pure

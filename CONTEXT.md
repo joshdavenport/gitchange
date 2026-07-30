@@ -106,6 +106,14 @@ committing now would commit content that isn't what you see. `space` on a
 staged-stale hunk sets index := worktree.
 _Avoid_: dirty-staged, out-of-date
 
+**Change core**:
+The unpadded range a diff hunk's actual `+`/`-` lines span on the diff's
+new side, context skirts excluded; a pure-deletion run has no width and
+counts as touching both neighbouring lines. Range-apply staging ops select
+hunks by core overlap — context-padded header ranges computed against a
+different diff base than the universe's would over-select.
+_Avoid_: hunk body, change range
+
 **Commit payload**:
 What committing a changelist commits: its staged hunks as index content,
 snapshotted by a synchronous refresh at confirm time. Staged-stale hunks

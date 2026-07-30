@@ -23,6 +23,10 @@ impl RepoFixture {
             config
                 .set_str("user.email", "tests@gitchange.invalid")
                 .unwrap();
+            // Pin the libgit2 default explicitly: a runner's global
+            // `autocrlf=true` (git-for-Windows) would normalize the
+            // corpus's byte-exact CRLF assertions away on checkin.
+            config.set_bool("core.autocrlf", false).unwrap();
         }
         Self { dir, repo }
     }
@@ -32,6 +36,7 @@ impl RepoFixture {
     }
 
     /// Write `content` to a repo-relative path, creating parent dirs.
+    #[allow(dead_code)]
     pub fn write(&self, rel: &str, content: &str) -> &Self {
         let path = self.dir.path().join(rel);
         if let Some(parent) = path.parent() {
@@ -72,6 +77,24 @@ impl RepoFixture {
         index.add_path(Path::new(rel)).unwrap();
         index.write().unwrap();
         self
+    }
+
+    /// Stage one path's deletion, exactly as `git add <rel>` after `rm`.
+    #[allow(dead_code)]
+    pub fn stage_removal(&self, rel: &str) -> &Self {
+        let mut index = self.repo.index().unwrap();
+        index.remove_path(Path::new(rel)).unwrap();
+        index.write().unwrap();
+        self
+    }
+
+    /// The index entry's filemode (e.g. 0o100644 / 0o100755), `None` when
+    /// no entry exists — for mode-change assertions.
+    #[allow(dead_code)]
+    pub fn index_mode(&self, rel: &str) -> Option<u32> {
+        let mut index = self.repo.index().unwrap();
+        index.read(false).unwrap();
+        Some(index.get_path(Path::new(rel), 0)?.mode)
     }
 
     /// Add a linked worktree named `name`, returning its path. Requires
