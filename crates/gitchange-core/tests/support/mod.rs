@@ -98,6 +98,22 @@ impl RepoFixture {
         self
     }
 
+    /// `git stash`: shelve tracked worktree + index changes.
+    #[allow(dead_code)]
+    pub fn stash(&mut self) -> &mut Self {
+        let signature = self.repo.signature().unwrap();
+        self.repo.stash_save(&signature, "wip", None).unwrap();
+        self
+    }
+
+    /// `git stash pop`: restore the newest stash and drop it.
+    #[allow(dead_code)]
+    pub fn stash_pop(&mut self) -> &mut Self {
+        self.repo.stash_apply(0, None).unwrap();
+        self.repo.stash_drop(0).unwrap();
+        self
+    }
+
     /// Stage everything and commit it.
     pub fn commit_all(&self, message: &str) -> &Self {
         let mut index = self.repo.index().unwrap();

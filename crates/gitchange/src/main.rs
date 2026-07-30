@@ -2,7 +2,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-use gitchange_core::{ChangeKind, FileStage, Repo};
+use gitchange_core::{ChangeKind, ChangedFile, FileStage, Notice, Repo};
 
 #[derive(Parser)]
 #[command(
@@ -43,9 +43,14 @@ fn main() -> ExitCode {
     }
 }
 
+/// The All view as text: every changelist in user order with its files,
+/// the active one marked `*`, the unassigned group last.
 fn status() -> anyhow::Result<()> {
     let repo = open_repo()?;
     let snapshot = repo.refresh()?;
+    for notice in &snapshot.notices {
+        eprintln!("gitchange: {}", notice_line(notice));
+    }
     for changelist in &snapshot.changelists {
         let marker = if snapshot.active.as_deref() == Some(changelist.name.as_str()) {
             '*'
@@ -53,13 +58,20 @@ fn status() -> anyhow::Result<()> {
             ' '
         };
         println!("{marker} {}", changelist.name);
+        print_files(&snapshot.files_in(Some(&changelist.name)));
     }
-    if !snapshot.changelists.is_empty() && !snapshot.files.is_empty() {
-        println!();
+    let unassigned = snapshot.files_in(None);
+    if !unassigned.is_empty() {
+        println!("  unassigned");
+        print_files(&unassigned);
     }
-    for file in &snapshot.files {
+    Ok(())
+}
+
+fn print_files(files: &[&ChangedFile]) {
+    for file in files {
         println!(
-            "{} {} {} {}/{}",
+            "    {} {} {} {}/{}",
             stage_mark(file.stage()),
             sigil(file.kind),
             file.path,
@@ -67,7 +79,30 @@ fn status() -> anyhow::Result<()> {
             file.total_hunks(),
         );
     }
-    Ok(())
+}
+
+fn notice_line(notice: &Notice) -> String {
+    match notice {
+        Notice::AmbiguousOverlap {
+            path,
+            new_start,
+            candidates,
+            assigned_to,
+        } => {
+            let destination = match assigned_to {
+                Some(name) => format!("assigned to active changelist '{name}'"),
+                None => "left unassigned".into(),
+            };
+            format!(
+                "notice: hunk at {path}:{new_start} overlaps changelists {}; {destination}",
+                candidates
+                    .iter()
+                    .map(|name| format!("'{name}'"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )
+        }
+    }
 }
 
 fn switch(name: &str) -> anyhow::Result<()> {

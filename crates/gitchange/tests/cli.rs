@@ -55,6 +55,13 @@ fn seed_state(dir: &Path, active: &str, names: &[&str]) {
     std::fs::write(gitchange_dir.join("state.json"), json).unwrap();
 }
 
+/// Seed a verbatim state file, for fixtures that need records.
+fn seed_state_raw(dir: &Path, json: &str) {
+    let gitchange_dir = dir.join(".git/gitchange");
+    std::fs::create_dir_all(&gitchange_dir).unwrap();
+    std::fs::write(gitchange_dir.join("state.json"), json).unwrap();
+}
+
 #[test]
 fn switch_then_status_round_trip_the_active_marker() {
     let repo = dirty_repo();
@@ -65,7 +72,8 @@ fn switch_then_status_round_trip_the_active_marker() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert_eq!(stdout, "Switched to changelist 'bugfix'\n");
 
-    // A separate invocation sees the persisted marker.
+    // A separate invocation sees the persisted marker; the dirty files
+    // auto-capture to the newly active changelist.
     let output = gitchange(repo.path(), &["status"]);
     assert_eq!(output.status.code(), Some(0));
     let stdout = String::from_utf8(output.stdout).unwrap();
@@ -75,9 +83,8 @@ fn switch_then_status_round_trip_the_active_marker() {
         vec![
             "  feature",
             "* bugfix",
-            "",
-            "○ M tracked.txt 0/1",
-            "○ ? untracked.txt 0/1",
+            "    ○ M tracked.txt 0/1",
+            "    ○ ? untracked.txt 0/1",
         ]
     );
 }
@@ -106,13 +113,21 @@ fn switch_without_a_name_exits_2() {
 
 #[test]
 fn status_lists_changed_files_and_exits_0() {
+    // No changelists exist: the whole dirty tree is the unassigned group.
     let repo = dirty_repo();
     let output = gitchange(repo.path(), &["status"]);
 
     assert_eq!(output.status.code(), Some(0));
     let stdout = String::from_utf8(output.stdout).unwrap();
     let lines: Vec<&str> = stdout.lines().collect();
-    assert_eq!(lines, vec!["○ M tracked.txt 0/1", "○ ? untracked.txt 0/1"]);
+    assert_eq!(
+        lines,
+        vec![
+            "  unassigned",
+            "    ○ M tracked.txt 0/1",
+            "    ○ ? untracked.txt 0/1",
+        ]
+    );
 }
 
 #[test]
@@ -126,7 +141,90 @@ fn status_marks_externally_staged_files() {
     assert_eq!(output.status.code(), Some(0));
     let stdout = String::from_utf8(output.stdout).unwrap();
     let lines: Vec<&str> = stdout.lines().collect();
-    assert_eq!(lines, vec!["● M tracked.txt 1/1", "○ ? untracked.txt 0/1"]);
+    assert_eq!(
+        lines,
+        vec![
+            "  unassigned",
+            "    ● M tracked.txt 1/1",
+            "    ○ ? untracked.txt 0/1",
+        ]
+    );
+}
+
+#[test]
+fn status_groups_files_by_changelist_with_unassigned_last() {
+    // A null-owner record claims tracked.txt for unassigned (an orphan
+    // of a deleted changelist); the untracked file captures to active.
+    let repo = dirty_repo();
+    seed_state_raw(
+        repo.path(),
+        r#"{
+  "version": 1, "active": "feature",
+  "changelists": [{ "name": "feature" }, { "name": "bugfix" }],
+  "records": [
+    {
+      "path": "tracked.txt", "old_start": 1, "old_lines": 1,
+      "new_start": 1, "new_lines": 1, "changelist": null,
+      "anchor": ["-one\n", "+two\n"], "dormant_since": null
+    }
+  ]
+}"#,
+    );
+
+    let output = gitchange(repo.path(), &["status"]);
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines,
+        vec![
+            "* feature",
+            "    ○ ? untracked.txt 0/1",
+            "  bugfix",
+            "  unassigned",
+            "    ○ M tracked.txt 0/1",
+        ]
+    );
+}
+
+#[test]
+fn status_prints_ambiguous_overlap_notices_on_stderr() {
+    // Records from two changelists overlap the fresh hunk without an
+    // exact anchor match: active captures it, with a notice (ADR 0001).
+    let repo = dirty_repo();
+    seed_state_raw(
+        repo.path(),
+        r#"{
+  "version": 1, "active": "feature",
+  "changelists": [{ "name": "feature" }, { "name": "bugfix" }],
+  "records": [
+    {
+      "path": "tracked.txt", "old_start": 1, "old_lines": 1,
+      "new_start": 1, "new_lines": 1, "changelist": "feature",
+      "anchor": ["-stale\n"], "dormant_since": null
+    },
+    {
+      "path": "tracked.txt", "old_start": 1, "old_lines": 1,
+      "new_start": 1, "new_lines": 1, "changelist": "bugfix",
+      "anchor": ["-also stale\n"], "dormant_since": null
+    }
+  ]
+}"#,
+    );
+
+    let output = gitchange(repo.path(), &["status"]);
+    assert_eq!(output.status.code(), Some(0));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(
+        stderr,
+        "gitchange: notice: hunk at tracked.txt:1 overlaps changelists \
+         'bugfix', 'feature'; assigned to active changelist 'feature'\n"
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("* feature\n    ○ M tracked.txt 0/1"),
+        "the hunk lands in the active changelist: {stdout}"
+    );
 }
 
 #[test]

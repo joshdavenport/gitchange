@@ -3,6 +3,7 @@ use std::path::Path;
 use crate::backend::GitBackend;
 use crate::error::Error;
 use crate::git2_backend::Git2Backend;
+use crate::matcher;
 use crate::snapshot::Snapshot;
 use crate::state::State;
 use crate::state_file;
@@ -23,16 +24,47 @@ impl Repo {
         })
     }
 
-    /// One blocking recompute pass producing a fresh snapshot.
+    /// One blocking recompute pass producing a fresh snapshot: both
+    /// diffs → hunk universe → matcher → persist records (ADR 0005).
     pub fn refresh(&self) -> Result<Snapshot, Error> {
-        let files = universe::build(self.backend.diffs()?);
+        let mut files = universe::build(self.backend.diffs()?);
         // Reads take no lock: writers replace the file atomically, so a
         // read sees either the old or the new state, never a torn one.
-        let state = state_file::load(&self.backend.state_dir())?;
+        let dir = self.backend.state_dir();
+        let mut state = state_file::load(&dir)?;
+        // A hand-edited file may name changelists that don't exist;
+        // give such records delete semantics before matching.
+        state.orphan_records_of_unknown_changelists();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let outcome = matcher::run(
+            &mut files,
+            state.records.clone(),
+            state.active.as_deref(),
+            now,
+        );
+        // Belt-and-braces for the self-loop filter (ADR 0005): the state
+        // file is not rewritten when records are unchanged.
+        if outcome.records != state.records {
+            let _lock = state_file::lock(&dir)?;
+            // Reload under the lock so a write that landed since our read
+            // (changelist ops) keeps its changelists; only records are
+            // ours to replace.
+            let mut current = state_file::load(&dir)?;
+            current.records = outcome.records;
+            // A delete that landed since our read must keep its
+            // orphaning: matched owners re-validate against the
+            // reloaded roster before they persist.
+            current.orphan_records_of_unknown_changelists();
+            state_file::save(&dir, &current)?;
+        }
         Ok(Snapshot {
             files,
             changelists: state.changelists,
             active: state.active,
+            notices: outcome.notices,
         })
     }
 

@@ -66,6 +66,9 @@ pub struct Hunk {
     pub new_lines: u32,
     pub lines: Vec<HunkLine>,
     pub stage: HunkStage,
+    /// Owning changelist, written by the matcher after universe
+    /// derivation; `None` is unassigned.
+    pub changelist: Option<String>,
 }
 
 /// Per-hunk staging per ADR 0003's table.
@@ -212,6 +215,7 @@ fn to_hunk(hunk: DiffHunk, stage: HunkStage) -> Hunk {
         new_lines: hunk.new_lines,
         lines: hunk.lines,
         stage,
+        changelist: None,
     }
 }
 
