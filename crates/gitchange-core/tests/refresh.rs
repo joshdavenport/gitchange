@@ -1,6 +1,6 @@
 mod support;
 
-use gitchange_core::{ChangeKind, Error, Repo};
+use gitchange_core::{ChangeKind, Error, Head, Repo};
 use support::RepoFixture;
 
 #[test]
@@ -63,4 +63,69 @@ fn discover_outside_a_repo_is_not_a_repository() {
         panic!("expected discover to fail outside a repository");
     };
     assert!(matches!(err, Error::NotARepository { .. }));
+}
+
+#[test]
+fn snapshot_carries_branch_head_and_recent_commits_newest_first() {
+    let fixture = RepoFixture::new();
+    fixture
+        .write("a.txt", "one\n")
+        .commit_all("init")
+        .write("a.txt", "two\n")
+        .commit_all("second");
+
+    let repo = Repo::discover(fixture.path()).unwrap();
+    let snapshot = repo.refresh().unwrap();
+
+    match &snapshot.head {
+        Head::Branch { name } => assert!(!name.is_empty()),
+        other => panic!("expected a branch head, got {other:?}"),
+    }
+    let summaries: Vec<&str> = snapshot
+        .recent_commits
+        .iter()
+        .map(|commit| commit.summary.as_str())
+        .collect();
+    assert_eq!(summaries, vec!["second", "init"]);
+    for commit in &snapshot.recent_commits {
+        assert_eq!(commit.author, "gitchange-tests");
+        assert!(!commit.short_id.is_empty());
+        assert!(
+            fixture
+                .head_oid()
+                .starts_with(&snapshot.recent_commits[0].short_id)
+        );
+    }
+}
+
+#[test]
+fn snapshot_head_is_unborn_with_no_commits() {
+    let fixture = RepoFixture::new();
+    fixture.write("a.txt", "content\n");
+
+    let repo = Repo::discover(fixture.path()).unwrap();
+    let snapshot = repo.refresh().unwrap();
+
+    match &snapshot.head {
+        Head::Unborn { name } => assert!(!name.is_empty()),
+        other => panic!("expected an unborn head, got {other:?}"),
+    }
+    assert!(snapshot.recent_commits.is_empty());
+}
+
+#[test]
+fn snapshot_head_reports_detached_by_short_id() {
+    let fixture = RepoFixture::new();
+    fixture.write("a.txt", "content\n").commit_all("init");
+    fixture.detach_head();
+
+    let repo = Repo::discover(fixture.path()).unwrap();
+    let snapshot = repo.refresh().unwrap();
+
+    match &snapshot.head {
+        Head::Detached { short_id } => {
+            assert!(fixture.head_oid().starts_with(short_id.as_str()));
+        }
+        other => panic!("expected a detached head, got {other:?}"),
+    }
 }

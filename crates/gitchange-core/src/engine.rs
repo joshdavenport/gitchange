@@ -33,6 +33,10 @@ pub enum Condition {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum EngineEvent {
+    /// A RefreshJob began. The frontend's hook for the deferred refresh
+    /// indicator (ADR 0005): show nothing under ~500ms, an indicator
+    /// past it, cleared by the matching `RefreshComplete`/`RefreshFailed`.
+    RefreshStarted,
     /// One atomic RefreshJob finished; panels swap whole snapshots
     /// (ADR 0005).
     RefreshComplete(Snapshot),
@@ -107,6 +111,7 @@ impl SelfLoopFilter {
 pub struct Engine {
     requests: Sender<()>,
     events: Receiver<EngineEvent>,
+    workdir: PathBuf,
 }
 
 impl Engine {
@@ -134,6 +139,7 @@ impl Engine {
             Config::default(),
             degraded,
             watcher.map(|w| Box::new(w) as Box<dyn Send>),
+            workdir,
         ))
     }
 
@@ -149,6 +155,13 @@ impl Engine {
     /// at most one refresh runs at a time and at most one is pending.
     pub fn request_refresh(&self) {
         let _ = self.requests.send(());
+    }
+
+    /// The worktree root of the repository this Engine watches — panel
+    /// furniture (the Status panel's repo name) without a git edge in
+    /// the frontend (ADR 0006).
+    pub fn workdir(&self) -> &Path {
+        &self.workdir
     }
 }
 
@@ -207,6 +220,7 @@ fn spawn_loops(
     // Dropped when the control loop exits — for the real Engine, the
     // notify watcher whose lifetime must track the loop's.
     watcher_keep_alive: Option<Box<dyn Send>>,
+    workdir: PathBuf,
 ) -> Engine {
     let (requests_tx, requests_rx) = unbounded();
     let (events_tx, events_rx) = unbounded();
@@ -234,6 +248,7 @@ fn spawn_loops(
     Engine {
         requests: requests_tx,
         events: events_rx,
+        workdir,
     }
 }
 
@@ -248,6 +263,7 @@ fn worker_loop(
     events: Sender<EngineEvent>,
 ) {
     for () in run_rx {
+        let _ = events.send(EngineEvent::RefreshStarted);
         let outcome = match refresh() {
             Ok(snapshot) => {
                 let _ = events.send(EngineEvent::RefreshComplete(snapshot));
@@ -410,6 +426,10 @@ mod tests {
             changelists: Vec::new(),
             active: None,
             notices: Vec::new(),
+            head: crate::snapshot::Head::Unborn {
+                name: "main".into(),
+            },
+            recent_commits: Vec::new(),
         }
     }
 
@@ -443,6 +463,7 @@ mod tests {
                 TEST_CONFIG,
                 false,
                 None,
+                PathBuf::from("/repo"),
             );
             Self {
                 engine,
@@ -462,16 +483,38 @@ mod tests {
                 .expect("engine event within the generous timeout")
         }
 
+        /// The next `RefreshComplete`, skipping the `RefreshStarted`
+        /// that precedes every run — tests here assert on outcomes, not
+        /// the indicator hook.
         fn recv_complete(&self) -> Snapshot {
-            match self.recv() {
-                EngineEvent::RefreshComplete(snapshot) => snapshot,
-                other => panic!("expected RefreshComplete, got {other:?}"),
+            loop {
+                match self.recv() {
+                    EngineEvent::RefreshComplete(snapshot) => return snapshot,
+                    EngineEvent::RefreshStarted => {}
+                    other => panic!("expected RefreshComplete, got {other:?}"),
+                }
             }
         }
     }
 
     fn paths(list: &[&str]) -> SourceEvent {
         SourceEvent::Paths(list.iter().map(PathBuf::from).collect())
+    }
+
+    #[test]
+    fn refresh_started_precedes_every_complete() {
+        let engine = TestEngine::spawn();
+        for _ in 0..2 {
+            match engine.recv() {
+                EngineEvent::RefreshStarted => {}
+                other => panic!("expected RefreshStarted, got {other:?}"),
+            }
+            match engine.recv() {
+                EngineEvent::RefreshComplete(_) => {}
+                other => panic!("expected RefreshComplete, got {other:?}"),
+            }
+            engine.engine.request_refresh();
+        }
     }
 
     #[test]

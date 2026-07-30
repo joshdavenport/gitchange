@@ -47,6 +47,7 @@ fn wait_for_snapshot(engine: &Engine, deadline: Instant, accept: impl Fn(&[Strin
                     return;
                 }
             }
+            Ok(EngineEvent::RefreshStarted) => {}
             Ok(other) => panic!("unexpected engine event: {other:?}"),
             Err(err) => panic!("engine events dried up: {err}"),
         }

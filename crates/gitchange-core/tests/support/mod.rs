@@ -250,6 +250,14 @@ impl RepoFixture {
         self
     }
 
+    /// Detach HEAD at the current commit, as `git checkout --detach`.
+    #[allow(dead_code)]
+    pub fn detach_head(&self) -> &Self {
+        let oid = self.repo.head().unwrap().peel_to_commit().unwrap().id();
+        self.repo.set_head_detached(oid).unwrap();
+        self
+    }
+
     /// Stage everything and commit it.
     pub fn commit_all(&self, message: &str) -> &Self {
         let mut index = self.repo.index().unwrap();

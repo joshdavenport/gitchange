@@ -6,6 +6,7 @@ use crate::backend::{CommitPathSpec, GitBackend, HunkHeader};
 use crate::commit::CommitOptions;
 use crate::diff::{ChangeKind, DiffHunk, FileDiff, HunkLine, RepoDiffs};
 use crate::error::Error;
+use crate::snapshot::{CommitInfo, Head};
 
 pub(crate) struct Git2Backend {
     repo: git2::Repository,
@@ -98,6 +99,65 @@ impl GitBackend for Git2Backend {
             }
             Err(err) => Err(backend_error(err)),
         }
+    }
+
+    fn head(&self) -> Result<Head, Error> {
+        match self.repo.head() {
+            Ok(head) if self.repo.head_detached().map_err(backend_error)? => {
+                let commit = head.peel_to_commit().map_err(backend_error)?;
+                Ok(Head::Detached {
+                    short_id: short_id(&commit)?,
+                })
+            }
+            Ok(head) => Ok(Head::Branch {
+                name: head.shorthand().unwrap_or("HEAD").to_owned(),
+            }),
+            Err(err)
+                if matches!(
+                    err.code(),
+                    git2::ErrorCode::UnbornBranch | git2::ErrorCode::NotFound
+                ) =>
+            {
+                // Unborn: HEAD is a symbolic ref to a branch that has no
+                // commits yet — name it like git status does.
+                let name = self
+                    .repo
+                    .find_reference("HEAD")
+                    .ok()
+                    .and_then(|head| head.symbolic_target().map(str::to_owned))
+                    .map(|target| {
+                        target
+                            .strip_prefix("refs/heads/")
+                            .unwrap_or(&target)
+                            .to_owned()
+                    })
+                    .unwrap_or_else(|| "HEAD".to_owned());
+                Ok(Head::Unborn { name })
+            }
+            Err(err) => Err(backend_error(err)),
+        }
+    }
+
+    fn recent_commits(&self, limit: usize) -> Result<Vec<CommitInfo>, Error> {
+        let Some(oid) = self.head_oid()? else {
+            return Ok(Vec::new());
+        };
+        let mut walk = self.repo.revwalk().map_err(backend_error)?;
+        walk.push(git2::Oid::from_str(&oid).map_err(backend_error)?)
+            .map_err(backend_error)?;
+        let mut commits = Vec::new();
+        for id in walk.take(limit) {
+            let commit = self
+                .repo
+                .find_commit(id.map_err(backend_error)?)
+                .map_err(backend_error)?;
+            commits.push(CommitInfo {
+                short_id: short_id(&commit)?,
+                author: commit.author().name().unwrap_or("").to_owned(),
+                summary: commit.summary().unwrap_or("").to_owned(),
+            });
+        }
+        Ok(commits)
     }
 
     fn paths_changed_since(&self, baseline_oid: &str) -> Result<Option<Vec<String>>, Error> {
@@ -601,6 +661,13 @@ fn change_kind(status: git2::Delta) -> Option<ChangeKind> {
         Delta::Renamed | Delta::Copied => Some(ChangeKind::Modified),
         _ => None,
     }
+}
+
+/// A commit's abbreviated id, disambiguated by libgit2 like `git log
+/// --abbrev-commit` would.
+fn short_id(commit: &git2::Commit<'_>) -> Result<String, Error> {
+    let buf = commit.as_object().short_id().map_err(backend_error)?;
+    Ok(buf.as_str().unwrap_or_default().to_owned())
 }
 
 fn backend_error(err: git2::Error) -> Error {

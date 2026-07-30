@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use crate::commit::CommitOptions;
 use crate::diff::RepoDiffs;
 use crate::error::Error;
+use crate::snapshot::{CommitInfo, Head};
 
 /// A diff hunk's identity within one diff: (old_start, old_lines,
 /// new_start, new_lines). Unique per file because hunks never overlap.
@@ -32,6 +33,14 @@ pub trait GitBackend: Send {
     /// (ADR 0007) — the value the state file stamps as the baseline HEAD
     /// (ADR 0012).
     fn head_oid(&self) -> Result<Option<String>, Error>;
+
+    /// Where HEAD points — branch, detached, or unborn (ADR 0007) — for
+    /// the snapshot's Status-panel line.
+    fn head(&self) -> Result<Head, Error>;
+
+    /// Up to `limit` commits reachable from HEAD, newest first; empty on
+    /// an unborn branch.
+    fn recent_commits(&self, limit: usize) -> Result<Vec<CommitInfo>, Error>;
 
     /// The paths whose tree entries differ between `baseline_oid`'s tree
     /// and the current HEAD's — the ADR 0012 guard's affected-path set,

@@ -249,14 +249,18 @@ fn unknown_subcommand_exits_2() {
 }
 
 #[test]
-fn bare_invocation_prints_tui_stub_and_exits_0() {
-    let repo = dirty_repo();
-    let output = gitchange(repo.path(), &[]);
+fn bare_invocation_outside_a_repo_exits_1() {
+    // Bare `gitchange` launches the TUI, which needs a terminal — the
+    // testable slice is the pre-terminal failure path: repository
+    // discovery fails loudly with an operational exit code. The
+    // launched TUI itself is smoke-tested in gitchange-tui.
+    let dir = tempfile::tempdir().unwrap();
+    let output = gitchange(dir.path(), &[]);
 
-    assert_eq!(output.status.code(), Some(0));
-    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
-        stdout.contains("TUI not yet built"),
-        "unexpected stdout: {stdout}"
+        stderr.contains("not a git repository"),
+        "unexpected stderr: {stderr}"
     );
 }

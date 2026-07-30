@@ -18,6 +18,6 @@ pub use engine::{Condition, Engine, EngineEvent};
 pub use error::Error;
 pub use matcher::Notice;
 pub use repo::Repo;
-pub use snapshot::Snapshot;
+pub use snapshot::{CommitInfo, Head, Snapshot};
 pub use state::{Changelist, MembershipRecord, RESERVED_NAMES};
 pub use universe::{ChangedFile, FileStage, Hunk, HunkStage};

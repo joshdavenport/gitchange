@@ -7,3 +7,6 @@ repository.workspace = true
 
 [dependencies]
 gitchange-core.workspace = true
+crossbeam-channel.workspace = true
+ratatui.workspace = true
+thiserror.workspace = true

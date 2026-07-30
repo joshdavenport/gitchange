@@ -11,6 +11,10 @@ use crate::state::State;
 use crate::state_file;
 use crate::universe::{self, ChangedFile, Hunk, HunkStage};
 
+/// How far back the snapshot's Commits panel material reaches — a plain
+/// lazygit-equivalent window, not a full history walk.
+const RECENT_COMMITS_LIMIT: usize = 300;
+
 /// A handle on one git repository, holding the backend behind the
 /// `GitBackend` seam. Frontends reach git only through this type.
 pub struct Repo {
@@ -53,6 +57,10 @@ impl Repo {
         // where the opposite order would stamp coordinates as newer than
         // they are, silently.
         let head = self.backend.head_oid()?;
+        // Panel furniture, read adjacent to the HEAD stamp so the whole
+        // snapshot describes one instant.
+        let head_info = self.backend.head()?;
+        let recent_commits = self.backend.recent_commits(RECENT_COMMITS_LIMIT)?;
         let diffs = self.backend.diffs()?;
         let index_diff = diffs.index.clone();
         let mut files = universe::build(diffs);
@@ -101,6 +109,8 @@ impl Repo {
                 changelists: state.changelists,
                 active: state.active,
                 notices: outcome.notices,
+                head: head_info,
+                recent_commits,
             },
             index_diff,
         ))
