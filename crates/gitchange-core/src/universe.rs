@@ -66,6 +66,10 @@ pub struct Hunk {
     pub new_lines: u32,
     pub lines: Vec<HunkLine>,
     pub stage: HunkStage,
+    /// True for hunks only the index diff sees (staged then reverted in
+    /// the worktree) — their coordinates and lines address index content,
+    /// not the worktree, so staging ops treat them differently.
+    pub index_only: bool,
     /// Owning changelist, written by the matcher after universe
     /// derivation; `None` is unassigned.
     pub changelist: Option<String>,
@@ -192,14 +196,14 @@ fn pair_hunks(worktree: Vec<DiffHunk>, index: Vec<DiffHunk>) -> Vec<Hunk> {
             }
             HunkStage::StagedStale
         };
-        hunks.push(to_hunk(hunk, stage));
+        hunks.push(to_hunk(hunk, stage, false));
     }
 
     // Unpaired index hunks are committable but invisible in the worktree
     // diff — the "reverted in worktree" staged-stale flavour.
     for (position, hunk) in index.into_iter().enumerate() {
         if !consumed[position] {
-            hunks.push(to_hunk(hunk, HunkStage::StagedStale));
+            hunks.push(to_hunk(hunk, HunkStage::StagedStale, true));
         }
     }
 
@@ -207,7 +211,7 @@ fn pair_hunks(worktree: Vec<DiffHunk>, index: Vec<DiffHunk>) -> Vec<Hunk> {
     hunks
 }
 
-fn to_hunk(hunk: DiffHunk, stage: HunkStage) -> Hunk {
+fn to_hunk(hunk: DiffHunk, stage: HunkStage, index_only: bool) -> Hunk {
     Hunk {
         old_start: hunk.old_start,
         old_lines: hunk.old_lines,
@@ -215,6 +219,7 @@ fn to_hunk(hunk: DiffHunk, stage: HunkStage) -> Hunk {
         new_lines: hunk.new_lines,
         lines: hunk.lines,
         stage,
+        index_only,
         changelist: None,
     }
 }

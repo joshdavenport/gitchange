@@ -36,6 +36,15 @@ pub enum Notice {
         /// the degenerate hand-edited-state case where none is active.
         assigned_to: Option<String>,
     },
+    /// A stage/unstage acted on a snapshot hunk that no longer exists in
+    /// the live tree (ADR 0005's stale-action rule): fail-soft, nothing
+    /// was applied.
+    StaleHunk {
+        path: String,
+        /// Line the requested hunk started at when the snapshot was
+        /// taken — worktree-side, or index-side for index-only hunks.
+        new_start: u32,
+    },
 }
 
 pub(crate) struct MatchOutcome {

@@ -17,4 +17,23 @@ pub trait GitBackend {
     /// under the private git dir, so linked worktrees get independent
     /// state for free.
     fn state_dir(&self) -> PathBuf;
+
+    /// Set index := worktree within one file's worktree-side line range
+    /// (start, lines): a real apply-to-index of the diff(index↔worktree)
+    /// hunks overlapping it (ADR 0003). All-or-nothing — a failed apply
+    /// leaves the index untouched.
+    fn stage_worktree_range(&self, path: &str, new_range: (u32, u32)) -> Result<(), Error>;
+
+    /// Set index := HEAD within one file's HEAD-side line range: a
+    /// reverse-apply onto the index of the diff(HEAD↔index) hunks
+    /// overlapping it. All-or-nothing, like `stage_worktree_range`.
+    fn unstage_head_range(&self, path: &str, old_range: (u32, u32)) -> Result<(), Error>;
+
+    /// Set the whole index entry := worktree, `git add` semantics: stages
+    /// an untracked file, and stages the deletion when the file is gone.
+    fn stage_path(&self, path: &str) -> Result<(), Error>;
+
+    /// Set the whole index entry := HEAD's, `git reset -- <path>`
+    /// semantics: drops the entry when HEAD doesn't have the path.
+    fn unstage_path(&self, path: &str) -> Result<(), Error>;
 }

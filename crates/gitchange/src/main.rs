@@ -102,6 +102,11 @@ fn notice_line(notice: &Notice) -> String {
                     .join(", "),
             )
         }
+        Notice::StaleHunk { path, new_start } => {
+            format!(
+                "notice: hunk at {path}:{new_start} changed since the last refresh; nothing applied"
+            )
+        }
     }
 }
 

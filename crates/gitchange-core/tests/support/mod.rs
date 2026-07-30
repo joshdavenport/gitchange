@@ -98,6 +98,26 @@ impl RepoFixture {
         self
     }
 
+    /// The real index's content for a repo-relative path, `None` when no
+    /// entry exists — the ground truth write-through assertions check.
+    #[allow(dead_code)]
+    pub fn index_content(&self, rel: &str) -> Option<String> {
+        Some(String::from_utf8(self.index_bytes(rel)?).unwrap())
+    }
+
+    /// Verbatim index blob bytes — for asserting non-UTF-8 content
+    /// survives staging without lossy round-trips.
+    #[allow(dead_code)]
+    pub fn index_bytes(&self, rel: &str) -> Option<Vec<u8>> {
+        let mut index = self.repo.index().unwrap();
+        // Reload from disk: gitchange ops write through a separate
+        // repository handle.
+        index.read(false).unwrap();
+        let entry = index.get_path(Path::new(rel), 0)?;
+        let blob = self.repo.find_blob(entry.id).unwrap();
+        Some(blob.content().to_vec())
+    }
+
     /// `git stash`: shelve tracked worktree + index changes.
     #[allow(dead_code)]
     pub fn stash(&mut self) -> &mut Self {

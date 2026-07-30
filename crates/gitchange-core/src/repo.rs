@@ -1,13 +1,14 @@
 use std::path::Path;
 
 use crate::backend::GitBackend;
+use crate::diff::ChangeKind;
 use crate::error::Error;
 use crate::git2_backend::Git2Backend;
-use crate::matcher;
+use crate::matcher::{self, Notice};
 use crate::snapshot::Snapshot;
 use crate::state::State;
 use crate::state_file;
-use crate::universe;
+use crate::universe::{self, ChangedFile, Hunk, HunkStage};
 
 /// A handle on one git repository, holding the backend behind the
 /// `GitBackend` seam. Frontends reach git only through this type.
@@ -68,6 +69,66 @@ impl Repo {
         })
     }
 
+    /// Stage one hunk: set index := worktree for its region, a real
+    /// apply-to-index (ADR 0003) — which on a staged-stale `◑` hunk means
+    /// re-staging the edited version, and on an index-only one discarding
+    /// it. Validates at apply against the live tree (ADR 0005): a hunk
+    /// whose content is gone fails soft with a `Notice::StaleHunk` and
+    /// nothing applied. Membership records are untouched — the caller's
+    /// follow-up refresh re-derives staging.
+    pub fn stage_hunk(&self, path: &str, hunk: &Hunk) -> Result<Vec<Notice>, Error> {
+        let files = universe::build(self.backend.diffs()?);
+        let Some((file, fresh)) = find_fresh(&files, path, hunk) else {
+            return Ok(vec![stale_notice(path, hunk)]);
+        };
+        match fresh.stage {
+            // Index already matches the worktree here.
+            HunkStage::Staged => {}
+            _ if hunk_ops_are_file_ops(file) => self.backend.stage_path(path)?,
+            // Worktree matches HEAD across an index-only hunk's range, so
+            // index := worktree is a reverse-apply of the staged content.
+            HunkStage::StagedStale if fresh.index_only => self
+                .backend
+                .unstage_head_range(path, (fresh.old_start, fresh.old_lines))?,
+            _ => self
+                .backend
+                .stage_worktree_range(path, (fresh.new_start, fresh.new_lines))?,
+        }
+        Ok(Vec::new())
+    }
+
+    /// Unstage one hunk: set index := HEAD for its region, a
+    /// reverse-apply on the live index. Same validate-at-apply and
+    /// fail-soft contract as [`Repo::stage_hunk`].
+    pub fn unstage_hunk(&self, path: &str, hunk: &Hunk) -> Result<Vec<Notice>, Error> {
+        let files = universe::build(self.backend.diffs()?);
+        let Some((file, fresh)) = find_fresh(&files, path, hunk) else {
+            return Ok(vec![stale_notice(path, hunk)]);
+        };
+        match fresh.stage {
+            // Nothing of this hunk is in the index.
+            HunkStage::Unstaged => {}
+            _ if hunk_ops_are_file_ops(file) => self.backend.unstage_path(path)?,
+            _ => self
+                .backend
+                .unstage_head_range(path, (fresh.old_start, fresh.old_lines))?,
+        }
+        Ok(Vec::new())
+    }
+
+    /// Stage a whole file, `git add` semantics: index := worktree,
+    /// including untracked files and deletions. Unconditional — whatever
+    /// the worktree holds now is what an external `git add` would stage.
+    pub fn stage_file(&self, path: &str) -> Result<(), Error> {
+        self.backend.stage_path(path)
+    }
+
+    /// Unstage a whole file, `git reset -- <path>` semantics: index
+    /// entry := HEAD's.
+    pub fn unstage_file(&self, path: &str) -> Result<(), Error> {
+        self.backend.unstage_path(path)
+    }
+
     /// Create a changelist. The first one created becomes active.
     pub fn create_changelist(&self, name: &str) -> Result<(), Error> {
         self.update_state(|state| state.create(name))
@@ -100,5 +161,43 @@ impl Repo {
         let mut state = state_file::load(&dir)?;
         mutate(&mut state)?;
         state_file::save(&dir, &state)
+    }
+}
+
+/// Validate-at-apply (ADR 0005): find the live hunk whose verbatim lines
+/// match the snapshot's. Content-matched, not coordinate-matched, so a
+/// hunk merely shifted by edits above it still applies — at its fresh
+/// coordinates. Identical hunks (repeated code blocks) tie-break by
+/// proximity to the snapshot position, keeping the op on the hunk the
+/// user pointed at. `None` is the stale case.
+fn find_fresh<'a>(
+    files: &'a [ChangedFile],
+    path: &str,
+    hunk: &Hunk,
+) -> Option<(&'a ChangedFile, &'a Hunk)> {
+    let file = files.iter().find(|file| file.path == path)?;
+    let fresh = file
+        .hunks
+        .iter()
+        .filter(|candidate| candidate.lines == hunk.lines)
+        .min_by_key(|candidate| candidate.new_start.abs_diff(hunk.new_start))?;
+    Some((file, fresh))
+}
+
+/// Added, untracked, and deleted files present their whole change as one
+/// hunk, so hunk ops on them are the file ops — routed through the
+/// index-entry primitives, which also cover content libgit2 won't apply
+/// hunk-wise (untracked files aren't in any apply preimage).
+fn hunk_ops_are_file_ops(file: &ChangedFile) -> bool {
+    matches!(
+        file.kind,
+        ChangeKind::Added | ChangeKind::Untracked | ChangeKind::Deleted
+    ) && file.total_hunks() == 1
+}
+
+fn stale_notice(path: &str, hunk: &Hunk) -> Notice {
+    Notice::StaleHunk {
+        path: path.into(),
+        new_start: hunk.new_start,
     }
 }

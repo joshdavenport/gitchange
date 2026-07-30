@@ -74,6 +74,120 @@ impl GitBackend for Git2Backend {
         // `--git-path gitchange` resolution (ADR 0002).
         self.repo.path().join("gitchange")
     }
+
+    fn stage_worktree_range(&self, path: &str, new_range: (u32, u32)) -> Result<(), Error> {
+        let mut options = git2::DiffOptions::new();
+        options
+            .pathspec(path)
+            .disable_pathspec_match(true)
+            .include_typechange(true)
+            .ignore_submodules(true);
+        let diff = self
+            .repo
+            .diff_index_to_workdir(None, Some(&mut options))
+            .map_err(backend_error)?;
+        // Both this diff's new side and the caller's range address the
+        // same worktree file, so line numbers compare directly.
+        self.apply_to_index(&diff, |hunk| {
+            ranges_overlap((hunk.new_start(), hunk.new_lines()), new_range)
+        })
+    }
+
+    fn unstage_head_range(&self, path: &str, old_range: (u32, u32)) -> Result<(), Error> {
+        let head_tree = self.head_tree()?;
+        let mut options = git2::DiffOptions::new();
+        options
+            .pathspec(path)
+            .disable_pathspec_match(true)
+            .reverse(true)
+            .include_typechange(true)
+            .ignore_submodules(true);
+        let diff = self
+            .repo
+            .diff_tree_to_index(head_tree.as_ref(), None, Some(&mut options))
+            .map_err(backend_error)?;
+        // Reversed, so sides swap: the hunks' new side addresses HEAD —
+        // the space the caller's range lives in.
+        self.apply_to_index(&diff, |hunk| {
+            ranges_overlap((hunk.new_start(), hunk.new_lines()), old_range)
+        })
+    }
+
+    fn stage_path(&self, path: &str) -> Result<(), Error> {
+        let mut index = self.repo.index().map_err(backend_error)?;
+        let on_disk = self
+            .repo
+            .workdir()
+            .map(|root| root.join(path).symlink_metadata().is_ok())
+            .unwrap_or(false);
+        if on_disk {
+            index.add_path(Path::new(path)).map_err(backend_error)?;
+        } else if index.get_path(Path::new(path), 0).is_some() {
+            index.remove_path(Path::new(path)).map_err(backend_error)?;
+        }
+        index.write().map_err(backend_error)
+    }
+
+    fn unstage_path(&self, path: &str) -> Result<(), Error> {
+        let mut index = self.repo.index().map_err(backend_error)?;
+        let head_entry = self
+            .head_tree()?
+            .and_then(|tree| tree.get_path(Path::new(path)).ok());
+        match head_entry {
+            Some(entry) => {
+                // Blob and mode from HEAD; zeroed stat fields make the
+                // entry stat-dirty, exactly like `git reset -- <path>`.
+                index
+                    .add(&git2::IndexEntry {
+                        ctime: git2::IndexTime::new(0, 0),
+                        mtime: git2::IndexTime::new(0, 0),
+                        dev: 0,
+                        ino: 0,
+                        mode: entry.filemode() as u32,
+                        uid: 0,
+                        gid: 0,
+                        file_size: 0,
+                        id: entry.id(),
+                        flags: 0,
+                        flags_extended: 0,
+                        path: path.as_bytes().to_vec(),
+                    })
+                    .map_err(backend_error)?;
+            }
+            None if index.get_path(Path::new(path), 0).is_some() => {
+                index.remove_path(Path::new(path)).map_err(backend_error)?;
+            }
+            None => {}
+        }
+        index.write().map_err(backend_error)
+    }
+}
+
+impl Git2Backend {
+    /// Apply `diff` to the live index, keeping only the hunks `keep`
+    /// selects. libgit2 computes every postimage before writing, so a
+    /// failure changes nothing.
+    fn apply_to_index(
+        &self,
+        diff: &git2::Diff,
+        mut keep: impl FnMut(&git2::DiffHunk) -> bool,
+    ) -> Result<(), Error> {
+        let mut options = git2::ApplyOptions::new();
+        options.hunk_callback(move |hunk| hunk.as_ref().is_some_and(&mut keep));
+        self.repo
+            .apply(diff, git2::ApplyLocation::Index, Some(&mut options))
+            .map_err(backend_error)
+    }
+}
+
+/// Overlap on (start, lines) ranges, widening empty ranges (pure
+/// insertions/removals) to one line — the same rule the hunk universe
+/// pairs hunks with.
+fn ranges_overlap(a: (u32, u32), b: (u32, u32)) -> bool {
+    let span = |(start, lines): (u32, u32)| (start, start + lines.max(1));
+    let (a_start, a_end) = span(a);
+    let (b_start, b_end) = span(b);
+    a_start < b_end && b_start < a_end
 }
 
 fn collect_file_diffs(diff: &git2::Diff) -> Result<Vec<FileDiff>, Error> {
