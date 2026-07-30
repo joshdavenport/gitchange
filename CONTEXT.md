@@ -72,6 +72,13 @@ match, never overlap inheritance. Pruned when its changelist is deleted or
 after 14 days.
 _Avoid_: stale, orphaned, archived
 
+**Baseline HEAD**:
+The commit whose tree membership-record coordinates address, stamped in
+the state file at each persisting refresh. gitchange's own commit
+advances it while commuting its records; any other HEAD move triggers
+per-path visible dormancy instead of overlap inheritance.
+_Avoid_: stored OID, HEAD anchor, snapshot commit
+
 **State file**:
 The single JSON sidecar (`$GIT_DIR/gitchange/state.json`, per-worktree)
 holding changelists, the active marker, and membership records. Plain text,

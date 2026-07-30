@@ -50,7 +50,10 @@ is exactly the other changelists' staged hunks, so derived staged state
   a residual worktree diff (worktree vs the committed checkpoint), and at
   the next refresh ADR 0001's overlap-inheritance tier re-attaches it to
   the same changelist. No new rules; unmatched retained records go dormant
-  per ADR 0002.
+  per ADR 0002. **Amended by ADR 0012**: re-attachment holds only because
+  `commit()` rewrites retained `◑` records against the new HEAD
+  (coordinates and anchor) as part of its commutation shift; across
+  external HEAD moves, retained records are exact-revival-only.
 - The worktree is never touched; a full refresh follows the commit; files
   with no remaining owned hunks leave their lists naturally.
 - **An emptied changelist is kept** until explicitly deleted — deletion
