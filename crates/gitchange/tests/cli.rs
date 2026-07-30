@@ -76,8 +76,8 @@ fn switch_then_status_round_trip_the_active_marker() {
             "  feature",
             "* bugfix",
             "",
-            "M tracked.txt",
-            "? untracked.txt",
+            "○ M tracked.txt 0/1",
+            "○ ? untracked.txt 0/1",
         ]
     );
 }
@@ -112,7 +112,21 @@ fn status_lists_changed_files_and_exits_0() {
     assert_eq!(output.status.code(), Some(0));
     let stdout = String::from_utf8(output.stdout).unwrap();
     let lines: Vec<&str> = stdout.lines().collect();
-    assert_eq!(lines, vec!["M tracked.txt", "? untracked.txt"]);
+    assert_eq!(lines, vec!["○ M tracked.txt 0/1", "○ ? untracked.txt 0/1"]);
+}
+
+#[test]
+fn status_marks_externally_staged_files() {
+    // ADR 0003: a real `git add` in another terminal derives as staged
+    // at the next refresh — no error path.
+    let repo = dirty_repo();
+    git(repo.path(), &["add", "tracked.txt"]);
+
+    let output = gitchange(repo.path(), &["status"]);
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["● M tracked.txt 1/1", "○ ? untracked.txt 0/1"]);
 }
 
 #[test]

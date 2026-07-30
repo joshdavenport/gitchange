@@ -134,7 +134,9 @@ _Avoid_: client, UI layer (the CLI isn't one)
 **Hunk universe**:
 The set of hunks gitchange displays and matches membership against: the
 union of diff(HEAD↔worktree) and diff(HEAD↔index). Invariant: every hunk
-that would be in a commit is visible in the TUI.
+that would be in a commit is visible in the TUI. Rename detection is off
+(ADR 0011): a rename presents as delete at the old path plus add at the
+new, and membership does not follow it.
 _Avoid_: worktree diff, fresh diff (alone)
 
 **Log panel**:

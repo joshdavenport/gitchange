@@ -6,6 +6,7 @@ use crate::git2_backend::Git2Backend;
 use crate::snapshot::Snapshot;
 use crate::state::State;
 use crate::state_file;
+use crate::universe;
 
 /// A handle on one git repository, holding the backend behind the
 /// `GitBackend` seam. Frontends reach git only through this type.
@@ -24,8 +25,7 @@ impl Repo {
 
     /// One blocking recompute pass producing a fresh snapshot.
     pub fn refresh(&self) -> Result<Snapshot, Error> {
-        let mut files = self.backend.changed_files()?;
-        files.sort_by(|a, b| a.path.cmp(&b.path));
+        let files = universe::build(self.backend.diffs()?);
         // Reads take no lock: writers replace the file atomically, so a
         // read sees either the old or the new state, never a torn one.
         let state = state_file::load(&self.backend.state_dir())?;

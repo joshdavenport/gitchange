@@ -41,6 +41,27 @@ impl RepoFixture {
         self
     }
 
+    /// Write raw bytes to a repo-relative path, creating parent dirs —
+    /// for binary fixtures.
+    #[allow(dead_code)]
+    pub fn write_bytes(&self, rel: &str, content: &[u8]) -> &Self {
+        let path = self.dir.path().join(rel);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, content).unwrap();
+        self
+    }
+
+    /// Stage one path, exactly as `git add <rel>` would.
+    #[allow(dead_code)]
+    pub fn stage(&self, rel: &str) -> &Self {
+        let mut index = self.repo.index().unwrap();
+        index.add_path(Path::new(rel)).unwrap();
+        index.write().unwrap();
+        self
+    }
+
     /// Add a linked worktree named `name`, returning its path. Requires
     /// at least one commit (git refuses worktrees on unborn branches).
     #[allow(dead_code)]

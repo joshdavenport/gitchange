@@ -1,12 +1,12 @@
-use crate::backend::ChangedFile;
 use crate::state::Changelist;
+use crate::universe::ChangedFile;
 
 /// The immutable result of one refresh — the only data structure frontends
-/// read. Grows hunks and membership in later tickets; for now it carries
-/// the changed-file list and the changelist roster.
+/// read. Grows membership in later tickets; for now it carries the hunk
+/// universe and the changelist roster.
 #[derive(Debug, Clone)]
 pub struct Snapshot {
-    /// Changed files, sorted by path.
+    /// The hunk universe (ADR 0003), sorted by path.
     pub files: Vec<ChangedFile>,
     /// Changelists in user order.
     pub changelists: Vec<Changelist>,

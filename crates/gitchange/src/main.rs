@@ -2,7 +2,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-use gitchange_core::{ChangeKind, Repo};
+use gitchange_core::{ChangeKind, FileStage, Repo};
 
 #[derive(Parser)]
 #[command(
@@ -58,7 +58,14 @@ fn status() -> anyhow::Result<()> {
         println!();
     }
     for file in &snapshot.files {
-        println!("{} {}", sigil(file.kind), file.path);
+        println!(
+            "{} {} {} {}/{}",
+            stage_mark(file.stage()),
+            sigil(file.kind),
+            file.path,
+            file.staged_hunks(),
+            file.total_hunks(),
+        );
     }
     Ok(())
 }
@@ -73,6 +80,14 @@ fn switch(name: &str) -> anyhow::Result<()> {
 fn open_repo() -> anyhow::Result<Repo> {
     let cwd = std::env::current_dir()?;
     Ok(Repo::discover(&cwd)?)
+}
+
+fn stage_mark(stage: FileStage) -> char {
+    match stage {
+        FileStage::Staged => '●',
+        FileStage::PartiallyStaged => '◐',
+        FileStage::Unstaged => '○',
+    }
 }
 
 fn sigil(kind: ChangeKind) -> char {
