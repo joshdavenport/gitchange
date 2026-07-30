@@ -28,6 +28,11 @@ impl Repo {
     /// One blocking recompute pass producing a fresh snapshot: both
     /// diffs → hunk universe → matcher → persist records (ADR 0005).
     pub fn refresh(&self) -> Result<Snapshot, Error> {
+        // HEAD is read before the diffs: should a commit land in between,
+        // the stale stamp trips the guard on the next refresh — loud,
+        // where the opposite order would stamp coordinates as newer than
+        // they are, silently.
+        let head = self.backend.head_oid()?;
         let mut files = universe::build(self.backend.diffs()?);
         // Reads take no lock: writers replace the file atomically, so a
         // read sees either the old or the new state, never a torn one.
@@ -36,6 +41,7 @@ impl Repo {
         // A hand-edited file may name changelists that don't exist;
         // give such records delete semantics before matching.
         state.orphan_records_of_unknown_changelists();
+        let affected = self.affected_paths(&state, head.as_deref())?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -45,16 +51,22 @@ impl Repo {
             state.records.clone(),
             state.active.as_deref(),
             now,
+            &affected,
         );
         // Belt-and-braces for the self-loop filter (ADR 0005): the state
-        // file is not rewritten when records are unchanged.
-        if outcome.records != state.records {
+        // file is not rewritten when records are unchanged — except to
+        // move the baseline stamp with HEAD (ADR 0012). The default-state
+        // guard keeps a changelist-less repo from growing a state file
+        // just to hold a stamp.
+        let stamp_due = state.baseline_head != head && state != State::default();
+        if outcome.records != state.records || stamp_due {
             let _lock = state_file::lock(&dir)?;
             // Reload under the lock so a write that landed since our read
-            // (changelist ops) keeps its changelists; only records are
-            // ours to replace.
+            // (changelist ops) keeps its changelists; only records and
+            // the baseline are ours to replace.
             let mut current = state_file::load(&dir)?;
             current.records = outcome.records;
+            current.baseline_head = head;
             // A delete that landed since our read must keep its
             // orphaning: matched owners re-validate against the
             // reloaded roster before they persist.
@@ -66,6 +78,28 @@ impl Repo {
             changelists: state.changelists,
             active: state.active,
             notices: outcome.notices,
+        })
+    }
+
+    /// The ADR 0012 affected-path set for this refresh: empty while HEAD
+    /// sits at the stored baseline (or none is stored yet — pre-baseline
+    /// files adopt the current HEAD once, silently), the paths
+    /// diff(baseline↔HEAD) names otherwise, and every path when the
+    /// baseline no longer resolves.
+    fn affected_paths(
+        &self,
+        state: &State,
+        head: Option<&str>,
+    ) -> Result<matcher::AffectedPaths, Error> {
+        let Some(baseline) = state.baseline_head.as_deref() else {
+            return Ok(matcher::AffectedPaths::None);
+        };
+        if Some(baseline) == head {
+            return Ok(matcher::AffectedPaths::None);
+        }
+        Ok(match self.backend.paths_changed_since(baseline)? {
+            Some(paths) => matcher::AffectedPaths::Some(paths.into_iter().collect()),
+            None => matcher::AffectedPaths::All,
         })
     }
 

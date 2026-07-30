@@ -18,6 +18,18 @@ pub trait GitBackend {
     /// state for free.
     fn state_dir(&self) -> PathBuf;
 
+    /// The commit id HEAD resolves to, `None` on an unborn branch
+    /// (ADR 0007) — the value the state file stamps as the baseline HEAD
+    /// (ADR 0012).
+    fn head_oid(&self) -> Result<Option<String>, Error>;
+
+    /// The paths whose tree entries differ between `baseline_oid`'s tree
+    /// and the current HEAD's — the ADR 0012 guard's affected-path set,
+    /// paths only, no line mapping. `Ok(None)` when the baseline no
+    /// longer resolves to a commit (gc'd after a rebase, or hand-edited):
+    /// the caller must degrade to treating every path as affected.
+    fn paths_changed_since(&self, baseline_oid: &str) -> Result<Option<Vec<String>>, Error>;
+
     /// Set index := worktree within one file's worktree-side line range
     /// (start, lines): a real apply-to-index of the diff(index↔worktree)
     /// hunks overlapping it (ADR 0003). All-or-nothing — a failed apply

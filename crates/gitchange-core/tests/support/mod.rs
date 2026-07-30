@@ -53,6 +53,18 @@ impl RepoFixture {
         self
     }
 
+    /// The current HEAD commit id, in the form the state file stores.
+    #[allow(dead_code)]
+    pub fn head_oid(&self) -> String {
+        self.repo
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .id()
+            .to_string()
+    }
+
     /// Stage one path, exactly as `git add <rel>` would.
     #[allow(dead_code)]
     pub fn stage(&self, rel: &str) -> &Self {

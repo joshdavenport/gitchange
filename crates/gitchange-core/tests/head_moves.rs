@@ -1,17 +1,17 @@
 //! HEAD-move staleness (issue 37): the matcher's tier-2 overlap runs on
-//! HEAD-side old ranges, valid only while HEAD is unchanged. These tests
-//! characterise what a same-file external partial commit does to
-//! surviving membership records — including the silent wrong-list
-//! assignment ADRs 0001/0002 promise never happens. They pin *current*
-//! behaviour as the regression suite for the ticket's decision; tests
-//! whose assertions document the defect say so inline and flip when the
-//! fix lands.
+//! HEAD-side old ranges, valid only while HEAD is unchanged. ADR 0012's
+//! baseline HEAD guard (issue 39) covers the external-move half: when
+//! refresh finds HEAD away from the stored baseline, tier-2 is disabled
+//! for the paths the move changed — stale live records go dormant, and
+//! anchor-broken hunks capture to active with a per-path notice. The
+//! own-commit half (commutation, issue 28) is still pending; residual-◑
+//! re-attachment across gitchange's own commits flips with it.
 
 mod support;
 
 use std::fs;
 
-use gitchange_core::{Repo, Snapshot};
+use gitchange_core::{Notice, Repo, Snapshot};
 use support::RepoFixture;
 
 /// Lines `line 1`..=`line count`, as a vec for splicing edits into.
@@ -46,6 +46,19 @@ fn state_json(fixture: &RepoFixture) -> serde_json::Value {
     let raw = fs::read_to_string(fixture.path().join(".git/gitchange/state.json"))
         .expect("state file exists");
     serde_json::from_str(&raw).unwrap()
+}
+
+/// Rewrite the state file's top-level fields in place — simulating
+/// pre-baseline files and hand-edited or gc'd baselines.
+fn patch_state(
+    fixture: &RepoFixture,
+    patch: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
+) {
+    let path = fixture.path().join(".git/gitchange/state.json");
+    let mut json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    patch(json.as_object_mut().unwrap());
+    fs::write(&path, serde_json::to_string_pretty(&json).unwrap()).unwrap();
 }
 
 /// The changelists of dormant records in the state file, in record order.
@@ -110,13 +123,14 @@ fn an_untouched_neighbour_survives_an_external_partial_commit() {
 }
 
 #[test]
-fn a_shifted_neighbour_silently_misfiles_into_the_committed_changelist() {
-    // DEFECT (issue 37, flavour "silent wrong-list assignment"): the
-    // partial commit shifts the neighbour's fresh old range down into the
-    // committed record's stale region; a worktree edit breaks the
-    // neighbour's anchor, so tier-2 inherits from the wrong record — no
-    // notice, no dormancy, "one"'s hunk lands in "two". These assertions
-    // pin the wrong behaviour; the fix flips them to Some("one").
+fn a_shifted_neighbour_goes_dormant_loudly_instead_of_misfiling() {
+    // Issue 37's "silent wrong-list assignment", closed by ADR 0012's
+    // guard: the partial commit shifts the neighbour's fresh old range
+    // down into the committed record's stale region, and a worktree edit
+    // breaks the neighbour's anchor — but tier-2 is disabled for the
+    // moved path, so the hunk captures to active instead of inheriting
+    // from the wrong record, both stale records go dormant, and a notice
+    // names the loss. (Restoring "one" itself is #38's re-baselining.)
     let fixture = RepoFixture::new();
     let head = numbered_lines(60);
     fixture.write("a.txt", &text(&head)).commit_all("init");
@@ -159,30 +173,30 @@ fn a_shifted_neighbour_silently_misfiles_into_the_committed_changelist() {
     fixture.write("a.txt", &text(&worktree));
 
     // Fresh hunk old range vs new HEAD: [26, 33) — inside "two"'s stale
-    // [17, 35), clear of its own record's [37, 44).
+    // [17, 35), clear of its own record's [37, 44). Without the guard
+    // that overlap would silently misfile the hunk into "two".
     let snapshot = repo.refresh().unwrap();
     assert_eq!(
         owners(&snapshot, "a.txt"),
-        vec![Some("two".into())],
-        "WRONG per issue 37: the hunk belongs to \"one\""
+        vec![Some("three".into())],
+        "the guarded tier captures to active, never a stale record's list"
     );
-    assert!(
-        snapshot.notices.is_empty(),
-        "the misfile is silent — a single stale candidate raises no notice"
+    assert_eq!(
+        snapshot.notices,
+        vec![Notice::HeadMoveDormancy {
+            path: "a.txt".into(),
+            changelists: vec!["one".into(), "two".into()],
+        }]
     );
-    // "two"'s stale record was superseded by the misfiled fresh record;
-    // "one"'s goes dormant — revivable exact-only, so with the hunk now
-    // recorded under "two" it never comes back.
-    assert_eq!(dormant_owners(&fixture), vec!["one"]);
+    assert_eq!(dormant_owners(&fixture), vec!["two", "one"]);
 }
 
 #[test]
 fn a_shifted_neighbour_clear_of_stale_records_captures_to_active() {
-    // DEFECT (issue 37, the "miss" flavour): same shift, but the hunk
-    // lands clear of every stale record, so it reads as brand new and
-    // captures to the active changelist. Issue 37 calls this the
-    // acceptable outcome — but note it is just as silent as the misfile:
-    // no notice marks the membership loss.
+    // Issue 37's "miss" flavour: same shift, but the hunk lands clear of
+    // every stale record, so it reads as brand new and captures to the
+    // active changelist — the same destination the guard picks. What the
+    // guard adds is the notice: the membership loss is no longer silent.
     let fixture = RepoFixture::new();
     let head = numbered_lines(80);
     fixture.write("a.txt", &text(&head)).commit_all("init");
@@ -221,24 +235,29 @@ fn a_shifted_neighbour_clear_of_stale_records_captures_to_active() {
     assert_eq!(
         owners(&snapshot, "a.txt"),
         vec![Some("three".into())],
-        "WRONG per issue 37: the hunk belongs to \"one\"; it was captured \
-         as if brand new"
+        "clear of every stale record the hunk still reads as brand new"
     );
-    assert!(
-        snapshot.notices.is_empty(),
-        "the membership loss is silent too"
+    assert_eq!(
+        snapshot.notices,
+        vec![Notice::HeadMoveDormancy {
+            path: "a.txt".into(),
+            changelists: vec!["one".into(), "two".into()],
+        }],
+        "the loss is loud now: dormancies alongside a guarded capture"
     );
     assert_eq!(dormant_owners(&fixture), vec!["two", "one"]);
 }
 
 #[test]
-fn a_residual_staged_stale_hunk_reattaches_when_nothing_shifts() {
-    // The residual-◑ flow ADR 0004 banks on: stage a hunk, edit the
-    // worktree further, commit the staged version. The residual hunk's
-    // anchor differs from the record by construction (old side is now
-    // the committed content), so tier-1 can never rescue it — but with
-    // no line-count change above it, the stale coordinates happen to
-    // still be right and tier-2 re-attaches it.
+fn a_residual_staged_stale_hunk_goes_dormant_across_an_external_commit() {
+    // The residual-◑ flow: stage a hunk, edit the worktree further,
+    // commit the staged version. The residual hunk's anchor differs from
+    // the record by construction (old side is now the committed
+    // content), so tier-1 can never rescue it. Before ADR 0012 tier-2
+    // happened to re-attach it here (no line-count change above), but an
+    // external commit gives no proof of that, so the guard captures it
+    // to active with a notice. gitchange's own commit rewrites retained
+    // ◑ records instead and keeps the re-attachment (#28).
     let fixture = RepoFixture::new();
     let head = numbered_lines(20);
     fixture.write("a.txt", &text(&head)).commit_all("init");
@@ -258,26 +277,34 @@ fn a_residual_staged_stale_hunk_reattaches_when_nothing_shifts() {
     fixture.commit_index("one: ten (staged version)");
 
     // Residual hunk: committed "ten-staged" ↔ worktree "ten-final", at
-    // unchanged coordinates.
+    // unchanged coordinates — but coordinates an external move can't
+    // vouch for.
     let snapshot = repo.refresh().unwrap();
     assert_eq!(
         owners(&snapshot, "a.txt"),
-        vec![Some("one".into())],
-        "stale-but-unshifted coordinates re-attach the residual by overlap"
+        vec![Some("two".into())],
+        "the guard never trusts stale coordinates, however plausible"
     );
-    assert!(snapshot.notices.is_empty());
-    assert!(dormant_owners(&fixture).is_empty());
+    assert_eq!(
+        snapshot.notices,
+        vec![Notice::HeadMoveDormancy {
+            path: "a.txt".into(),
+            changelists: vec!["one".into()],
+        }]
+    );
+    assert_eq!(dormant_owners(&fixture), vec!["one"]);
 }
 
 #[test]
 fn a_residual_staged_stale_hunk_sheds_membership_when_the_commit_shifts_it() {
-    // DEFECT (issue 37, flavour "residual-◑"): commit a changelist whose
-    // payload also shrinks the file above the ◑ hunk — exactly what
-    // gitchange's own commit of a two-hunk changelist will do (#28). The
-    // residual hunk's fresh old range shifts by the payload's delta, its
-    // retained record still holds old-HEAD coordinates, and ADR 0004's
-    // "retained for overlap re-attachment" misses exactly when it is
-    // needed. The residual captures to whatever is active instead.
+    // Issue 37, flavour "residual-◑": commit a changelist whose payload
+    // also shrinks the file above the ◑ hunk — exactly what gitchange's
+    // own commit of a two-hunk changelist will do (#28). The residual
+    // hunk's fresh old range shifts by the payload's delta, its retained
+    // record still holds old-HEAD coordinates, and it captures to
+    // whatever is active. As an *external* commit that is the guard's
+    // by-design outcome, now with a notice; #28's commutation rewrites
+    // the retained record and keeps membership for own commits.
     let fixture = RepoFixture::new();
     let head = numbered_lines(60);
     fixture.write("a.txt", &text(&head)).commit_all("init");
@@ -307,10 +334,148 @@ fn a_residual_staged_stale_hunk_sheds_membership_when_the_commit_shifts_it() {
     assert_eq!(
         owners(&snapshot, "a.txt"),
         vec![Some("two".into())],
-        "WRONG per issue 37: the residual ◑ hunk belongs to \"one\""
+        "an external move sheds the shifted residual to active"
     );
-    assert!(snapshot.notices.is_empty(), "the loss is silent");
+    assert_eq!(
+        snapshot.notices,
+        vec![Notice::HeadMoveDormancy {
+            path: "a.txt".into(),
+            changelists: vec!["one".into()],
+        }],
+        "but no longer silently"
+    );
     // Both of "one"'s records linger dormant, revivable exact-only —
     // which the residual's anchor can never satisfy.
     assert_eq!(dormant_owners(&fixture), vec!["one", "one"]);
+}
+
+#[test]
+fn a_head_move_touching_only_other_paths_leaves_tier_two_intact() {
+    // The guard is path-scoped: an external commit that never touched
+    // a.txt leaves its record coordinates addressing the new HEAD too,
+    // so overlap inheritance still runs there — and the persisting
+    // refresh advances the stored baseline.
+    let fixture = RepoFixture::new();
+    let head = numbered_lines(20);
+    fixture.write("a.txt", &text(&head)).commit_all("init");
+    let repo = repo(&fixture);
+
+    repo.create_changelist("one").unwrap();
+    let mut worktree = head.clone();
+    worktree[9] = "ten-v1".into();
+    fixture.write("a.txt", &text(&worktree));
+    repo.refresh().unwrap();
+
+    repo.create_changelist("two").unwrap();
+    repo.switch("two").unwrap();
+    // External commit touching only b.txt.
+    fixture
+        .write("b.txt", "hello\n")
+        .stage("b.txt")
+        .commit_index("b.txt only");
+    // Rework a.txt's hunk: anchor broken, overlap must still inherit.
+    worktree[9] = "ten-v2".into();
+    fixture.write("a.txt", &text(&worktree));
+
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(
+        owners(&snapshot, "a.txt"),
+        vec![Some("one".into())],
+        "a.txt's coordinates still address the moved-to HEAD"
+    );
+    assert!(snapshot.notices.is_empty());
+    assert!(dormant_owners(&fixture).is_empty());
+    assert_eq!(state_json(&fixture)["baseline_head"], fixture.head_oid());
+}
+
+#[test]
+fn a_pre_baseline_state_file_adopts_the_head_move_silently() {
+    // Upgrade path (ADR 0012): a state file written before the baseline
+    // field can't prove which HEAD its coordinates address, so the first
+    // refresh trusts them — tier-2 runs exactly as before, no mass
+    // dormancy, no notice — and stamps the current HEAD, arming the
+    // guard for the next move.
+    let fixture = RepoFixture::new();
+    let head = numbered_lines(40);
+    fixture.write("a.txt", &text(&head)).commit_all("init");
+    let repo = repo(&fixture);
+
+    repo.create_changelist("one").unwrap();
+    let mut worktree = head.clone();
+    worktree[29] = "thirty-v1".into();
+    fixture.write("a.txt", &text(&worktree));
+    repo.refresh().unwrap();
+
+    repo.create_changelist("two").unwrap();
+    repo.switch("two").unwrap();
+    // External commit replacing line 10 in place — a HEAD move that
+    // shifts nothing below it.
+    let mut committed = head.clone();
+    committed[9] = "ten-committed".into();
+    fixture.write("a.txt", &text(&committed)).stage("a.txt");
+    let mut worktree = committed.clone();
+    worktree[29] = "thirty-v2".into();
+    fixture
+        .write("a.txt", &text(&worktree))
+        .commit_index("external: ten");
+    patch_state(&fixture, |state| {
+        state.remove("baseline_head");
+    });
+
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(
+        owners(&snapshot, "a.txt"),
+        vec![Some("one".into())],
+        "with no baseline to distrust, overlap inheritance runs as before"
+    );
+    assert!(snapshot.notices.is_empty());
+    assert!(dormant_owners(&fixture).is_empty());
+    assert_eq!(state_json(&fixture)["baseline_head"], fixture.head_oid());
+}
+
+#[test]
+fn an_unresolvable_baseline_degrades_to_all_paths_affected() {
+    // A rebase can gc the baseline commit away: with diff(baseline↔HEAD)
+    // impossible the guard cannot scope itself, so every path counts as
+    // moved — visible dormancy rather than silent trust of coordinates
+    // nothing can vouch for.
+    let fixture = RepoFixture::new();
+    let head = numbered_lines(20);
+    fixture.write("a.txt", &text(&head)).commit_all("init");
+    let repo = repo(&fixture);
+
+    repo.create_changelist("one").unwrap();
+    let mut worktree = head.clone();
+    worktree[9] = "ten-v1".into();
+    fixture.write("a.txt", &text(&worktree));
+    repo.refresh().unwrap();
+
+    repo.create_changelist("two").unwrap();
+    repo.switch("two").unwrap();
+    patch_state(&fixture, |state| {
+        state.insert(
+            "baseline_head".into(),
+            "0123456789abcdef0123456789abcdef01234567".into(),
+        );
+    });
+    // Rework the hunk: anchor broken, and no tree diff can prove a.txt
+    // unmoved, so overlap inheritance is off.
+    worktree[9] = "ten-v2".into();
+    fixture.write("a.txt", &text(&worktree));
+
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(owners(&snapshot, "a.txt"), vec![Some("two".into())]);
+    assert_eq!(
+        snapshot.notices,
+        vec![Notice::HeadMoveDormancy {
+            path: "a.txt".into(),
+            changelists: vec!["one".into()],
+        }]
+    );
+    assert_eq!(dormant_owners(&fixture), vec!["one"]);
+    assert_eq!(
+        state_json(&fixture)["baseline_head"],
+        fixture.head_oid(),
+        "the guarded refresh re-stamps a resolvable baseline"
+    );
 }

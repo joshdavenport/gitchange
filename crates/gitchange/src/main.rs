@@ -107,6 +107,16 @@ fn notice_line(notice: &Notice) -> String {
                 "notice: hunk at {path}:{new_start} changed since the last refresh; nothing applied"
             )
         }
+        Notice::HeadMoveDormancy { path, changelists } => {
+            format!(
+                "notice: an external HEAD move changed {path}; records in changelists {} went dormant and affected hunks were captured by the active changelist",
+                changelists
+                    .iter()
+                    .map(|name| format!("'{name}'"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )
+        }
     }
 }
 

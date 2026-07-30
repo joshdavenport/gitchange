@@ -75,6 +75,60 @@ impl GitBackend for Git2Backend {
         self.repo.path().join("gitchange")
     }
 
+    fn head_oid(&self) -> Result<Option<String>, Error> {
+        match self.repo.head() {
+            Ok(head) => {
+                let commit = head.peel_to_commit().map_err(backend_error)?;
+                Ok(Some(commit.id().to_string()))
+            }
+            Err(err)
+                if matches!(
+                    err.code(),
+                    git2::ErrorCode::UnbornBranch | git2::ErrorCode::NotFound
+                ) =>
+            {
+                Ok(None)
+            }
+            Err(err) => Err(backend_error(err)),
+        }
+    }
+
+    fn paths_changed_since(&self, baseline_oid: &str) -> Result<Option<Vec<String>>, Error> {
+        // A malformed id (hand-edited state file) is as unresolvable as a
+        // gc'd one.
+        let Ok(oid) = git2::Oid::from_str(baseline_oid) else {
+            return Ok(None);
+        };
+        let baseline_tree = match self.repo.find_commit(oid) {
+            Ok(commit) => commit.tree().map_err(backend_error)?,
+            Err(err) if err.code() == git2::ErrorCode::NotFound => return Ok(None),
+            Err(err) => return Err(backend_error(err)),
+        };
+        let head_tree = self.head_tree()?;
+        let diff = self
+            .repo
+            .diff_tree_to_tree(Some(&baseline_tree), head_tree.as_ref(), None)
+            .map_err(backend_error)?;
+        let mut paths = Vec::new();
+        for delta in diff.deltas() {
+            for file in [delta.old_file(), delta.new_file()] {
+                let Some(bytes) = file.path_bytes() else {
+                    continue;
+                };
+                // Membership records key on UTF-8 paths (ADR 0010), so a
+                // non-UTF-8 changed path can never hit a record: skipped,
+                // not a loud failure — this diff sees all of history, not
+                // just gitchange-managed files.
+                if let Ok(path) = std::str::from_utf8(bytes) {
+                    paths.push(path.to_owned());
+                }
+            }
+        }
+        paths.sort_unstable();
+        paths.dedup();
+        Ok(Some(paths))
+    }
+
     fn stage_worktree_range(&self, path: &str, new_range: (u32, u32)) -> Result<(), Error> {
         let mut options = git2::DiffOptions::new();
         options

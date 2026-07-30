@@ -81,3 +81,8 @@ are exact-revival-only like any other dormant record (ADR 0002).
 - The concession is bounded and visible: after an external commit,
   rebase, amend, or pull, anchor-broken hunks on moved paths re-sort by
   hand, guided by the notice. Untouched hunks are unaffected.
+- A narrow ADR 0010 carve-out: the baseline↔HEAD tree diff sees all of
+  history, not just gitchange-managed files, so a non-UTF-8 path there is
+  skipped rather than failing the refresh loudly. Skipping is safe where
+  lossy decoding was not — records key on UTF-8 paths, so such a path can
+  never hold membership, and nothing lossy enters any comparison.

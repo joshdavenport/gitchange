@@ -45,6 +45,44 @@ pub enum Notice {
         /// taken — worktree-side, or index-side for index-only hunks.
         new_start: u32,
     },
+    /// An external HEAD move stranded this path's record coordinates
+    /// (ADR 0012): with tier-2 disabled its anchor-broken hunks captured
+    /// to active and its stale live records went dormant. Fired only when
+    /// that actually cost something — a guarded capture happened while
+    /// records went dormant; a move tier-1 rescues entirely stays quiet.
+    HeadMoveDormancy {
+        path: String,
+        /// The changelists whose records went dormant this refresh,
+        /// sorted — where the captured hunks may belong, for re-sorting
+        /// by hand.
+        changelists: Vec<String>,
+    },
+}
+
+/// The paths a HEAD move changed between the stored baseline and the
+/// current HEAD (ADR 0012) — computed by `refresh()`, entering the
+/// matcher as an explicit input like `active` and `now`. Tier-2 overlap
+/// inheritance is disabled for them: their records' HEAD-side coordinates
+/// no longer address the tree fresh hunks diff against.
+pub(crate) enum AffectedPaths {
+    /// HEAD is at the baseline (or no baseline exists yet — the one
+    /// silent adoption on pre-baseline state files).
+    None,
+    /// diff(baseline↔HEAD), paths only.
+    Some(BTreeSet<String>),
+    /// The baseline no longer resolves: nothing can prove any path
+    /// unmoved.
+    All,
+}
+
+impl AffectedPaths {
+    fn contains(&self, path: &str) -> bool {
+        match self {
+            AffectedPaths::None => false,
+            AffectedPaths::Some(paths) => paths.contains(path),
+            AffectedPaths::All => true,
+        }
+    }
 }
 
 pub(crate) struct MatchOutcome {
@@ -61,6 +99,7 @@ pub(crate) fn run(
     records: Vec<MembershipRecord>,
     active: Option<&str>,
     now_epoch_secs: u64,
+    affected: &AffectedPaths,
 ) -> MatchOutcome {
     let mut by_path: HashMap<String, Vec<MembershipRecord>> = HashMap::new();
     let mut path_order: Vec<String> = Vec::new();
@@ -79,7 +118,15 @@ pub(crate) fn run(
 
     for file in files.iter_mut() {
         let stored = by_path.remove(&file.path).unwrap_or_default();
-        match_file(file, stored, active, now_epoch_secs, &mut out);
+        let tier2_disabled = affected.contains(&file.path);
+        match_file(
+            file,
+            stored,
+            active,
+            now_epoch_secs,
+            tier2_disabled,
+            &mut out,
+        );
     }
 
     // Paths that vanished from the universe entirely: every record goes
@@ -103,6 +150,7 @@ fn match_file(
     stored: Vec<MembershipRecord>,
     active: Option<&str>,
     now_epoch_secs: u64,
+    tier2_disabled: bool,
     out: &mut MatchOutcome,
 ) {
     let anchors: Vec<Vec<String>> = file.hunks.iter().map(anchor_of).collect();
@@ -135,10 +183,27 @@ fn match_file(
         }
     }
 
+    // Whether any hunk fell through tier 1 while the guard was on — a
+    // capture under the disabled tier (ADR 0012).
+    let mut guarded_capture = false;
+
     // Tier 2: overlap inheritance on HEAD-side ranges, live records only
     // — dormant records never re-claim edited content (ADR 0002).
     for (i, hunk) in file.hunks.iter().enumerate() {
         if owners[i].is_some() {
+            continue;
+        }
+        if tier2_disabled {
+            // The ADR 0012 guard: this path's record coordinates address
+            // the old baseline, not the HEAD these hunks diff against, so
+            // overlap proves nothing. Capture to active; the untouched
+            // stale records go dormant below.
+            guarded_capture = true;
+            let owner = active.map(String::from);
+            owners[i] = Some(owner.clone());
+            if owner.is_some() {
+                fresh[i] = Some(record_for(&file.path, hunk, &anchors[i], owner));
+            }
             continue;
         }
         // Consumption is deferred to `superseded` so one record can
@@ -193,6 +258,25 @@ fn match_file(
         hunk.changelist = owner.clone().flatten();
     }
     out.records.extend(fresh.into_iter().flatten());
+
+    // One notice per path where the guard actually changed an outcome: a
+    // hunk captured under the disabled tier while records went dormant.
+    // Dormancy alone (a committed hunk's record) or a capture alone (a
+    // genuinely new hunk) reads the same with the guard off — quiet.
+    if guarded_capture {
+        let newly_dormant: BTreeSet<&String> = stored
+            .iter()
+            .enumerate()
+            .filter(|(j, record)| !consumed[*j] && !superseded[*j] && !record.is_dormant())
+            .filter_map(|(_, record)| record.changelist.as_ref())
+            .collect();
+        if !newly_dormant.is_empty() {
+            out.notices.push(Notice::HeadMoveDormancy {
+                path: file.path.clone(),
+                changelists: newly_dormant.into_iter().cloned().collect(),
+            });
+        }
+    }
 
     // Everything neither matched nor superseded vanished from this
     // path's diff: dormant, retained for exact-match revival.

@@ -57,6 +57,12 @@ pub(crate) struct State {
     /// schema-1 files readable.
     #[serde(default)]
     pub records: Vec<MembershipRecord>,
+    /// The baseline HEAD (ADR 0012): the commit whose tree record
+    /// coordinates address, stamped at each persisting refresh. `default`
+    /// keeps pre-baseline files readable; `None` adopts the current HEAD
+    /// on the next refresh, guard skipped once.
+    #[serde(default)]
+    pub baseline_head: Option<String>,
 }
 
 impl Default for State {
@@ -66,6 +72,7 @@ impl Default for State {
             active: None,
             changelists: Vec::new(),
             records: Vec::new(),
+            baseline_head: None,
         }
     }
 }
