@@ -1,5 +1,6 @@
 mod backend;
 mod diff;
+mod engine;
 mod error;
 mod git2_backend;
 mod matcher;
@@ -11,6 +12,7 @@ mod universe;
 
 pub use backend::GitBackend;
 pub use diff::{ChangeKind, DiffHunk, FileDiff, HunkLine, RepoDiffs};
+pub use engine::{Condition, Engine, EngineEvent};
 pub use error::Error;
 pub use matcher::Notice;
 pub use repo::Repo;

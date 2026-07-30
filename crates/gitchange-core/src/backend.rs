@@ -5,8 +5,9 @@ use crate::error::Error;
 
 /// The seam between core and any git implementation (ADR 0006). The git2
 /// adapter is the only implementor in v0.1; the planned shell-out fallback
-/// lives behind this same trait.
-pub trait GitBackend {
+/// lives behind this same trait. `Send` so the Engine's refresh worker can
+/// own a [`crate::Repo`] on its own thread (ADR 0005).
+pub trait GitBackend: Send {
     /// Both diffs the hunk universe is built from (ADR 0003):
     /// diff(HEAD↔worktree) including untracked content, and
     /// diff(HEAD↔index) — each against the empty tree when HEAD is unborn
@@ -17,6 +18,10 @@ pub trait GitBackend {
     /// under the private git dir, so linked worktrees get independent
     /// state for free.
     fn state_dir(&self) -> PathBuf;
+
+    /// The worktree root — what the Engine's watcher observes (ADR 0005).
+    /// `None` for a bare repository, which has no worktree to watch.
+    fn workdir(&self) -> Option<PathBuf>;
 
     /// The commit id HEAD resolves to, `None` on an unborn branch
     /// (ADR 0007) — the value the state file stamps as the baseline HEAD

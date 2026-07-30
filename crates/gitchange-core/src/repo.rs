@@ -25,6 +25,17 @@ impl Repo {
         })
     }
 
+    /// The per-worktree gitchange state directory — the Engine's
+    /// self-loop filter root (ADR 0005).
+    pub(crate) fn state_dir(&self) -> std::path::PathBuf {
+        self.backend.state_dir()
+    }
+
+    /// The worktree root the Engine watches; `None` for a bare repo.
+    pub(crate) fn workdir(&self) -> Option<std::path::PathBuf> {
+        self.backend.workdir()
+    }
+
     /// One blocking recompute pass producing a fresh snapshot: both
     /// diffs → hunk universe → matcher → persist records (ADR 0005).
     pub fn refresh(&self) -> Result<Snapshot, Error> {

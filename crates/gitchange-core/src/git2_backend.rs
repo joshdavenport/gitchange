@@ -75,6 +75,10 @@ impl GitBackend for Git2Backend {
         self.repo.path().join("gitchange")
     }
 
+    fn workdir(&self) -> Option<PathBuf> {
+        self.repo.workdir().map(Path::to_path_buf)
+    }
+
     fn head_oid(&self) -> Result<Option<String>, Error> {
         match self.repo.head() {
             Ok(head) => {
