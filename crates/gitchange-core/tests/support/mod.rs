@@ -134,6 +134,31 @@ impl RepoFixture {
         self
     }
 
+    /// Commit exactly what the index holds, worktree untouched — the
+    /// external-partial-commit simulation (`git commit` without `-a`).
+    #[allow(dead_code)]
+    pub fn commit_index(&self, message: &str) -> &Self {
+        let mut index = self.repo.index().unwrap();
+        // Reload from disk: staging may have gone through another handle.
+        index.read(false).unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = self.repo.find_tree(tree_id).unwrap();
+        let signature = self.repo.signature().unwrap();
+        let parent = self.repo.head().ok().and_then(|h| h.peel_to_commit().ok());
+        let parents: Vec<&git2::Commit> = parent.iter().collect();
+        self.repo
+            .commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                message,
+                &tree,
+                &parents,
+            )
+            .unwrap();
+        self
+    }
+
     /// Stage everything and commit it.
     pub fn commit_all(&self, message: &str) -> &Self {
         let mut index = self.repo.index().unwrap();
