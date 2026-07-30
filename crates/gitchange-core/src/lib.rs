@@ -1,4 +1,5 @@
 mod backend;
+mod commit;
 mod diff;
 mod engine;
 mod error;
@@ -10,7 +11,8 @@ mod state;
 mod state_file;
 mod universe;
 
-pub use backend::GitBackend;
+pub use backend::{CommitPathSpec, GitBackend, HunkHeader};
+pub use commit::{CommitOptions, CommitOutcome, CommitPayload, PayloadFile, PayloadHunk};
 pub use diff::{ChangeKind, DiffHunk, FileDiff, HunkLine, RepoDiffs};
 pub use engine::{Condition, Engine, EngineEvent};
 pub use error::Error;

@@ -28,6 +28,20 @@ pub enum Error {
     )]
     LockContention { path: PathBuf },
 
+    /// The commit payload is empty: the changelist has no staged hunks
+    /// (ADR 0004 — the frontend answers with the stage-all-and-commit
+    /// offer, never a silent auto-stage).
+    #[error("nothing staged to commit")]
+    NothingStaged,
+
+    /// `git commit` exited nonzero with nothing committed. Usually a
+    /// hook rejection (the dominant cause once gitchange builds the
+    /// index itself), though anything git refuses lands here too — an
+    /// empty message, a signing failure. `stderr` carries git's and the
+    /// hook's captured output either way (ADR 0004).
+    #[error("commit rejected:\n{stderr}")]
+    HookRejected { stderr: String },
+
     /// Non-UTF-8 paths are unsupported (ADR 0010): refresh fails loudly
     /// rather than persisting a lossy path that would break identity.
     #[error(

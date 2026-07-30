@@ -4,8 +4,9 @@
 //! refresh finds HEAD away from the stored baseline, tier-2 is disabled
 //! for the paths the move changed — stale live records go dormant, and
 //! anchor-broken hunks capture to active with a per-path notice. The
-//! own-commit half (commutation, issue 28) is still pending; residual-◑
-//! re-attachment across gitchange's own commits flips with it.
+//! own-commit half (commutation, issue 28) lives in `Repo::commit`'s
+//! record aftermath; `tests/commit.rs` pins the re-attachment these
+//! same scenarios keep when the commit is gitchange's own.
 
 mod support;
 

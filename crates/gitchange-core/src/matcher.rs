@@ -306,9 +306,15 @@ fn record_for(
 }
 
 /// The content anchor of a fresh hunk: its verbatim lines, origin
-/// included, exactly the shape records store.
-fn anchor_of(hunk: &Hunk) -> Vec<String> {
-    hunk.lines
+/// included, exactly the shape records store. Also how `commit()` keys
+/// records to the payload hunks it consumes (ADR 0004).
+pub(crate) fn anchor_of(hunk: &Hunk) -> Vec<String> {
+    anchor_lines(&hunk.lines)
+}
+
+/// Verbatim diff lines in the anchor shape records store.
+pub(crate) fn anchor_lines(lines: &[crate::diff::HunkLine]) -> Vec<String> {
+    lines
         .iter()
         .map(|line| format!("{}{}", line.origin, line.content))
         .collect()

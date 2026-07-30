@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use gitchange_core::{Hunk, Notice, Repo, Snapshot};
+use gitchange_core::{CommitOptions, CommitOutcome, Hunk, Notice, Repo, Snapshot};
 use support::RepoFixture;
 
 /// Repo-relative paths with file bytes — one tree state.
@@ -39,11 +39,17 @@ struct Case {
     /// Files rewritten after the snapshot, before the op — the
     /// validate-at-apply cases (moved hunks, staleness).
     after_snapshot_writes: Tree,
+    /// Changelists created (first becomes active) before the snapshot,
+    /// so every hunk captures to the first one — commit cases only.
+    changelists: Vec<&'static str>,
     op: Op,
     /// Expected index blob per path after the op; `None` = no entry.
     index: Vec<(&'static str, Option<Vec<u8>>)>,
     /// Expected index filemode per path (unix-only cases).
     index_modes: Vec<(&'static str, u32)>,
+    /// Expected HEAD blob per path after the op; `None` = absent from
+    /// the committed tree — commit cases only.
+    head: Vec<(&'static str, Option<Vec<u8>>)>,
     /// Paths expected in `StaleHunk` notices; empty = clean apply.
     stale: Vec<&'static str>,
 }
@@ -59,9 +65,11 @@ impl Case {
             worktree_removals: Vec::new(),
             worktree_exec: Vec::new(),
             after_snapshot_writes: Vec::new(),
+            changelists: Vec::new(),
             op,
             index: Vec::new(),
             index_modes: Vec::new(),
+            head: Vec::new(),
             stale: Vec::new(),
         }
     }
@@ -79,6 +87,8 @@ enum Op {
     },
     StageFile(&'static str),
     UnstageFile(&'static str),
+    /// Commit the changelist (`None` = unassigned) per ADR 0004.
+    Commit(Option<&'static str>),
 }
 
 /// Materialize the case into a fresh repo, run its op, assert the index.
@@ -109,6 +119,9 @@ fn run(case: Case) {
     }
 
     let repo = Repo::discover(fixture.path()).unwrap();
+    for name in &case.changelists {
+        repo.create_changelist(name).unwrap();
+    }
     let snapshot = repo.refresh().unwrap();
     for (path, bytes) in &case.after_snapshot_writes {
         fixture.write_bytes(path, bytes);
@@ -128,6 +141,18 @@ fn run(case: Case) {
         }
         Op::UnstageFile(path) => {
             repo.unstage_file(path).unwrap();
+            Vec::new()
+        }
+        Op::Commit(changelist) => {
+            let outcome = repo
+                .commit(
+                    *changelist,
+                    "corpus commit",
+                    &CommitOptions::default(),
+                    None,
+                )
+                .unwrap();
+            assert!(matches!(outcome, CommitOutcome::Committed { .. }));
             Vec::new()
         }
     };
@@ -154,10 +179,20 @@ fn run(case: Case) {
             "index mode of {path}"
         );
     }
+    for (path, expected) in &case.head {
+        assert_eq!(
+            fixture.head_bytes(path),
+            expected.clone(),
+            "HEAD content of {path}"
+        );
+    }
+    // Commit ops legitimately move HEAD, but the worktree is off-limits
+    // to every op in the corpus (ADR 0004: the commit builds a temp
+    // index and never touches the worktree).
     assert_eq!(
         worktree_state(fixture.path()),
         worktree_before,
-        "apply ops must never touch the worktree"
+        "ops must never touch the worktree"
     );
 }
 
@@ -779,5 +814,116 @@ line 9\nline 10\nline 11\nline 14\nline 15\nline 16\n"
             index: vec![("a.txt", Some(lf(9, &[])))],
             stale: vec!["a.txt"],
             ..Case::new(Op::StageHunk { path: "a.txt", hunk: 0 })
+        };
+
+    // ——— commit results (ADR 0004): HEAD gets exactly the payload,
+    // the live index and worktree stay byte-identical ———
+
+    commit_writes_only_the_staged_hunk_to_head:
+        Case {
+            base: vec![("a.txt", lf(16, &[]))],
+            stage_writes: vec![("a.txt", lf(16, &[(4, "EDIT four")]))],
+            worktree_writes: vec![("a.txt", lf(16, &[(4, "EDIT four"), (12, "EDIT twelve")]))],
+            changelists: vec!["cl"],
+            head: vec![("a.txt", Some(lf(16, &[(4, "EDIT four")])))],
+            index: vec![("a.txt", Some(lf(16, &[(4, "EDIT four")])))],
+            ..Case::new(Op::Commit(Some("cl")))
+        };
+
+    commit_keeps_crlf_endings_verbatim:
+        Case {
+            base: vec![("a.txt", crlf(9, &[]))],
+            stage_writes: vec![("a.txt", crlf(9, &[(5, "edited five")]))],
+            changelists: vec!["cl"],
+            head: vec![("a.txt", Some(crlf(9, &[(5, "edited five")])))],
+            index: vec![("a.txt", Some(crlf(9, &[(5, "edited five")])))],
+            ..Case::new(Op::Commit(Some("cl")))
+        };
+
+    commit_latin1_bytes_verbatim_without_trailing_newline:
+        Case {
+            base: vec![("latin1.txt", latin1_no_trailing_newline(9, &[]))],
+            stage_writes: vec![("latin1.txt", latin1_no_trailing_newline(9, &[(5, "edited")]))],
+            changelists: vec!["cl"],
+            head: vec![("latin1.txt", Some(latin1_no_trailing_newline(9, &[(5, "edited")])))],
+            index: vec![("latin1.txt", Some(latin1_no_trailing_newline(9, &[(5, "edited")])))],
+            ..Case::new(Op::Commit(Some("cl")))
+        };
+
+    commit_of_a_stale_hunk_commits_the_index_content:
+        Case {
+            base: vec![("a.txt", lf(9, &[]))],
+            // Staged then edited further: the ◑ hunk commits as-is —
+            // index content, not the worktree's.
+            stage_writes: vec![("a.txt", lf(9, &[(5, "five-staged")]))],
+            worktree_writes: vec![("a.txt", lf(9, &[(5, "five-final")]))],
+            changelists: vec!["cl"],
+            head: vec![("a.txt", Some(lf(9, &[(5, "five-staged")])))],
+            index: vec![("a.txt", Some(lf(9, &[(5, "five-staged")])))],
+            ..Case::new(Op::Commit(Some("cl")))
+        };
+
+    commit_of_an_index_only_hunk_commits_the_staged_content:
+        Case {
+            base: vec![("a.txt", lf(9, &[]))],
+            // Staged then reverted in the worktree: still committable.
+            stage_writes: vec![("a.txt", lf(9, &[(5, "five-staged")]))],
+            worktree_writes: vec![("a.txt", lf(9, &[]))],
+            changelists: vec!["cl"],
+            head: vec![("a.txt", Some(lf(9, &[(5, "five-staged")])))],
+            index: vec![("a.txt", Some(lf(9, &[(5, "five-staged")])))],
+            ..Case::new(Op::Commit(Some("cl")))
+        };
+
+    commit_a_staged_new_file:
+        Case {
+            base: vec![("keep.txt", b"keep\n".to_vec())],
+            stage_writes: vec![("new.txt", b"alpha\nbeta\n".to_vec())],
+            changelists: vec!["cl"],
+            head: vec![
+                ("new.txt", Some(b"alpha\nbeta\n".to_vec())),
+                ("keep.txt", Some(b"keep\n".to_vec())),
+            ],
+            index: vec![("new.txt", Some(b"alpha\nbeta\n".to_vec()))],
+            ..Case::new(Op::Commit(Some("cl")))
+        };
+
+    commit_a_staged_deletion_removes_the_path:
+        Case {
+            base: vec![("doomed.txt", b"gone\n".to_vec()), ("keep.txt", b"keep\n".to_vec())],
+            stage_removals: vec!["doomed.txt"],
+            worktree_removals: vec!["doomed.txt"],
+            changelists: vec!["cl"],
+            head: vec![
+                ("doomed.txt", None),
+                ("keep.txt", Some(b"keep\n".to_vec())),
+            ],
+            index: vec![("doomed.txt", None)],
+            ..Case::new(Op::Commit(Some("cl")))
+        };
+
+    commit_unassigned_without_any_changelists:
+        Case {
+            base: vec![("a.txt", lf(9, &[]))],
+            stage_writes: vec![("a.txt", lf(9, &[(5, "edited five")]))],
+            head: vec![("a.txt", Some(lf(9, &[(5, "edited five")])))],
+            index: vec![("a.txt", Some(lf(9, &[(5, "edited five")])))],
+            ..Case::new(Op::Commit(None))
+        };
+
+    // Adjacent staged hunks: committing the changelist carries both of
+    // its hunks; the unstaged one between them stays out of HEAD.
+    commit_two_staged_hunks_leaves_the_unstaged_one_out:
+        Case {
+            base: vec![("a.txt", lf(24, &[]))],
+            stage_writes: vec![("a.txt", lf(24, &[(4, "EDIT four"), (20, "EDIT twenty")]))],
+            worktree_writes: vec![(
+                "a.txt",
+                lf(24, &[(4, "EDIT four"), (12, "EDIT twelve"), (20, "EDIT twenty")]),
+            )],
+            changelists: vec!["cl"],
+            head: vec![("a.txt", Some(lf(24, &[(4, "EDIT four"), (20, "EDIT twenty")])))],
+            index: vec![("a.txt", Some(lf(24, &[(4, "EDIT four"), (20, "EDIT twenty")])))],
+            ..Case::new(Op::Commit(Some("cl")))
         };
 }

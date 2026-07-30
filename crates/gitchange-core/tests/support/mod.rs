@@ -27,6 +27,10 @@ impl RepoFixture {
             // `autocrlf=true` (git-for-Windows) would normalize the
             // corpus's byte-exact CRLF assertions away on checkin.
             config.set_bool("core.autocrlf", false).unwrap();
+            // The commit shell-out (ADR 0004) inherits real git config:
+            // pin the knobs a developer's global config could leak in.
+            config.set_bool("commit.gpgsign", false).unwrap();
+            config.set_str("core.hooksPath", ".git/hooks").unwrap();
         }
         Self { dir, repo }
     }
@@ -56,6 +60,58 @@ impl RepoFixture {
         }
         fs::write(path, content).unwrap();
         self
+    }
+
+    /// Install a git hook (e.g. `pre-commit`) with the given script body,
+    /// marked executable — the `with_hook` fixture ADR 0008 promised.
+    #[allow(dead_code)]
+    pub fn with_hook(&self, name: &str, script: &str) -> &Self {
+        let dir = self.repo.path().join("hooks");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        fs::write(&path, script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&path).unwrap().permissions();
+            perms.set_mode(perms.mode() | 0o755);
+            fs::set_permissions(&path, perms).unwrap();
+        }
+        self
+    }
+
+    /// HEAD tree's blob bytes for a repo-relative path, `None` when the
+    /// path (or HEAD) doesn't exist — commit-result ground truth.
+    #[allow(dead_code)]
+    pub fn head_bytes(&self, rel: &str) -> Option<Vec<u8>> {
+        let tree = self.repo.head().ok()?.peel_to_tree().ok()?;
+        let entry = tree.get_path(Path::new(rel)).ok()?;
+        let blob = self.repo.find_blob(entry.id()).unwrap();
+        Some(blob.content().to_vec())
+    }
+
+    /// The HEAD commit's message.
+    #[allow(dead_code)]
+    pub fn head_message(&self) -> String {
+        self.repo
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .message()
+            .unwrap()
+            .to_owned()
+    }
+
+    /// Number of commits reachable from HEAD; 0 on an unborn branch.
+    #[allow(dead_code)]
+    pub fn commit_count(&self) -> usize {
+        let Ok(head) = self.repo.head() else {
+            return 0;
+        };
+        let mut walk = self.repo.revwalk().unwrap();
+        walk.push(head.peel_to_commit().unwrap().id()).unwrap();
+        walk.count()
     }
 
     /// The current HEAD commit id, in the form the state file stores.

@@ -1,6 +1,9 @@
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
-use crate::backend::GitBackend;
+use crate::backend::{CommitPathSpec, GitBackend, HunkHeader};
+use crate::commit::CommitOptions;
 use crate::diff::{ChangeKind, DiffHunk, FileDiff, HunkLine, RepoDiffs};
 use crate::error::Error;
 
@@ -229,9 +232,150 @@ impl GitBackend for Git2Backend {
         }
         index.write().map_err(backend_error)
     }
+
+    fn commit_from_index_hunks(
+        &self,
+        payload: &[CommitPathSpec],
+        message: &str,
+        options: &CommitOptions,
+    ) -> Result<String, Error> {
+        // Temp files live under $GIT_DIR/gitchange/ so the Engine's
+        // self-loop filter drops their watcher events (ADR 0005).
+        let dir = self.state_dir();
+        fs::create_dir_all(&dir).map_err(io_error)?;
+        let pid = std::process::id();
+        let index_path = dir.join(format!("commit-index-{pid}.tmp"));
+        let message_path = dir.join(format!("commit-msg-{pid}.tmp"));
+        let result =
+            self.commit_via_temp_index(&index_path, &message_path, payload, message, options);
+        // Every exit discards the temp files — success or failure, the
+        // live index and worktree were never in play (ADR 0004).
+        let _ = fs::remove_file(&index_path);
+        let _ = fs::remove_file(&message_path);
+        result
+    }
 }
 
 impl Git2Backend {
+    fn commit_via_temp_index(
+        &self,
+        index_path: &Path,
+        message_path: &Path,
+        payload: &[CommitPathSpec],
+        message: &str,
+        options: &CommitOptions,
+    ) -> Result<String, Error> {
+        // A stale leftover (crashed earlier run) must not seed the index.
+        let _ = fs::remove_file(index_path);
+        // The empty tree stands in for an unborn HEAD (ADR 0007) — one
+        // base for the diff, the apply, and the temp index alike.
+        let base_tree = match self.head_tree()? {
+            Some(tree) => tree,
+            None => {
+                let oid = self
+                    .repo
+                    .treebuilder(None)
+                    .and_then(|builder| builder.write())
+                    .map_err(backend_error)?;
+                self.repo.find_tree(oid).map_err(backend_error)?
+            }
+        };
+        let mut temp = git2::Index::open(index_path).map_err(backend_error)?;
+        temp.read_tree(&base_tree).map_err(backend_error)?;
+
+        for spec in payload {
+            // Same options as `diffs()` produced the payload headers
+            // from, so headers compare exactly.
+            let mut diff_options = git2::DiffOptions::new();
+            diff_options
+                .pathspec(&spec.path)
+                .disable_pathspec_match(true)
+                .include_typechange(true)
+                .ignore_submodules(true);
+            let diff = self
+                .repo
+                .diff_tree_to_index(Some(&base_tree), None, Some(&mut diff_options))
+                .map_err(backend_error)?;
+            // Every requested hunk must still exist in the live index:
+            // an index that moved since the payload was derived would
+            // otherwise commit a silent subset. Failing here changes
+            // nothing (ADR 0004) — the caller retries via its guards.
+            let fresh = diff_hunk_headers(&diff)?;
+            if let Some(missing) = spec.hunks.iter().find(|header| !fresh.contains(header)) {
+                return Err(Error::Backend(
+                    format!(
+                        "the index changed while committing ({} hunk at old line {}); retry",
+                        spec.path, missing.0
+                    )
+                    .into(),
+                ));
+            }
+            let headers = spec.hunks.clone();
+            let mut apply_options = git2::ApplyOptions::new();
+            apply_options.hunk_callback(move |hunk| {
+                hunk.as_ref()
+                    .is_some_and(|hunk| headers.contains(&hunk_header(hunk)))
+            });
+            // Postimage blobs land in the odb; the live index is never
+            // involved. Per-path applies keep header filtering
+            // unambiguous (headers are unique only within one file).
+            let applied = self
+                .repo
+                .apply_to_tree(&base_tree, &diff, Some(&mut apply_options))
+                .map_err(backend_error)?;
+            match applied.get_path(Path::new(&spec.path), 0) {
+                Some(entry) => temp.add(&entry).map_err(backend_error)?,
+                // The payload deletes the file.
+                None if temp.get_path(Path::new(&spec.path), 0).is_some() => {
+                    temp.remove_path(Path::new(&spec.path))
+                        .map_err(backend_error)?;
+                }
+                None => {}
+            }
+        }
+        temp.write().map_err(backend_error)?;
+
+        fs::write(message_path, message).map_err(io_error)?;
+        let workdir = self
+            .repo
+            .workdir()
+            .ok_or_else(|| Error::Backend("cannot commit in a bare repository".into()))?;
+        // Shell-out is forced: git2's commit API does not run hooks
+        // (ADR 0004). Discovery from the worktree resolves linked
+        // worktrees' git dirs the same way a user's `git commit` would.
+        let mut command = Command::new("git");
+        command
+            .current_dir(workdir)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env("GIT_INDEX_FILE", index_path)
+            .arg("commit")
+            .arg("-F")
+            .arg(message_path);
+        if options.no_verify {
+            command.arg("--no-verify");
+        }
+        if options.amend {
+            command.arg("--amend");
+        }
+        let output = command.output().map_err(io_error)?;
+        if !output.status.success() {
+            let mut stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            // Hooks write rejection reasons to either stream; surface
+            // both.
+            if !stdout.trim().is_empty() {
+                if !stderr.is_empty() {
+                    stderr.push('\n');
+                }
+                stderr.push_str(stdout.trim_end());
+            }
+            return Err(Error::HookRejected { stderr });
+        }
+        self.head_oid()?
+            .ok_or_else(|| Error::Backend("HEAD unresolved after commit".into()))
+    }
+
     /// Apply `diff` to the live index, keeping only hunks whose change
     /// core — the +/- lines, context skirts excluded — overlaps `target`
     /// on the diff's new side. Selection must ignore context because this
@@ -257,10 +401,6 @@ impl Git2Backend {
     }
 }
 
-/// A hunk's identity within one diff — headers are unique because hunks
-/// never overlap.
-type HunkHeader = (u32, u32, u32, u32);
-
 fn hunk_header(hunk: &git2::DiffHunk) -> HunkHeader {
     (
         hunk.old_start(),
@@ -268,6 +408,21 @@ fn hunk_header(hunk: &git2::DiffHunk) -> HunkHeader {
         hunk.new_start(),
         hunk.new_lines(),
     )
+}
+
+/// Every hunk header in `diff`, in diff order.
+fn diff_hunk_headers(diff: &git2::Diff) -> Result<Vec<HunkHeader>, Error> {
+    let mut headers = Vec::new();
+    for delta_index in 0..diff.deltas().len() {
+        let Some(patch) = git2::Patch::from_diff(diff, delta_index).map_err(backend_error)? else {
+            continue;
+        };
+        for hunk_index in 0..patch.num_hunks() {
+            let (hunk, _) = patch.hunk(hunk_index).map_err(backend_error)?;
+            headers.push(hunk_header(&hunk));
+        }
+    }
+    Ok(headers)
 }
 
 struct HunkCore {
@@ -449,5 +604,9 @@ fn change_kind(status: git2::Delta) -> Option<ChangeKind> {
 }
 
 fn backend_error(err: git2::Error) -> Error {
+    Error::Backend(Box::new(err))
+}
+
+fn io_error(err: std::io::Error) -> Error {
     Error::Backend(Box::new(err))
 }

@@ -1,7 +1,12 @@
 use std::path::PathBuf;
 
+use crate::commit::CommitOptions;
 use crate::diff::RepoDiffs;
 use crate::error::Error;
+
+/// A diff hunk's identity within one diff: (old_start, old_lines,
+/// new_start, new_lines). Unique per file because hunks never overlap.
+pub type HunkHeader = (u32, u32, u32, u32);
 
 /// The seam between core and any git implementation (ADR 0006). The git2
 /// adapter is the only implementor in v0.1; the planned shell-out fallback
@@ -53,4 +58,25 @@ pub trait GitBackend: Send {
     /// Set the whole index entry := HEAD's, `git reset -- <path>`
     /// semantics: drops the entry when HEAD doesn't have the path.
     fn unstage_path(&self, path: &str) -> Result<(), Error>;
+
+    /// Commit `message` from a temporary index — HEAD's tree plus the
+    /// named diff(HEAD↔index) hunks per path — via a native `git commit`
+    /// shell-out with `GIT_INDEX_FILE`, so hooks run and see the true
+    /// content (ADR 0004). The live index and worktree are never
+    /// touched; every failure discards the temp file and changes
+    /// nothing. Returns the new HEAD commit id.
+    fn commit_from_index_hunks(
+        &self,
+        payload: &[CommitPathSpec],
+        message: &str,
+        options: &CommitOptions,
+    ) -> Result<String, Error>;
+}
+
+/// One path's share of a commit payload: which diff(HEAD↔index) hunks
+/// the temporary index carries.
+#[derive(Debug, Clone)]
+pub struct CommitPathSpec {
+    pub path: String,
+    pub hunks: Vec<HunkHeader>,
 }

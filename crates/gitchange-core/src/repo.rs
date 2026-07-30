@@ -1,7 +1,8 @@
 use std::path::Path;
 
-use crate::backend::GitBackend;
-use crate::diff::ChangeKind;
+use crate::backend::{CommitPathSpec, GitBackend};
+use crate::commit::{self, CommitOptions, CommitOutcome, CommitPayload};
+use crate::diff::{ChangeKind, FileDiff};
 use crate::error::Error;
 use crate::git2_backend::Git2Backend;
 use crate::matcher::{self, Notice};
@@ -39,12 +40,22 @@ impl Repo {
     /// One blocking recompute pass producing a fresh snapshot: both
     /// diffs → hunk universe → matcher → persist records (ADR 0005).
     pub fn refresh(&self) -> Result<Snapshot, Error> {
+        Ok(self.refresh_capturing_index()?.0)
+    }
+
+    /// [`Repo::refresh`], also handing back the diff(HEAD↔index) the
+    /// universe was built from — the commit payload's raw material
+    /// (ADR 0004), captured here so payload and snapshot describe the
+    /// same instant.
+    fn refresh_capturing_index(&self) -> Result<(Snapshot, Vec<FileDiff>), Error> {
         // HEAD is read before the diffs: should a commit land in between,
         // the stale stamp trips the guard on the next refresh — loud,
         // where the opposite order would stamp coordinates as newer than
         // they are, silently.
         let head = self.backend.head_oid()?;
-        let mut files = universe::build(self.backend.diffs()?);
+        let diffs = self.backend.diffs()?;
+        let index_diff = diffs.index.clone();
+        let mut files = universe::build(diffs);
         // Reads take no lock: writers replace the file atomically, so a
         // read sees either the old or the new state, never a torn one.
         let dir = self.backend.state_dir();
@@ -84,12 +95,15 @@ impl Repo {
             current.orphan_records_of_unknown_changelists();
             state_file::save(&dir, &current)?;
         }
-        Ok(Snapshot {
-            files,
-            changelists: state.changelists,
-            active: state.active,
-            notices: outcome.notices,
-        })
+        Ok((
+            Snapshot {
+                files,
+                changelists: state.changelists,
+                active: state.active,
+                notices: outcome.notices,
+            },
+            index_diff,
+        ))
     }
 
     /// The ADR 0012 affected-path set for this refresh: empty while HEAD
@@ -174,6 +188,104 @@ impl Repo {
         self.backend.unstage_path(path)
     }
 
+    /// The payload committing `changelist` (`None` = unassigned) would
+    /// carry right now, behind a synchronous refresh — what the confirm
+    /// flow shows and what [`Repo::commit`] later compares against for
+    /// drift (ADR 0004's freshness guard).
+    pub fn commit_payload(&self, changelist: Option<&str>) -> Result<CommitPayload, Error> {
+        let (snapshot, index_diff) = self.refresh_capturing_index()?;
+        validate_changelist(&snapshot, changelist)?;
+        Ok(commit::plan(&snapshot.files, &index_diff, changelist).payload)
+    }
+
+    /// Commit `changelist`'s staged hunks (ADR 0004): a temporary index
+    /// built as HEAD's tree plus only this payload, committed via a
+    /// native `git commit` so hooks run — the live index and worktree
+    /// are never touched, and any failure changes nothing. On success,
+    /// one locked state update runs the ADR 0012 aftermath: consumed
+    /// records removed, retained `◑` records rewritten against the new
+    /// HEAD, surviving same-file records commuted, and the new baseline
+    /// HEAD stamped so the external-move guard never arms for an own
+    /// commit. A full refresh should follow; this method leaves the
+    /// state file consistent for it.
+    ///
+    /// `expected` is a payload from [`Repo::commit_payload`]: when the
+    /// synchronous refresh finds the live payload differs, nothing is
+    /// committed and [`CommitOutcome::Drifted`] returns the fresh
+    /// payload for re-confirmation.
+    pub fn commit(
+        &self,
+        changelist: Option<&str>,
+        message: &str,
+        options: &CommitOptions,
+        expected: Option<&CommitPayload>,
+    ) -> Result<CommitOutcome, Error> {
+        let (snapshot, index_diff) = self.refresh_capturing_index()?;
+        validate_changelist(&snapshot, changelist)?;
+        let plan = commit::plan(&snapshot.files, &index_diff, changelist);
+        if plan.payload.is_empty() {
+            return Err(Error::NothingStaged);
+        }
+        if let Some(expected) = expected
+            && *expected != plan.payload
+        {
+            return Ok(CommitOutcome::Drifted {
+                payload: plan.payload,
+            });
+        }
+
+        let specs: Vec<CommitPathSpec> = plan
+            .paths
+            .iter()
+            .map(|path| CommitPathSpec {
+                path: path.path.clone(),
+                hunks: path.committed.clone(),
+            })
+            .collect();
+        let oid = self
+            .backend
+            .commit_from_index_hunks(&specs, message, options)?;
+
+        let dir = self.backend.state_dir();
+        let _lock = state_file::lock(&dir)?;
+        // The residual worktree diff against the new HEAD — what retained
+        // `◑` records are rewritten from (ADR 0012): the exact hunks the
+        // next refresh will try to re-attach. Captured under the lock so
+        // no concurrent state write can interleave between the capture
+        // and the aftermath it feeds; the hold stays short (one diff).
+        let residual = self.backend.diffs()?.worktree;
+        let mut state = state_file::load(&dir)?;
+        // A changelist-less, record-less repo has nothing to commute and
+        // must not grow a state file just to hold a baseline stamp.
+        if state != State::default() {
+            commit::apply_aftermath(&mut state, &plan.paths, &residual);
+            state.baseline_head = Some(oid.clone());
+            state.orphan_records_of_unknown_changelists();
+            state_file::save(&dir, &state)?;
+        }
+        Ok(CommitOutcome::Committed { oid })
+    }
+
+    /// The bulk align op (ADR 0004): set index := worktree for each of
+    /// the changelist's staged-stale hunks — re-staging edited `◑`
+    /// hunks, discarding index-only ones — so a follow-up commit carries
+    /// what the worktree shows. Fail-soft per hunk like
+    /// [`Repo::stage_hunk`]; returns any stale-hunk notices.
+    pub fn align(&self, changelist: Option<&str>) -> Result<Vec<Notice>, Error> {
+        let snapshot = self.refresh()?;
+        validate_changelist(&snapshot, changelist)?;
+        let mut notices = Vec::new();
+        for file in &snapshot.files {
+            for hunk in &file.hunks {
+                if hunk.changelist.as_deref() == changelist && hunk.stage == HunkStage::StagedStale
+                {
+                    notices.extend(self.stage_hunk(&file.path, hunk)?);
+                }
+            }
+        }
+        Ok(notices)
+    }
+
     /// Create a changelist. The first one created becomes active.
     pub fn create_changelist(&self, name: &str) -> Result<(), Error> {
         self.update_state(|state| state.create(name))
@@ -207,6 +319,17 @@ impl Repo {
         mutate(&mut state)?;
         state_file::save(&dir, &state)
     }
+}
+
+/// A named changelist must exist to be committed or aligned; `None`
+/// (unassigned) always exists.
+fn validate_changelist(snapshot: &Snapshot, changelist: Option<&str>) -> Result<(), Error> {
+    if let Some(name) = changelist
+        && !snapshot.changelists.iter().any(|cl| cl.name == name)
+    {
+        return Err(Error::UnknownChangelist { name: name.into() });
+    }
+    Ok(())
 }
 
 /// Validate-at-apply (ADR 0005): find the live hunk whose verbatim lines
