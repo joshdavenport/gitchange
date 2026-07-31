@@ -9,7 +9,9 @@ use gitchange_core::{
     ChangeKind, ChangedFile, Changelist, CommitInfo, GitOperation, Head, Hunk, HunkLine, HunkStage,
     Snapshot,
 };
+use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::style::Color;
 use ratatui::{Terminal, backend::TestBackend};
 
 use gitchange_tui::app::{App, INDICATOR_DELAY, Panel, Severity};
@@ -82,12 +84,16 @@ fn snapshot() -> Snapshot {
     }
 }
 
-fn render(app: &App) -> String {
+fn render_buffer(app: &App) -> Buffer {
     let mut terminal = Terminal::new(TestBackend::new(140, 40)).unwrap();
     terminal
         .draw(|frame| ui::draw(frame, app, &Theme::default(), Instant::now()))
         .unwrap();
-    let buffer = terminal.backend().buffer().clone();
+    terminal.backend().buffer().clone()
+}
+
+fn render(app: &App) -> String {
+    let buffer = render_buffer(app);
     let mut text = String::new();
     for y in 0..buffer.area.height {
         for x in 0..buffer.area.width {
@@ -96,6 +102,54 @@ fn render(app: &App) -> String {
         text.push('\n');
     }
     text
+}
+
+/// The (x, y) of the first occurrence of `needle` in the buffer.
+fn find_text(buffer: &Buffer, needle: &str) -> (u16, u16) {
+    for y in 0..buffer.area.height {
+        let symbols: Vec<&str> = (0..buffer.area.width)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect();
+        if let Some(byte) = symbols.concat().find(needle) {
+            let mut offset = 0;
+            for (x, symbol) in symbols.iter().enumerate() {
+                if offset == byte {
+                    return (x as u16, y);
+                }
+                offset += symbol.len();
+            }
+        }
+    }
+    panic!("text {needle:?} not found in buffer");
+}
+
+/// The x of the first `│` border cell at/right of `from` on row `y` —
+/// the panel edge a row tint must stop short of.
+fn border_right_of(buffer: &Buffer, from: u16, y: u16) -> u16 {
+    (from..buffer.area.width)
+        .find(|&x| buffer[(x, y)].symbol() == "│")
+        .unwrap_or_else(|| panic!("no │ border right of ({from},{y})"))
+}
+
+fn bg_at(buffer: &Buffer, x: u16, y: u16) -> Color {
+    buffer[(x, y)].bg
+}
+
+fn fg_at(buffer: &Buffer, x: u16, y: u16) -> Color {
+    buffer[(x, y)].fg
+}
+
+/// Assert every cell in `x_start..x_end` on row `y` carries `bg` —
+/// pass `Color::Reset` to assert the absence of a tint.
+fn assert_bg_span(buffer: &Buffer, y: u16, x_start: u16, x_end: u16, bg: Color) {
+    for x in x_start..x_end {
+        assert_eq!(
+            bg_at(buffer, x, y),
+            bg,
+            "cell ({x},{y}) {:?} bg",
+            buffer[(x, y)].symbol()
+        );
+    }
 }
 
 fn key(code: KeyCode) -> KeyEvent {
@@ -393,6 +447,86 @@ fn the_drift_reconfirm_keeps_the_message_and_shows_was_now() {
     assert!(text.contains("message (kept)"));
     assert!(text.contains("fix: x"));
     assert!(text.contains("commit updated payload"));
+}
+
+// ── full-width selection tints (issue #45) ──────────────────────────
+
+#[test]
+fn the_selected_files_row_tint_spans_the_full_inner_width() {
+    let theme = Theme::default();
+    let mut app = App::new("repo");
+    app.apply_snapshot(snapshot());
+    let buffer = render_buffer(&app);
+
+    // The initially selected file row (print.css, under 'fixes').
+    let (x, y) = find_text(&buffer, "src/print.css 1/2");
+    let border = border_right_of(&buffer, x, y);
+    // From the inner left edge past the text's end up to the border.
+    assert_bg_span(&buffer, y, 1, border, theme.colors.selection);
+    assert_eq!(bg_at(&buffer, border, y), Color::Reset, "border stays untinted");
+}
+
+#[test]
+fn a_non_selected_files_row_carries_no_tint() {
+    let mut app = App::new("repo");
+    app.apply_snapshot(snapshot());
+    let buffer = render_buffer(&app);
+
+    let (x, y) = find_text(&buffer, "src/nav.astro");
+    let border = border_right_of(&buffer, x, y);
+    assert_bg_span(&buffer, y, 1, border, Color::Reset);
+}
+
+#[test]
+fn the_hunk_mode_selection_tint_spans_the_full_inner_width() {
+    let theme = Theme::default();
+    let mut app = App::new("repo");
+    app.apply_snapshot(snapshot());
+    app.on_key(key(KeyCode::Char('3')));
+    app.on_key(key(KeyCode::Enter)); // hunk mode, hunk 1 of print.css
+    let buffer = render_buffer(&app);
+
+    // Both the selected hunk's header and its content rows tint.
+    for needle in ["@@ -14", "+added at 14"] {
+        let (x, y) = find_text(&buffer, needle);
+        let border = border_right_of(&buffer, x, y);
+        assert_bg_span(&buffer, y, x, border, theme.colors.selection);
+        assert_eq!(bg_at(&buffer, border, y), Color::Reset, "border stays untinted");
+    }
+    // The unselected hunk does not.
+    let (x, y) = find_text(&buffer, "+added at 63");
+    let border = border_right_of(&buffer, x, y);
+    assert_bg_span(&buffer, y, x, border, Color::Reset);
+}
+
+#[test]
+fn the_pin_banner_tint_spans_the_full_inner_width() {
+    let theme = Theme::default();
+    let mut app = App::new("repo");
+    app.apply_snapshot(snapshot());
+    app.on_watcher_degraded();
+    let buffer = render_buffer(&app);
+
+    let (x, y) = find_text(&buffer, "▲ watcher unavailable");
+    let border = border_right_of(&buffer, x, y);
+    assert_bg_span(&buffer, y, x, border, theme.colors.selection);
+    assert_eq!(fg_at(&buffer, x, y), theme.colors.warn, "banner keeps its warn fg");
+    assert_eq!(bg_at(&buffer, border, y), Color::Reset, "border stays untinted");
+}
+
+#[test]
+fn the_move_popup_selection_tint_spans_the_popup_inner_width() {
+    let theme = Theme::default();
+    let mut app = App::new("repo");
+    app.apply_snapshot(snapshot());
+    app.on_key(key(KeyCode::Char('3')));
+    app.on_key(key(KeyCode::Char('m')));
+    let buffer = render_buffer(&app);
+
+    let (x, y) = find_text(&buffer, "fixes (active)");
+    let border = border_right_of(&buffer, x, y);
+    assert_bg_span(&buffer, y, x, border, theme.colors.selection);
+    assert_eq!(bg_at(&buffer, border, y), Color::Reset, "border stays untinted");
 }
 
 #[test]

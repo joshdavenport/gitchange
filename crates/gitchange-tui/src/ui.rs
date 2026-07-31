@@ -128,7 +128,25 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     frame.render_widget(Paragraph::new(line).block(block), area);
 }
 
+/// Pad a row with trailing spaces to the panel's inner `width` (chars,
+/// saturating): Paragraph only paints cells that carry a symbol, so a
+/// row-level background would otherwise stop at the text's ragged edge.
+fn fill_width(mut line: Line<'static>, width: usize) -> Line<'static> {
+    let pad = width.saturating_sub(line.width());
+    if pad > 0 {
+        line.push_span(Span::raw(" ".repeat(pad)));
+    }
+    line
+}
+
+/// The selected-row treatment every panel shares: the selection
+/// background across the full inner `width`.
+fn select_row(line: Line<'static>, width: usize, theme: &Theme) -> Line<'static> {
+    fill_width(line, width).style(Style::new().bg(theme.colors.selection))
+}
+
 fn draw_changelists(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
+    let width = area.width.saturating_sub(2) as usize;
     let rows = app.changelist_rows();
     let lines: Vec<Line> = rows
         .iter()
@@ -158,11 +176,12 @@ fn draw_changelists(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                 ],
             };
             spans.push(Span::styled(format!(" ({})", row.count), theme.colors.dim));
-            let mut line = Line::from(spans);
+            let line = Line::from(spans);
             if index == app.changelist_row {
-                line = line.style(Style::new().bg(theme.colors.selection));
+                select_row(line, width, theme)
+            } else {
+                line
             }
-            line
         })
         .collect();
     let count = format!("{} of {}", app.changelist_row + 1, rows.len());
@@ -178,6 +197,7 @@ fn draw_changelists(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 }
 
 fn draw_files(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
+    let width = area.width.saturating_sub(2) as usize;
     let rows = app.files_rows();
     let mut selected_row = 0;
     let lines: Vec<Line> = rows
@@ -235,11 +255,12 @@ fn draw_files(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                     spans.push(Span::raw(entry.path.clone()));
                     spans.push(Span::styled(format!(" {staged}/{total}"), theme.colors.dim));
                 }
-                let mut line = Line::from(spans);
+                let line = Line::from(spans);
                 if selected {
-                    line = line.style(Style::new().bg(theme.colors.selection));
+                    select_row(line, width, theme)
+                } else {
+                    line
                 }
-                line
             }
         })
         .collect();
@@ -257,6 +278,7 @@ fn draw_files(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 }
 
 fn draw_commits(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
+    let width = area.width.saturating_sub(2) as usize;
     let commits = app
         .snapshot
         .as_ref()
@@ -266,15 +288,16 @@ fn draw_commits(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         .iter()
         .enumerate()
         .map(|(index, commit)| {
-            let mut line = Line::from(vec![
+            let line = Line::from(vec![
                 Span::styled(commit.short_id.clone(), theme.colors.branch),
                 Span::styled(format!(" {} ", initials(&commit.author)), theme.colors.dim),
                 Span::raw(commit.summary.clone()),
             ]);
             if index == app.commit_row {
-                line = line.style(Style::new().bg(theme.colors.selection));
+                select_row(line, width, theme)
+            } else {
+                line
             }
-            line
         })
         .collect();
     let count = if commits.is_empty() {
@@ -353,7 +376,7 @@ fn render_diff_line(line: DiffLine, theme: &Theme, width: usize) -> Line<'static
                     Style::new().fg(tag_color(tag.unassigned, tag.dim, theme)),
                 ));
             }
-            decorate(Line::from(spans), foreign, selected, theme)
+            decorate(Line::from(spans), foreign, selected, width, theme)
         }
         DiffLine::Content {
             origin,
@@ -372,6 +395,7 @@ fn render_diff_line(line: DiffLine, theme: &Theme, width: usize) -> Line<'static
                 Line::styled(format!("{origin}{text}"), style),
                 foreign,
                 selected,
+                width,
                 theme,
             )
         }
@@ -394,12 +418,19 @@ fn tag_color(unassigned: bool, dim: bool, theme: &Theme) -> ratatui::style::Colo
 /// prototype's ~45% opacity — terminal cells can't blend), the hunk-mode
 /// selection gets the selection background (the prototype's outline has
 /// no terminal equivalent).
-fn decorate(line: Line<'static>, foreign: bool, selected: bool, theme: &Theme) -> Line<'static> {
+fn decorate(
+    mut line: Line<'static>,
+    foreign: bool,
+    selected: bool,
+    width: usize,
+    theme: &Theme,
+) -> Line<'static> {
     let mut style = Style::new();
     if foreign {
         style = style.add_modifier(Modifier::DIM);
     }
     if selected {
+        line = fill_width(line, width);
         style = style.bg(theme.colors.selection);
     }
     line.style(style)
@@ -420,11 +451,14 @@ fn draw_log(frame: &mut Frame, area: Rect, app: &App, pins: &[String], theme: &T
         let pin_lines: Vec<Line> = pins
             .iter()
             .map(|pin| {
-                Line::styled(
-                    format!("{} {pin}", theme.glyphs.pin),
-                    Style::new()
-                        .fg(theme.colors.warn)
-                        .bg(theme.colors.selection),
+                fill_width(
+                    Line::styled(
+                        format!("{} {pin}", theme.glyphs.pin),
+                        Style::new()
+                            .fg(theme.colors.warn)
+                            .bg(theme.colors.selection),
+                    ),
+                    pin_area.width as usize,
                 )
             })
             .collect();
@@ -662,8 +696,9 @@ fn draw_overlay(frame: &mut Frame, area: Rect, app: &App, overlay: &Overlay, the
                 Line::styled(app.move_description(payload), theme.colors.dim),
                 Line::raw(""),
             ];
+            let mut selected_line = None;
             for (index, move_row) in rows.iter().enumerate() {
-                let mut line = match move_row {
+                let line = match move_row {
                     MoveRow::Changelist { name, active } => {
                         let mut spans = vec![
                             Span::raw("  "),
@@ -680,20 +715,26 @@ fn draw_overlay(frame: &mut Frame, area: Rect, app: &App, overlay: &Overlay, the
                         Span::raw(" create new changelist…"),
                     ]),
                 };
-                if index == selected {
-                    line = line.style(Style::new().bg(theme.colors.selection));
-                }
                 if matches!(move_row, MoveRow::CreateNew) {
                     lines.push(Line::styled(
                         "─".repeat(30),
                         Style::new().fg(theme.colors.border),
                     ));
                 }
+                if index == selected {
+                    selected_line = Some(lines.len());
+                }
                 lines.push(line);
             }
             lines.push(Line::raw(""));
             lines.push(modal_hints("move", theme));
             let width = (lines.iter().map(Line::width).max().unwrap_or(0) as u16 + 4).max(40);
+            // The popup's width follows its widest row, so the selected
+            // row can only be padded to the inner width once it's known.
+            if let Some(index) = selected_line {
+                let line = std::mem::take(&mut lines[index]);
+                lines[index] = select_row(line, width.saturating_sub(2) as usize, theme);
+            }
             let popup = centered(area, width, lines.len() as u16 + 2);
             frame.render_widget(Clear, popup);
             frame.render_widget(
