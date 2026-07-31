@@ -7,9 +7,9 @@
 //! is ADR 0001's "shift by preceding matched hunks' deltas" carried out
 //! exactly — old_start *is* new_start minus the preceding deltas.
 
-use std::collections::BTreeSet;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use crate::diff::ChangeKind;
 use crate::state::MembershipRecord;
 use crate::universe::{ChangedFile, Hunk};
 
@@ -44,6 +44,24 @@ pub enum Notice {
         /// Line the requested hunk started at when the snapshot was
         /// taken — worktree-side, or index-side for index-only hunks.
         new_start: u32,
+    },
+    /// A genuinely new hunk was captured by the active changelist — the
+    /// routine automatic membership decision (ADR 0001/0007). Severity
+    /// is the presentation layer's to assign.
+    AutoCaptured {
+        path: String,
+        /// Worktree-side line the hunk starts at.
+        new_start: u32,
+        /// The active changelist that captured it.
+        changelist: String,
+    },
+    /// Dormant records revived by exact anchor match this refresh
+    /// (ADR 0002) — "restored 3 hunks to api-refactor". One notice per
+    /// (path, changelist); `None` is unassigned.
+    DormantRevival {
+        path: String,
+        changelist: Option<String>,
+        hunks: usize,
     },
     /// An external HEAD move stranded this path's record coordinates
     /// (ADR 0012): with tier-2 disabled its anchor-broken hunks captured
@@ -118,6 +136,16 @@ pub(crate) fn run(
 
     for file in files.iter_mut() {
         let stored = by_path.remove(&file.path).unwrap_or_default();
+        // Quarantine (ADR 0007): an unmerged path's records freeze —
+        // passed through verbatim, no matching, no dormancy clock.
+        // Post-resolution content rarely matches pre-merge content, so
+        // letting them go dormant would strand the user's sorting; they
+        // re-enter normal matching when the file leaves the unmerged
+        // state.
+        if file.kind == ChangeKind::Conflicted {
+            out.records.extend(stored);
+            continue;
+        }
         let tier2_disabled = affected.contains(&file.path);
         match_file(
             file,
@@ -166,6 +194,9 @@ fn match_file(
 
     // Tier 1: exact content-anchor match — live records first, then
     // dormant (revival). Position-independent: catches moved hunks.
+    // Revivals are automatic membership decisions (ADR 0007): counted
+    // per reviving changelist and noticed below.
+    let mut revived: BTreeMap<Option<String>, usize> = BTreeMap::new();
     for pass_dormant in [false, true] {
         for (i, hunk) in file.hunks.iter().enumerate() {
             if owners[i].is_some() {
@@ -178,9 +209,19 @@ fn match_file(
                 let owner = record.changelist.clone();
                 consumed[j] = true;
                 owners[i] = Some(owner.clone());
+                if pass_dormant {
+                    *revived.entry(owner.clone()).or_default() += 1;
+                }
                 fresh[i] = Some(record_for(&file.path, hunk, &anchors[i], owner));
             }
         }
+    }
+    for (changelist, hunks) in revived {
+        out.notices.push(Notice::DormantRevival {
+            path: file.path.clone(),
+            changelist,
+            hunks,
+        });
     }
 
     // Whether any hunk fell through tier 1 while the guard was on — a
@@ -201,7 +242,15 @@ fn match_file(
             guarded_capture = true;
             let owner = active.map(String::from);
             owners[i] = Some(owner.clone());
-            if owner.is_some() {
+            if let Some(name) = &owner {
+                // A capture is a capture (ADR 0007): guarded ones notice
+                // like routine ones, on top of the per-path dormancy
+                // notice below when the guard cost something.
+                out.notices.push(Notice::AutoCaptured {
+                    path: file.path.clone(),
+                    new_start: hunk.new_start,
+                    changelist: name.clone(),
+                });
                 fresh[i] = Some(record_for(&file.path, hunk, &anchors[i], owner));
             }
             continue;
@@ -228,7 +277,16 @@ fn match_file(
         let owner = if overlapping.is_empty() {
             // Genuinely new: active changelist, or unassigned when no
             // changelists exist. No record for a hunk nobody claims —
-            // a changelist-less repo must not grow a state file.
+            // a changelist-less repo must not grow a state file. The
+            // capture is noticed (ADR 0007): automatic membership
+            // decisions are visible, never silent.
+            if let Some(name) = active {
+                out.notices.push(Notice::AutoCaptured {
+                    path: file.path.clone(),
+                    new_start: hunk.new_start,
+                    changelist: name.into(),
+                });
+            }
             active.map(String::from)
         } else if candidates.len() >= 2 {
             // Two or more changelists could claim it: active + notice —

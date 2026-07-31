@@ -6,7 +6,7 @@ use crate::backend::{CommitPathSpec, GitBackend, HunkHeader};
 use crate::commit::CommitOptions;
 use crate::diff::{ChangeKind, DiffHunk, FileDiff, HunkLine, RepoDiffs};
 use crate::error::Error;
-use crate::snapshot::{CommitInfo, Head};
+use crate::snapshot::{CommitInfo, GitOperation, Head};
 
 pub(crate) struct Git2Backend {
     repo: git2::Repository,
@@ -158,6 +158,21 @@ impl GitBackend for Git2Backend {
             });
         }
         Ok(commits)
+    }
+
+    fn operation(&self) -> Result<Option<GitOperation>, Error> {
+        use git2::RepositoryState as State;
+        Ok(match self.repo.state() {
+            State::Merge => Some(GitOperation::Merge),
+            State::Rebase | State::RebaseInteractive | State::RebaseMerge => {
+                Some(GitOperation::Rebase)
+            }
+            State::CherryPick | State::CherryPickSequence => Some(GitOperation::CherryPick),
+            State::Revert | State::RevertSequence => Some(GitOperation::Revert),
+            State::ApplyMailbox | State::ApplyMailboxOrRebase => Some(GitOperation::Am),
+            // Clean, and bisect — where committing is legitimate.
+            _ => None,
+        })
     }
 
     fn paths_changed_since(&self, baseline_oid: &str) -> Result<Option<Vec<String>>, Error> {

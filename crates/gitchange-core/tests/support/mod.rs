@@ -250,6 +250,78 @@ impl RepoFixture {
         self
     }
 
+    /// Create a branch named `name` at the current HEAD.
+    #[allow(dead_code)]
+    pub fn branch(&self, name: &str) -> &Self {
+        let commit = self.repo.head().unwrap().peel_to_commit().unwrap();
+        self.repo.branch(name, &commit, false).unwrap();
+        self
+    }
+
+    /// Check out branch `name`, force-updating the worktree.
+    #[allow(dead_code)]
+    pub fn checkout(&self, name: &str) -> &Self {
+        self.repo.set_head(&format!("refs/heads/{name}")).unwrap();
+        let mut options = git2::build::CheckoutBuilder::new();
+        options.force();
+        self.repo.checkout_head(Some(&mut options)).unwrap();
+        self
+    }
+
+    /// `git merge <name>` that must conflict: leaves MERGE_HEAD, a
+    /// conflicted index, and conflict markers in the worktree — the
+    /// mid-merge state ADR 0007's guard and quarantine act on.
+    #[allow(dead_code)]
+    pub fn merge_conflicting(&self, name: &str) -> &Self {
+        let branch = self
+            .repo
+            .find_branch(name, git2::BranchType::Local)
+            .unwrap();
+        let annotated = self
+            .repo
+            .reference_to_annotated_commit(branch.get())
+            .unwrap();
+        self.repo.merge(&[&annotated], None, None).unwrap();
+        assert!(
+            self.repo.index().unwrap().has_conflicts(),
+            "fixture merge must conflict"
+        );
+        self
+    }
+
+    /// Conjure stage-1/2/3 conflict entries for `rel` without any merge
+    /// in progress — the stash-pop-style unmerged state (quarantine with
+    /// no operation pin). The worktree content is left untouched.
+    #[allow(dead_code)]
+    pub fn add_index_conflict(&self, rel: &str) -> &Self {
+        let mut index = self.repo.index().unwrap();
+        index.read(false).unwrap();
+        let _ = index.remove(Path::new(rel), 0);
+        for stage in 1..=3u16 {
+            let content = format!("side {stage}\n");
+            let blob = self.repo.blob(content.as_bytes()).unwrap();
+            let entry = git2::IndexEntry {
+                ctime: git2::IndexTime::new(0, 0),
+                mtime: git2::IndexTime::new(0, 0),
+                dev: 0,
+                ino: 0,
+                mode: 0o100644,
+                uid: 0,
+                gid: 0,
+                file_size: content.len() as u32,
+                id: blob,
+                flags: stage << 12,
+                flags_extended: 0,
+                path: rel.as_bytes().to_vec(),
+            };
+            // `add` (unlike `add_frombuffer`) honours the stage bits.
+            index.add(&entry).unwrap();
+        }
+        index.write().unwrap();
+        assert!(index.has_conflicts(), "conjured conflict must register");
+        self
+    }
+
     /// Detach HEAD at the current commit, as `git checkout --detach`.
     #[allow(dead_code)]
     pub fn detach_head(&self) -> &Self {

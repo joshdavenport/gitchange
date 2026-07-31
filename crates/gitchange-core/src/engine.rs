@@ -430,6 +430,7 @@ mod tests {
                 name: "main".into(),
             },
             recent_commits: Vec::new(),
+            operation: None,
         }
     }
 

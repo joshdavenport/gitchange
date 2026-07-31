@@ -184,10 +184,17 @@ fn a_shifted_neighbour_goes_dormant_loudly_instead_of_misfiling() {
     );
     assert_eq!(
         snapshot.notices,
-        vec![Notice::HeadMoveDormancy {
-            path: "a.txt".into(),
-            changelists: vec!["one".into(), "two".into()],
-        }]
+        vec![
+            Notice::AutoCaptured {
+                path: "a.txt".into(),
+                new_start: 26,
+                changelist: "three".into(),
+            },
+            Notice::HeadMoveDormancy {
+                path: "a.txt".into(),
+                changelists: vec!["one".into(), "two".into()],
+            }
+        ]
     );
     assert_eq!(dormant_owners(&fixture), vec!["two", "one"]);
 }
@@ -240,10 +247,17 @@ fn a_shifted_neighbour_clear_of_stale_records_captures_to_active() {
     );
     assert_eq!(
         snapshot.notices,
-        vec![Notice::HeadMoveDormancy {
-            path: "a.txt".into(),
-            changelists: vec!["one".into(), "two".into()],
-        }],
+        vec![
+            Notice::AutoCaptured {
+                path: "a.txt".into(),
+                new_start: 46,
+                changelist: "three".into(),
+            },
+            Notice::HeadMoveDormancy {
+                path: "a.txt".into(),
+                changelists: vec!["one".into(), "two".into()],
+            }
+        ],
         "the loss is loud now: dormancies alongside a guarded capture"
     );
     assert_eq!(dormant_owners(&fixture), vec!["two", "one"]);
@@ -288,10 +302,17 @@ fn a_residual_staged_stale_hunk_goes_dormant_across_an_external_commit() {
     );
     assert_eq!(
         snapshot.notices,
-        vec![Notice::HeadMoveDormancy {
-            path: "a.txt".into(),
-            changelists: vec!["one".into()],
-        }]
+        vec![
+            Notice::AutoCaptured {
+                path: "a.txt".into(),
+                new_start: 7,
+                changelist: "two".into(),
+            },
+            Notice::HeadMoveDormancy {
+                path: "a.txt".into(),
+                changelists: vec!["one".into()],
+            }
+        ]
     );
     assert_eq!(dormant_owners(&fixture), vec!["one"]);
 }
@@ -339,10 +360,17 @@ fn a_residual_staged_stale_hunk_sheds_membership_when_the_commit_shifts_it() {
     );
     assert_eq!(
         snapshot.notices,
-        vec![Notice::HeadMoveDormancy {
-            path: "a.txt".into(),
-            changelists: vec!["one".into()],
-        }],
+        vec![
+            Notice::AutoCaptured {
+                path: "a.txt".into(),
+                new_start: 26,
+                changelist: "two".into(),
+            },
+            Notice::HeadMoveDormancy {
+                path: "a.txt".into(),
+                changelists: vec!["one".into()],
+            }
+        ],
         "but no longer silently"
     );
     // Both of "one"'s records linger dormant, revivable exact-only —
@@ -468,10 +496,17 @@ fn an_unresolvable_baseline_degrades_to_all_paths_affected() {
     assert_eq!(owners(&snapshot, "a.txt"), vec![Some("two".into())]);
     assert_eq!(
         snapshot.notices,
-        vec![Notice::HeadMoveDormancy {
-            path: "a.txt".into(),
-            changelists: vec!["one".into()],
-        }]
+        vec![
+            Notice::AutoCaptured {
+                path: "a.txt".into(),
+                new_start: 7,
+                changelist: "two".into(),
+            },
+            Notice::HeadMoveDormancy {
+                path: "a.txt".into(),
+                changelists: vec!["one".into()],
+            }
+        ]
     );
     assert_eq!(dormant_owners(&fixture), vec!["one"]);
     assert_eq!(

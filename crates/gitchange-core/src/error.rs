@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use crate::snapshot::GitOperation;
+
 /// Core's error contract. Variants are carved by what the caller must do
 /// about them (ADR 0006); `git2::Error` never appears here — backend
 /// failures are wrapped opaquely in [`Error::Backend`].
@@ -27,6 +29,12 @@ pub enum Error {
         path.display()
     )]
     LockContention { path: PathBuf },
+
+    /// A git operation is in progress (ADR 0007): the next commit would
+    /// conclude it with one changelist's content, so commit refuses.
+    /// Staging is never guarded by this.
+    #[error("{} in progress — conclude or abort it first", operation.label())]
+    OperationInProgress { operation: GitOperation },
 
     /// The commit payload is empty: the changelist has no staged hunks
     /// (ADR 0004 — the frontend answers with the stage-all-and-commit

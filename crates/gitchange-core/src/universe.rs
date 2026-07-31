@@ -135,10 +135,18 @@ fn merge_file(worktree: Option<FileDiff>, index: Option<FileDiff>) -> ChangedFil
         let either = worktree.as_ref().or(index.as_ref()).expect("one diff side");
         (either.path.clone(), either.binary)
     };
-    let hunks = pair_hunks(
-        worktree.map(|file| file.hunks).unwrap_or_default(),
-        index.map(|file| file.hunks).unwrap_or_default(),
-    );
+    // Quarantine (ADR 0007): the index side of an unmerged path reports
+    // `Conflicted` with no hunks, but the worktree side still diffs as
+    // `Modified` — conflict markers as content. Merged `Conflicted`
+    // drops every hunk so nothing matches or stages conflict text.
+    let hunks = if kind == ChangeKind::Conflicted {
+        Vec::new()
+    } else {
+        pair_hunks(
+            worktree.map(|file| file.hunks).unwrap_or_default(),
+            index.map(|file| file.hunks).unwrap_or_default(),
+        )
+    };
     ChangedFile {
         path,
         kind,

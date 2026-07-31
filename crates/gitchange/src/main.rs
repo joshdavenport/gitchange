@@ -51,6 +51,15 @@ fn status() -> anyhow::Result<()> {
     for notice in &snapshot.notices {
         eprintln!("gitchange: {}", notice_line(notice));
     }
+    // Quarantined unmerged paths first (ADR 0007) — outside gitchange's
+    // remit until resolved, so no stage mark or hunk counts.
+    let conflicted = snapshot.conflicted_files();
+    if !conflicted.is_empty() {
+        println!("  conflicts");
+        for file in conflicted {
+            println!("      U {} (resolve outside gitchange)", file.path);
+        }
+    }
     for changelist in &snapshot.changelists {
         let marker = if snapshot.active.as_deref() == Some(changelist.name.as_str()) {
             '*'
@@ -101,6 +110,27 @@ fn notice_line(notice: &Notice) -> String {
                     .collect::<Vec<_>>()
                     .join(", "),
             )
+        }
+        Notice::AutoCaptured {
+            path,
+            new_start,
+            changelist,
+        } => {
+            format!(
+                "notice: auto-captured hunk at {path}:{new_start} → active changelist '{changelist}'"
+            )
+        }
+        Notice::DormantRevival {
+            path,
+            changelist,
+            hunks,
+        } => {
+            let destination = match changelist {
+                Some(name) => format!("'{name}'"),
+                None => "unassigned".into(),
+            };
+            let plural = if *hunks == 1 { "" } else { "s" };
+            format!("notice: restored {hunks} hunk{plural} to {destination} ({path})")
         }
         Notice::StaleHunk { path, new_start } => {
             format!(

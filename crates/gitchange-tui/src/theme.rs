@@ -46,8 +46,13 @@ pub struct Glyphs {
     pub ok: char,
     /// The Status panel's repo → branch separator.
     pub arrow: char,
-    /// Error lines (the Log placeholder until #34).
-    pub error: char,
+    /// Log severities (ADR 0007): their own tokens, distinct from the
+    /// staging set and the unassigned marker.
+    pub log_info: char,
+    pub log_notice: char,
+    pub log_error: char,
+    /// The pinned-condition marker at the top of the Log panel.
+    pub pin: char,
     /// Diff hunk-tag delimiters — the terminal stand-in for the
     /// prototype's bordered pill.
     pub tag_open: char,
@@ -87,7 +92,10 @@ impl Default for Theme {
                 refreshing: '⟳',
                 ok: '✓',
                 arrow: '→',
-                error: '✗',
+                log_info: '·',
+                log_notice: '!',
+                log_error: '✗',
+                pin: '▲',
                 tag_open: '⟨',
                 tag_close: '⟩',
             },

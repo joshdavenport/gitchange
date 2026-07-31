@@ -61,6 +61,7 @@ impl Repo {
         // snapshot describes one instant.
         let head_info = self.backend.head()?;
         let recent_commits = self.backend.recent_commits(RECENT_COMMITS_LIMIT)?;
+        let operation = self.backend.operation()?;
         let diffs = self.backend.diffs()?;
         let index_diff = diffs.index.clone();
         let mut files = universe::build(diffs);
@@ -111,6 +112,7 @@ impl Repo {
                 notices: outcome.notices,
                 head: head_info,
                 recent_commits,
+                operation,
             },
             index_diff,
         ))
@@ -230,6 +232,14 @@ impl Repo {
         options: &CommitOptions,
         expected: Option<&CommitPayload>,
     ) -> Result<CommitOutcome, Error> {
+        // The operation guard (ADR 0007), ahead of everything: git
+        // honours MERGE_HEAD & co. even under GIT_INDEX_FILE, so this
+        // commit would conclude the operation with one changelist's
+        // payload. Checked in core, not just the TUI — every frontend
+        // gets the guard.
+        if let Some(operation) = self.backend.operation()? {
+            return Err(Error::OperationInProgress { operation });
+        }
         let (snapshot, index_diff) = self.refresh_capturing_index()?;
         validate_changelist(&snapshot, changelist)?;
         let plan = commit::plan(&snapshot.files, &index_diff, changelist);

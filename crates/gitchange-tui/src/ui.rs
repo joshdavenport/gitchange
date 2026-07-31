@@ -12,8 +12,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 use crate::app::{
-    App, CommitDraft, DiffLine, FilesRow, InputKind, MoveRow, Overlay, Panel, Scope, count_noun,
-    payload_counts,
+    App, CommitDraft, DiffLine, ErrorModal, FilesRow, InputKind, LogEntry, MoveRow, Overlay, Panel,
+    Scope, Severity, count_noun, payload_counts,
 };
 use crate::theme::Theme;
 
@@ -31,21 +31,29 @@ pub fn draw(frame: &mut Frame, app: &App, theme: &Theme, now: Instant) {
         Constraint::Percentage(26),
     ])
     .areas(left);
+    // ~20% of the right column at rest, growing one row per pin so
+    // conditions never eat history (prototype variant E).
+    let pins = app.pins();
+    let log_height = (u32::from(right.height) * 20 / 100).max(5) as u16 + pins.len() as u16;
     let [diff, log] =
-        Layout::vertical([Constraint::Min(5), Constraint::Percentage(20)]).areas(right);
+        Layout::vertical([Constraint::Min(5), Constraint::Length(log_height)]).areas(right);
 
     draw_status(frame, status, app, theme);
     draw_changelists(frame, changelists, app, theme);
     draw_files(frame, files, app, theme);
     draw_commits(frame, commits, app, theme);
     draw_diff(frame, diff, app, theme);
-    draw_log(frame, log, app, theme);
+    draw_log(frame, log, app, &pins, theme);
     draw_keybar(frame, keybar, app, theme, now);
     if let Some(overlay) = &app.overlay {
         draw_overlay(frame, main, app, overlay, theme);
     }
     if app.help_open {
         draw_help(frame, main, theme);
+    }
+    // Topmost: it swallows every key until dismissed (ADR 0007).
+    if let Some(modal) = &app.error_modal {
+        draw_error_modal(frame, main, modal, theme);
     }
 }
 
@@ -127,7 +135,9 @@ fn draw_changelists(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         .enumerate()
         .map(|(index, row)| {
             let mut spans = match &row.scope {
-                Scope::All => vec![
+                // Conflicts is a Files-row group, never a Changelists
+                // row; the arm exists for exhaustiveness.
+                Scope::All | Scope::Conflicts => vec![
                     Span::styled(format!("{} ", theme.glyphs.all), theme.colors.dim),
                     Span::raw("all"),
                 ],
@@ -178,9 +188,14 @@ fn draw_files(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                 label,
                 count,
                 unassigned,
+                conflicted,
                 active,
             } => {
-                let color = tag_color(*unassigned, false, theme);
+                let color = if *conflicted {
+                    theme.colors.conflicted
+                } else {
+                    tag_color(*unassigned, false, theme)
+                };
                 let mut text = format!("{} {label}", theme.glyphs.group);
                 if *active {
                     text.push_str(&format!(" {}", theme.glyphs.active));
@@ -206,12 +221,20 @@ fn draw_files(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                 if *indent {
                     spans.push(Span::raw("  "));
                 }
-                spans.push(stage_span(*stage, theme));
-                spans.push(Span::raw(" "));
-                spans.push(kind_span(*kind, theme));
-                spans.push(Span::raw(" "));
-                spans.push(Span::raw(entry.path.clone()));
-                spans.push(Span::styled(format!(" {staged}/{total}"), theme.colors.dim));
+                // A quarantined row has no staging to mark and no hunks
+                // to count (ADR 0007): just the U sigil and the path.
+                if *kind == ChangeKind::Conflicted {
+                    spans.push(kind_span(*kind, theme));
+                    spans.push(Span::raw(" "));
+                    spans.push(Span::raw(entry.path.clone()));
+                } else {
+                    spans.push(stage_span(*stage, theme));
+                    spans.push(Span::raw(" "));
+                    spans.push(kind_span(*kind, theme));
+                    spans.push(Span::raw(" "));
+                    spans.push(Span::raw(entry.path.clone()));
+                    spans.push(Span::styled(format!(" {staged}/{total}"), theme.colors.dim));
+                }
                 let mut line = Line::from(spans);
                 if selected {
                     line = line.style(Style::new().bg(theme.colors.selection));
@@ -298,6 +321,7 @@ fn render_diff_line(line: DiffLine, theme: &Theme, width: usize) -> Line<'static
     match line {
         DiffLine::FileHeader(text) => Line::styled(text, theme.colors.dim),
         DiffLine::Placeholder(text) => Line::styled(text, theme.colors.dim),
+        DiffLine::Conflict(text) => Line::styled(text, theme.colors.conflicted),
         DiffLine::Spacer => Line::raw(""),
         DiffLine::HunkHeader {
             text,
@@ -381,24 +405,105 @@ fn decorate(line: Line<'static>, foreign: bool, selected: bool, theme: &Theme) -
     line.style(style)
 }
 
-fn draw_log(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    // Placeholder: the Log panel's stream, pins, and severities are
-    // ticket #34; until then sync-op feedback renders as bare lines.
-    let mut lines = vec![Line::styled("(log arrives with #34)", theme.colors.dim)];
-    for line in &app.feedback {
-        lines.push(Line::styled(format!("! {line}"), theme.colors.warn));
-    }
-    if let Some(error) = &app.last_refresh_error {
-        lines.push(Line::styled(
-            format!("{} refresh failed — {error}", theme.glyphs.error),
-            theme.colors.deleted,
-        ));
-    }
-    // Keep the newest lines visible in the fixed-height placeholder.
-    let height = area.height.saturating_sub(2);
-    let scroll = keep_visible(lines.len().saturating_sub(1), height);
+/// The Log panel (ADR 0007): the tinted pin banner fixed at top —
+/// conditions that currently hold — over one chronological stream of
+/// events, newest kept visible.
+fn draw_log(frame: &mut Frame, area: Rect, app: &App, pins: &[String], theme: &Theme) {
     let block = panel_block(Panel::Log, "Log", None, None, app, theme);
-    frame.render_widget(Paragraph::new(lines).block(block).scroll((scroll, 0)), area);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let [pin_area, stream_area] =
+        Layout::vertical([Constraint::Length(pins.len() as u16), Constraint::Min(0)]).areas(inner);
+
+    if !pins.is_empty() {
+        let pin_lines: Vec<Line> = pins
+            .iter()
+            .map(|pin| {
+                Line::styled(
+                    format!("{} {pin}", theme.glyphs.pin),
+                    Style::new()
+                        .fg(theme.colors.warn)
+                        .bg(theme.colors.selection),
+                )
+            })
+            .collect();
+        frame.render_widget(Paragraph::new(pin_lines), pin_area);
+    }
+
+    let lines: Vec<Line> = app.log.iter().map(|entry| log_line(entry, theme)).collect();
+    // Stick to the newest entry, offset by the user's scrollback.
+    let bottom = lines.len().saturating_sub(1).saturating_sub(app.log_scroll);
+    let scroll = keep_visible(bottom, stream_area.height);
+    frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), stream_area);
+}
+
+/// One log event: severity glyph plus tinted text — `·` dim, `!` warn,
+/// `✗` error (ADR 0007's three fixed levels).
+fn log_line(entry: &LogEntry, theme: &Theme) -> Line<'static> {
+    let (glyph, color) = match entry.severity {
+        Severity::Info => (theme.glyphs.log_info, theme.colors.dim),
+        Severity::Notice => (theme.glyphs.log_notice, theme.colors.warn),
+        Severity::Error => (theme.glyphs.log_error, theme.colors.deleted),
+    };
+    Line::from(vec![
+        Span::styled(glyph.to_string(), Style::new().fg(color)),
+        Span::raw(" "),
+        Span::styled(entry.text.clone(), Style::new().fg(color)),
+    ])
+}
+
+/// The error-modal contract (ADR 0007): title names the operation, the
+/// detail renders verbatim and scrollable — hook stderr is the user's
+/// own tooling talking to them; truncating it would be hostile.
+fn draw_error_modal(frame: &mut Frame, area: Rect, modal: &ErrorModal, theme: &Theme) {
+    let detail: Vec<Line> = if modal.detail.trim().is_empty() {
+        vec![Line::styled("(no detail)", theme.colors.dim)]
+    } else {
+        modal
+            .detail
+            .lines()
+            .map(|line| Line::raw(line.to_owned()))
+            .collect()
+    };
+    let width = (detail.iter().map(Line::width).max().unwrap_or(0) as u16 + 4)
+        .clamp(48, area.width.max(48));
+    // Detail + hint row + blank + borders, capped to the frame.
+    let height = (detail.len() as u16 + 4).min(area.height.saturating_sub(2));
+    let popup = centered(area, width, height);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme.colors.deleted))
+        .title(Line::styled(
+            modal.title.clone(),
+            Style::new().fg(theme.colors.deleted),
+        ));
+    let inner = block.inner(popup);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block, popup);
+
+    let [detail_area, _, hints_area] = Layout::vertical([
+        Constraint::Min(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+
+    // Clamp the scroll so the tail never overscrolls into blank space.
+    let max_scroll = (detail.len() as u16).saturating_sub(detail_area.height);
+    let overflows = max_scroll > 0;
+    frame.render_widget(
+        Paragraph::new(detail).scroll((modal.scroll.min(max_scroll), 0)),
+        detail_area,
+    );
+    let hints: &[(&str, &str)] = if overflows {
+        &[("enter/esc", "dismiss"), ("j/k", "scroll")]
+    } else {
+        &[("enter/esc", "dismiss")]
+    };
+    frame.render_widget(Paragraph::new(key_hints_line(hints, theme)), hints_area);
 }
 
 /// A centered popup rect, clamped to `area`.

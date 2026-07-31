@@ -10,14 +10,16 @@ pub mod ui;
 use std::time::Instant;
 
 use crossbeam_channel::{at, never, select, unbounded};
-use gitchange_core::{CommitOptions, CommitOutcome, Engine, EngineEvent, HunkStage, Notice, Repo};
+use gitchange_core::{
+    CommitOptions, CommitOutcome, Condition, Engine, EngineEvent, HunkStage, Repo,
+};
 use ratatui::crossterm::event::{
     DisableFocusChange, EnableFocusChange, Event, KeyEventKind, KeyboardEnhancementFlags,
     PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::execute;
 
-use app::{Action, App, CommitDraft, CommitStep, Op};
+use app::{Action, App, CommitDraft, CommitStep, Op, Severity, count_noun};
 use theme::Theme;
 
 #[derive(Debug, thiserror::Error)]
@@ -94,7 +96,14 @@ fn event_loop(
                 Ok(EngineEvent::RefreshStarted) => app.on_refresh_started(Instant::now()),
                 Ok(EngineEvent::RefreshComplete(snapshot)) => app.apply_snapshot(snapshot),
                 Ok(EngineEvent::RefreshFailed(error)) => app.on_refresh_failed(error.to_string()),
-                // Conditions get their pinned rendering with ticket #34.
+                // Conditions become pins (ADR 0007): started sets, ended
+                // self-clears — never manually dismissable.
+                Ok(EngineEvent::ConditionStarted(Condition::WatcherDegraded)) => {
+                    app.on_watcher_degraded();
+                }
+                Ok(EngineEvent::ConditionEnded(Condition::WatcherDegraded)) => {
+                    app.on_watcher_recovered();
+                }
                 Ok(_) => {}
                 Err(_) => return Err(Error::EngineDied),
             },
@@ -104,7 +113,7 @@ fn event_loop(
                         Some(Action::Quit) => return Ok(()),
                         Some(Action::Refresh) => engine.request_refresh(),
                         Some(Action::Op(op)) => {
-                            app.push_feedback(run_op(repo, op));
+                            run_op(repo, &mut app, op);
                             // Mutation-triggered refresh: bypasses the
                             // debounce (ADR 0005).
                             engine.request_refresh();
@@ -131,23 +140,65 @@ fn event_loop(
     }
 }
 
-/// Execute one sync op, returning the lines the Log placeholder shows —
-/// errors and fail-soft notices; success is silent (the refresh that
-/// follows is the feedback).
-fn run_op(repo: &Repo, op: Op) -> Vec<String> {
-    let done = |result: Result<(), gitchange_core::Error>| match result {
-        Ok(()) => Vec::new(),
-        Err(error) => vec![error.to_string()],
+/// Execute one sync op. Successful index surgery echoes at `·` — the
+/// lazygit-style transparency that earns trust (ADR 0007) — fail-soft
+/// notices land at `!`, and hard failures take the error-modal contract.
+fn run_op(repo: &Repo, app: &mut App, op: Op) {
+    let done = |app: &mut App,
+                title: &str,
+                echo: Option<String>,
+                result: Result<(), gitchange_core::Error>| {
+        match result {
+            Ok(()) => {
+                if let Some(echo) = echo {
+                    app.push_log(Severity::Info, echo);
+                }
+            }
+            Err(error) => app.show_error(title, error.to_string()),
+        }
     };
     match op {
-        Op::CreateChangelist { name } => done(repo.create_changelist(&name)),
-        Op::RenameChangelist { from, to } => done(repo.rename_changelist(&from, &to)),
-        Op::DeleteChangelist { name } => done(repo.delete_changelist(&name)),
-        Op::SetActive { name } => done(repo.switch(&name)),
-        Op::StageFile { path } => done(repo.stage_file(&path)),
-        Op::UnstageFile { path } => done(repo.unstage_file(&path)),
-        Op::StageHunk { path, hunk } => hunk_op(repo.stage_hunk(&path, &hunk)),
-        Op::UnstageHunk { path, hunk } => hunk_op(repo.unstage_hunk(&path, &hunk)),
+        Op::CreateChangelist { name } => done(
+            app,
+            "Create changelist failed",
+            None,
+            repo.create_changelist(&name),
+        ),
+        Op::RenameChangelist { from, to } => done(
+            app,
+            "Rename changelist failed",
+            None,
+            repo.rename_changelist(&from, &to),
+        ),
+        Op::DeleteChangelist { name } => done(
+            app,
+            "Delete changelist failed",
+            None,
+            repo.delete_changelist(&name),
+        ),
+        Op::SetActive { name } => done(app, "Switch changelist failed", None, repo.switch(&name)),
+        Op::StageFile { path } => {
+            let echo = format!("staged file — {path}");
+            done(app, "Stage failed", Some(echo), repo.stage_file(&path));
+        }
+        Op::UnstageFile { path } => {
+            let echo = format!("unstaged file — {path}");
+            done(app, "Unstage failed", Some(echo), repo.unstage_file(&path));
+        }
+        Op::StageHunk { path, hunk } => {
+            let echo = format!(
+                "staged hunk — {path} @@ -{},{}",
+                hunk.old_start, hunk.old_lines
+            );
+            hunk_op(app, "Stage failed", echo, repo.stage_hunk(&path, &hunk));
+        }
+        Op::UnstageHunk { path, hunk } => {
+            let echo = format!(
+                "unstaged hunk — {path} @@ -{},{}",
+                hunk.old_start, hunk.old_lines
+            );
+            hunk_op(app, "Unstage failed", echo, repo.unstage_hunk(&path, &hunk));
+        }
         Op::Move {
             path,
             hunks,
@@ -160,22 +211,39 @@ fn run_op(repo: &Repo, op: Op) -> Vec<String> {
                 && let Err(error) = repo.create_changelist(&target)
                 && !matches!(error, gitchange_core::Error::ChangelistExists { .. })
             {
-                return vec![error.to_string()];
+                app.show_error("Create changelist failed", error.to_string());
+                return;
             }
             match repo.move_hunks(&path, &hunks, Some(&target)) {
-                Ok(notices) => notices.iter().map(notice_line).collect(),
-                Err(error) => vec![error.to_string()],
+                Ok(notices) => {
+                    // Stale hunks failed soft; the rest moved.
+                    let moved = hunks.len().saturating_sub(notices.len());
+                    if moved > 0 {
+                        app.push_log(
+                            Severity::Info,
+                            format!("moved {} — {path} → '{target}'", count_noun(moved, "hunk")),
+                        );
+                    }
+                    app.push_notices(&notices);
+                }
+                Err(error) => app.show_error("Move failed", error.to_string()),
             }
         }
     }
 }
 
-/// A fail-soft hunk op's outcome as Log placeholder lines: notices when
-/// it applied partially or not at all, the error otherwise.
-fn hunk_op(result: Result<Vec<Notice>, gitchange_core::Error>) -> Vec<String> {
+/// A fail-soft hunk op's outcome: the echo when it fully applied, `!`
+/// notices when it applied partially or not at all, the modal otherwise.
+fn hunk_op(
+    app: &mut App,
+    title: &str,
+    echo: String,
+    result: Result<Vec<gitchange_core::Notice>, gitchange_core::Error>,
+) {
     match result {
-        Ok(notices) => notices.iter().map(notice_line).collect(),
-        Err(error) => vec![error.to_string()],
+        Ok(notices) if notices.is_empty() => app.push_log(Severity::Info, echo),
+        Ok(notices) => app.push_notices(&notices),
+        Err(error) => app.show_error(title, error.to_string()),
     }
 }
 
@@ -191,18 +259,32 @@ fn run_commit_step(repo: &Repo, app: &mut App, step: CommitStep) {
             match repo.refresh() {
                 Ok(snapshot) => {
                     let owner = changelist.as_deref();
+                    let mut staged = 0;
                     for file in &snapshot.files {
                         for hunk in &file.hunks {
                             if hunk.changelist.as_deref() == owner
                                 && hunk.stage == HunkStage::Unstaged
                             {
-                                app.push_feedback(hunk_op(repo.stage_hunk(&file.path, hunk)));
+                                match repo.stage_hunk(&file.path, hunk) {
+                                    Ok(notices) if notices.is_empty() => staged += 1,
+                                    Ok(notices) => app.push_notices(&notices),
+                                    Err(error) => {
+                                        app.show_error("Stage failed", error.to_string());
+                                    }
+                                }
                             }
                         }
                     }
+                    if staged > 0 {
+                        let label = owner.unwrap_or("unassigned");
+                        app.push_log(
+                            Severity::Info,
+                            format!("staged {} — '{label}'", count_noun(staged, "hunk")),
+                        );
+                    }
                     open_commit_dialog(repo, app, changelist);
                 }
-                Err(error) => app.push_feedback([error.to_string()]),
+                Err(error) => app.show_error("Commit failed", error.to_string()),
             }
         }
         CommitStep::Commit(draft) => run_commit(repo, app, draft),
@@ -212,9 +294,15 @@ fn run_commit_step(repo: &Repo, app: &mut App, step: CommitStep) {
             // the payload is re-derived so the drift guard compares the
             // aligned content, not the stale confirmation.
             match repo.align(draft.changelist.as_deref()) {
-                Ok(notices) => app.push_feedback(notices.iter().map(notice_line)),
+                Ok(notices) => {
+                    app.push_log(
+                        Severity::Info,
+                        format!("aligned index to worktree — '{}'", draft.changelist_label()),
+                    );
+                    app.push_notices(&notices);
+                }
                 Err(error) => {
-                    app.push_feedback([error.to_string()]);
+                    app.show_error("Commit failed", error.to_string());
                     app.restore_commit_dialog(draft);
                     return;
                 }
@@ -233,7 +321,7 @@ fn run_commit_step(repo: &Repo, app: &mut App, step: CommitStep) {
                     }
                 }
                 Err(error) => {
-                    app.push_feedback([error.to_string()]);
+                    app.show_error("Commit failed", error.to_string());
                     app.restore_commit_dialog(draft);
                 }
             }
@@ -248,13 +336,14 @@ fn open_commit_dialog(repo: &Repo, app: &mut App, changelist: Option<String>) {
     match repo.commit_payload(changelist.as_deref()) {
         Ok(payload) if payload.is_empty() => app.offer_stage_all(changelist),
         Ok(payload) => app.open_commit_dialog(changelist, payload),
-        Err(error) => app.push_feedback([error.to_string()]),
+        Err(error) => app.show_error("Commit failed", error.to_string()),
     }
 }
 
-/// Run the confirmed commit. Failure restores the dialog exactly as
-/// confirmed (the issue's dialog-restore path); drift loops back to the
-/// re-confirm overlay with the fresh payload.
+/// Run the confirmed commit, echoing the shelled-out command (ADR 0007's
+/// transparency channel). Failure restores the dialog exactly as
+/// confirmed with the rejection modal on top — hook stderr verbatim;
+/// drift loops back to the re-confirm overlay with the fresh payload.
 fn run_commit(repo: &Repo, app: &mut App, draft: CommitDraft) {
     let message = if draft.body.trim().is_empty() {
         draft.message.clone()
@@ -265,28 +354,56 @@ fn run_commit(repo: &Repo, app: &mut App, draft: CommitDraft) {
         no_verify: draft.no_verify,
         amend: draft.amend,
     };
+    let mut echo = String::from("git commit");
+    if options.no_verify {
+        echo.push_str(" --no-verify");
+    }
+    if options.amend {
+        echo.push_str(" --amend");
+    }
+    let hunks = draft.payload.staged_hunks() + draft.payload.stale_hunks();
+    echo.push_str(&format!(
+        " (temp index — '{}', {})",
+        draft.changelist_label(),
+        count_noun(hunks, "hunk"),
+    ));
     match repo.commit(
         draft.changelist.as_deref(),
         &message,
         &options,
         Some(&draft.payload),
     ) {
-        Ok(CommitOutcome::Committed { .. }) => app.commit_succeeded(),
-        Ok(CommitOutcome::Drifted { payload }) => app.commit_drifted(draft, payload),
+        Ok(CommitOutcome::Committed { oid }) => {
+            app.push_log(Severity::Info, echo);
+            let short = oid.get(..7).unwrap_or(&oid);
+            app.push_log(
+                Severity::Info,
+                format!("committed {short} \"{}\"", draft.message),
+            );
+            app.commit_succeeded();
+        }
+        Ok(CommitOutcome::Drifted { payload }) => {
+            app.push_log(
+                Severity::Info,
+                "nothing committed — payload changed since confirm",
+            );
+            app.commit_drifted(draft, payload);
+        }
         Err(error) => {
-            app.push_feedback([error.to_string()]);
+            // The transparency echo records only commands git actually
+            // ran: a hook rejection means `git commit` executed and
+            // refused; guard/drift/payload failures mean it never did.
+            if matches!(error, gitchange_core::Error::HookRejected { .. }) {
+                app.push_log(Severity::Info, echo);
+            }
+            // Hook stderr is the user's own tooling talking to them
+            // (ADR 0007): the modal carries it verbatim, scrollable.
+            let detail = match &error {
+                gitchange_core::Error::HookRejected { stderr } => stderr.clone(),
+                other => other.to_string(),
+            };
+            app.show_error("Commit failed", detail);
             app.restore_commit_dialog(draft);
         }
-    }
-}
-
-/// Minimal notice rendering until ticket #34's Log vocabulary; moves
-/// only ever raise `StaleHunk`.
-fn notice_line(notice: &Notice) -> String {
-    match notice {
-        Notice::StaleHunk { path, new_start } => {
-            format!("hunk at {path}:{new_start} changed since the last refresh; nothing applied")
-        }
-        other => format!("{other:?}"),
     }
 }

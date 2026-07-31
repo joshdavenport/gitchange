@@ -7,13 +7,47 @@
 use std::time::{Duration, Instant};
 
 use gitchange_core::{
-    ChangeKind, ChangedFile, CommitPayload, FileStage, Hunk, HunkStage, Snapshot,
+    ChangeKind, ChangedFile, CommitPayload, FileStage, Hunk, HunkStage, Notice, Snapshot,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// The deferred-indicator threshold (ADR 0005): refreshes shorter than
 /// this show nothing.
 pub const INDICATOR_DELAY: Duration = Duration::from_millis(500);
+
+/// Log entries kept — enough history for the panel plus scrollback.
+const LOG_CAP: usize = 200;
+
+/// A log event's severity (ADR 0007): three levels, fixed — new event
+/// classes map onto these rather than growing the scale. Assigned here
+/// in the presentation layer; core's [`Notice`] carries none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    /// `·` — routine: command echo, refresh ticks, soft no-ops.
+    Info,
+    /// `!` — automatic membership decisions worth spot-checking.
+    Notice,
+    /// `✗` — anything that produced an error modal, for the record.
+    Error,
+}
+
+/// One immutable line of the Log panel's chronological stream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogEntry {
+    pub severity: Severity,
+    pub text: String,
+}
+
+/// The error-modal contract (ADR 0007): title names the operation,
+/// detail is verbatim and scrollable (hook stderr especially), dismissed
+/// with `esc`/`enter`. Held outside [`Overlay`] so a rejection modal can
+/// land on top of the restored commit dialog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ErrorModal {
+    pub title: String,
+    pub detail: String,
+    pub scroll: u16,
+}
 
 /// The lazygit-style panel stack: `1-5` plus the dominant `0` Diff.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +79,9 @@ impl Panel {
 pub enum Scope {
     /// The All pseudo-view: every changed file grouped by changelist.
     All,
+    /// The quarantine group (ADR 0007): a Files-row group only, never a
+    /// Changelists-panel row or drill scope.
+    Conflicts,
     Changelist(String),
     /// The unassigned pseudo-changelist, pinned last.
     Unassigned,
@@ -52,10 +89,10 @@ pub enum Scope {
 
 impl Scope {
     /// The hunk owner this scope drills into; `None` for All (no owner —
-    /// nothing is foreign there).
+    /// nothing is foreign there) and Conflicts (no hunks at all).
     fn owner(&self) -> Option<Option<&str>> {
         match self {
-            Scope::All => None,
+            Scope::All | Scope::Conflicts => None,
             Scope::Changelist(name) => Some(Some(name)),
             Scope::Unassigned => Some(None),
         }
@@ -64,6 +101,7 @@ impl Scope {
     pub fn title(&self) -> &str {
         match self {
             Scope::All => "all changelists",
+            Scope::Conflicts => "conflicts",
             Scope::Changelist(name) => name,
             Scope::Unassigned => "unassigned",
         }
@@ -94,6 +132,8 @@ pub enum FilesRow {
         label: String,
         count: usize,
         unassigned: bool,
+        /// The Conflicts group's error tint (ADR 0007).
+        conflicted: bool,
         active: bool,
     },
     File {
@@ -141,6 +181,9 @@ pub enum DiffLine {
     /// Blank spacing between hunks.
     Spacer,
     Placeholder(String),
+    /// The quarantine placeholder (ADR 0007), error-tinted: no conflict
+    /// diff rendering, ever.
+    Conflict(String),
 }
 
 /// What a key press asks the main loop to do beyond mutating the App.
@@ -372,17 +415,28 @@ pub struct App {
     pub hunk_sel: Option<usize>,
     /// The open modal, if any.
     pub overlay: Option<Overlay>,
-    /// Sync-op feedback lines (errors, fail-soft notices), rendered by
-    /// the Log placeholder until ticket #34's vocabulary lands.
-    pub feedback: Vec<String>,
+    /// The Log panel's chronological stream (ADR 0007), newest last.
+    pub log: Vec<LogEntry>,
+    /// Lines scrolled up from the stream's bottom (`5`-focus + j/k);
+    /// zero sticks to the newest entry.
+    pub log_scroll: usize,
+    /// The open error modal (ADR 0007), above any [`Overlay`].
+    pub error_modal: Option<ErrorModal>,
+    /// Whether the Engine reported `Condition::WatcherDegraded` — the
+    /// watcher pin's state, self-clearing on `ConditionEnded`.
+    pub watcher_degraded: bool,
     pub help_open: bool,
     /// When the in-flight refresh started; drives the deferred
     /// indicator.
     refresh_started: Option<Instant>,
-    /// The last hard refresh failure, kept alongside the still-valid
-    /// snapshot. Ticket #34 owns the full error vocabulary; until then
-    /// it renders as one line in the Log placeholder.
-    pub last_refresh_error: Option<String>,
+    /// The last refresh failure's text: a polling engine retries a
+    /// persistent failure every few seconds, and re-modalling the same
+    /// error each tick is the interruption ADR 0007 rejects. Cleared by
+    /// the next successful refresh, so a changed failure still modals.
+    last_refresh_failure: Option<String>,
+    /// The (files, hunks, conflicted) counts last echoed to the log —
+    /// polling refreshes that change nothing stay quiet.
+    last_refresh_echo: Option<(usize, usize, usize)>,
 }
 
 impl App {
@@ -397,10 +451,14 @@ impl App {
             diff_scroll: 0,
             hunk_sel: None,
             overlay: None,
-            feedback: Vec::new(),
+            log: Vec::new(),
+            log_scroll: 0,
+            error_modal: None,
+            watcher_degraded: false,
             help_open: false,
             refresh_started: None,
-            last_refresh_error: None,
+            last_refresh_failure: None,
+            last_refresh_echo: None,
         }
     }
 
@@ -410,9 +468,68 @@ impl App {
         self.refresh_started = Some(now);
     }
 
+    /// A hard refresh failure: the error-modal contract (ADR 0007), with
+    /// one softening — a degraded engine polls every few seconds, and
+    /// re-modalling the same persistent failure each tick would be the
+    /// refresh-triggered interruption the ADR rejects, so an unchanged
+    /// failure repeats silently.
     pub fn on_refresh_failed(&mut self, error: String) {
         self.refresh_started = None;
-        self.last_refresh_error = Some(error);
+        if self.last_refresh_failure.as_deref() == Some(error.as_str()) {
+            return;
+        }
+        self.last_refresh_failure = Some(error.clone());
+        self.show_error("Refresh failed", error);
+    }
+
+    /// `ConditionStarted(WatcherDegraded)`: pin the condition and log
+    /// the moment it began (the pin is the condition, the event marks
+    /// its start — ADR 0007).
+    pub fn on_watcher_degraded(&mut self) {
+        if self.watcher_degraded {
+            return;
+        }
+        self.watcher_degraded = true;
+        self.push_log(
+            Severity::Notice,
+            "watcher unavailable — falling back to polling",
+        );
+    }
+
+    /// `ConditionEnded(WatcherDegraded)`: the pin self-clears.
+    pub fn on_watcher_recovered(&mut self) {
+        if !self.watcher_degraded {
+            return;
+        }
+        self.watcher_degraded = false;
+        self.push_log(Severity::Info, "watcher recovered");
+    }
+
+    /// The live condition set as pin lines, top of the Log panel
+    /// (ADR 0007): condition-bound, self-clearing, never dismissable.
+    pub fn pins(&self) -> Vec<String> {
+        let mut pins = Vec::new();
+        // Operation first, watcher second — prototype variant E's order.
+        if let Some(snapshot) = &self.snapshot
+            && let Some(operation) = snapshot.operation
+        {
+            let conflicted = snapshot.conflicted_files().len();
+            let tail = if conflicted > 0 {
+                format!("{conflicted} conflicted")
+            } else {
+                "commit disabled".to_owned()
+            };
+            pins.push(format!("{} in progress — {tail}", operation.label()));
+        }
+        if self.watcher_degraded {
+            pins.push("watcher unavailable — polling".to_owned());
+        }
+        if let Some(snapshot) = &self.snapshot
+            && matches!(snapshot.head, gitchange_core::Head::Detached { .. })
+        {
+            pins.push("detached HEAD — commits belong to no branch".to_owned());
+        }
+        pins
     }
 
     /// Whether the deferred refresh indicator shows (ADR 0005): only
@@ -433,7 +550,44 @@ impl App {
     /// path alone, else the nearest sibling by visual position.
     pub fn apply_snapshot(&mut self, snapshot: Snapshot) {
         self.refresh_started = None;
-        self.last_refresh_error = None;
+        self.last_refresh_failure = None;
+
+        // The moment an operation condition begins is an event
+        // (ADR 0007) — the pin itself carries the live state after.
+        let old_operation = self.snapshot.as_ref().and_then(|old| old.operation);
+        if let Some(operation) = snapshot.operation
+            && old_operation != Some(operation)
+        {
+            let conflicted = snapshot.conflicted_files().len();
+            let tail = if conflicted > 0 {
+                let plural = if conflicted == 1 { "" } else { "s" };
+                format!("{conflicted} file{plural} conflicted, commit disabled")
+            } else {
+                "commit disabled".to_owned()
+            };
+            self.push_log(
+                Severity::Notice,
+                format!("{} detected — {tail}", operation.label()),
+            );
+        }
+
+        // The refresh echo (variant E): quiet when nothing moved, so a
+        // degraded engine's polling ticks don't flood the stream.
+        let hunks: usize = snapshot.files.iter().map(ChangedFile::total_hunks).sum();
+        let conflicted = snapshot.conflicted_files().len();
+        let counts = (snapshot.files.len(), hunks, conflicted);
+        if self.last_refresh_echo != Some(counts) {
+            self.last_refresh_echo = Some(counts);
+            let mut echo = format!("refresh — {} files · {hunks} hunks", snapshot.files.len());
+            if conflicted > 0 {
+                echo.push_str(&format!(" ({conflicted} conflicted)"));
+            }
+            self.push_log(Severity::Info, echo);
+        }
+
+        // This refresh's automatic membership decisions, each exactly
+        // once (a decision becomes a record; there is no replay).
+        self.push_notices(&snapshot.notices);
 
         let old_scope = self.scope();
         let old_entries = self.file_entries();
@@ -526,6 +680,21 @@ impl App {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return Some(Action::Quit);
         }
+        // The error modal sits above everything (ADR 0007): `esc`/`enter`
+        // dismiss, j/k scroll the verbatim detail. No inline actions.
+        if let Some(modal) = &mut self.error_modal {
+            match key.code {
+                KeyCode::Esc | KeyCode::Enter => self.error_modal = None,
+                KeyCode::Char('j') | KeyCode::Down => {
+                    modal.scroll = modal.scroll.saturating_add(1);
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    modal.scroll = modal.scroll.saturating_sub(1);
+                }
+                _ => {}
+            }
+            return None;
+        }
         if self.help_open {
             match key.code {
                 KeyCode::Esc | KeyCode::Char('?') => self.help_open = false,
@@ -577,14 +746,28 @@ impl App {
             }
             KeyCode::Char(' ') => return self.stage_toggle(),
             KeyCode::Char('c') => {
+                // The operation guard (ADR 0007): while a git operation
+                // is in progress `c` is a soft no-op — the pin names the
+                // operation, this line says why nothing opened.
+                if let Some(operation) = self.snapshot.as_ref().and_then(|s| s.operation) {
+                    self.push_log(
+                        Severity::Info,
+                        format!(
+                            "{} in progress — conclude or abort it first",
+                            operation.label()
+                        ),
+                    );
+                    return None;
+                }
                 // `c` on the All view is a polite no-op with a message
                 // (ADR 0004) — commit needs one changelist scoped;
                 // unassigned is committable like any changelist.
                 match self.scope() {
-                    Scope::All => {
-                        self.push_feedback([
-                            "select a changelist to commit — all is a view".to_owned()
-                        ]);
+                    Scope::All | Scope::Conflicts => {
+                        self.push_log(
+                            Severity::Info,
+                            "select a changelist to commit — all is a view",
+                        );
                     }
                     Scope::Changelist(name) => {
                         return Some(Action::Commit(CommitStep::Open {
@@ -859,7 +1042,7 @@ impl App {
         }
         if hunks == 0 {
             let label = owner.unwrap_or("unassigned");
-            self.push_feedback([format!("nothing to commit in '{label}'")]);
+            self.push_log(Severity::Info, format!("nothing to commit in '{label}'"));
             return;
         }
         self.overlay = Some(Overlay::CommitStageAll {
@@ -877,8 +1060,10 @@ impl App {
     }
 
     /// A failed commit (hook rejection, anything git refused) restores
-    /// the dialog exactly as confirmed — the error line goes through
-    /// [`App::push_feedback`]; the full rejection modal is ticket #34's.
+    /// the dialog exactly as confirmed — losing a composed message to a
+    /// linter complaint is rage-inducing (ADR 0007). The rejection modal
+    /// lands on top via [`App::show_error`]; retry is `enter` again, or
+    /// `ctrl+n` for `--no-verify`, both already in the dialog.
     pub fn restore_commit_dialog(&mut self, draft: CommitDraft) {
         self.overlay = Some(Overlay::Commit(draft));
     }
@@ -931,7 +1116,7 @@ impl App {
         }
         match self.scope() {
             Scope::Changelist(name) => Some(name),
-            Scope::All | Scope::Unassigned => None,
+            Scope::All | Scope::Conflicts | Scope::Unassigned => None,
         }
     }
 
@@ -939,7 +1124,7 @@ impl App {
     /// mode the selected hunk (`○`/`◑` → stage, `●` → unstage), in the
     /// Files panel the whole file (`●` → unstage, else stage). Core
     /// exposes stage and unstage separately; the toggle lives here.
-    fn stage_toggle(&self) -> Option<Action> {
+    fn stage_toggle(&mut self) -> Option<Action> {
         if self.hunk_sel.is_some() {
             let index = self.hunk_sel?;
             let file = self.selected_file()?;
@@ -956,6 +1141,15 @@ impl App {
         }
         let file = self.selected_file()?;
         let path = file.path.clone();
+        // `space` on quarantined content politely refuses (ADR 0007) —
+        // three index stages are a workflow gitchange doesn't serve.
+        if file.kind == ChangeKind::Conflicted {
+            self.push_log(
+                Severity::Info,
+                format!("{path} is conflicted — resolve outside gitchange"),
+            );
+            return None;
+        }
         let op = match file.stage() {
             FileStage::Staged => Op::UnstageFile { path },
             FileStage::Unstaged | FileStage::PartiallyStaged => Op::StageFile { path },
@@ -1068,7 +1262,16 @@ impl App {
                     };
                 }
             }
-            Panel::Status | Panel::Log => {}
+            Panel::Log => {
+                // Offset from the stream's bottom: j back toward the
+                // newest entry, k into history.
+                self.log_scroll = if delta > 0 {
+                    self.log_scroll.saturating_sub(1)
+                } else {
+                    (self.log_scroll + 1).min(self.log.len().saturating_sub(1))
+                };
+            }
+            Panel::Status => {}
         }
     }
 
@@ -1139,12 +1342,28 @@ impl App {
         let mut rows = Vec::new();
         match self.scope() {
             Scope::All => {
+                // The Conflicts group renders first (ADR 0007): live,
+                // shrinking in real time as files are resolved.
+                let conflicted = snapshot.conflicted_files();
+                if !conflicted.is_empty() {
+                    rows.push(FilesRow::Header {
+                        label: "conflicts".into(),
+                        count: conflicted.len(),
+                        unassigned: false,
+                        conflicted: true,
+                        active: false,
+                    });
+                    for file in conflicted {
+                        rows.push(file_row(file, Scope::Conflicts, true));
+                    }
+                }
                 for changelist in &snapshot.changelists {
                     let files = snapshot.files_in(Some(&changelist.name));
                     rows.push(FilesRow::Header {
                         label: changelist.name.clone(),
                         count: files.len(),
                         unassigned: false,
+                        conflicted: false,
                         active: snapshot.active.as_deref() == Some(changelist.name.as_str()),
                     });
                     let group = Scope::Changelist(changelist.name.clone());
@@ -1158,6 +1377,7 @@ impl App {
                         label: "unassigned".into(),
                         count: unassigned.len(),
                         unassigned: true,
+                        conflicted: false,
                         active: false,
                     });
                     for file in unassigned {
@@ -1174,6 +1394,8 @@ impl App {
                     rows.push(file_row(file, scope.clone(), false));
                 }
             }
+            // Never a Changelists-panel row, so never a drill scope.
+            Scope::Conflicts => {}
         }
         rows
     }
@@ -1218,6 +1440,9 @@ impl App {
             return String::new();
         };
         let name = file.path.rsplit('/').next().unwrap_or(&file.path);
+        if file.kind == ChangeKind::Conflicted {
+            return format!("{name} (conflicted)");
+        }
         // Hunk mode replaces the staged counts with the selection
         // position (prototype variant C).
         if let Some(index) = self.hunk_sel {
@@ -1262,6 +1487,12 @@ impl App {
             DiffLine::FileHeader(format!("--- a/{}", file.path)),
             DiffLine::FileHeader(format!("+++ b/{}", file.path)),
         ];
+        if file.kind == ChangeKind::Conflicted {
+            lines.push(DiffLine::Conflict(
+                "conflicted — resolve outside gitchange".into(),
+            ));
+            return lines;
+        }
         if file.binary {
             // The one-line sized summary is ticket #35 (ADR 0009).
             lines.push(DiffLine::Placeholder("binary file".into()));
@@ -1367,14 +1598,50 @@ impl App {
         }
     }
 
-    /// Feed sync-op outcomes (errors, fail-soft notices) back for the
-    /// Log placeholder, keeping only a recent tail.
-    pub fn push_feedback(&mut self, lines: impl IntoIterator<Item = String>) {
-        self.feedback.extend(lines);
-        let overflow = self.feedback.len().saturating_sub(50);
+    /// Append one event to the Log panel's stream (ADR 0007), keeping a
+    /// capped tail.
+    pub fn push_log(&mut self, severity: Severity, text: impl Into<String>) {
+        self.log.push(LogEntry {
+            severity,
+            text: text.into(),
+        });
+        let overflow = self.log.len().saturating_sub(LOG_CAP);
         if overflow > 0 {
-            self.feedback.drain(..overflow);
+            self.log.drain(..overflow);
         }
+    }
+
+    /// Append core notices in the Log vocabulary — the path every
+    /// fail-soft op outcome takes.
+    pub fn push_notices<'a>(&mut self, notices: impl IntoIterator<Item = &'a Notice>) {
+        for notice in notices {
+            let entry = notice_entry(notice);
+            self.push_log(entry.severity, entry.text);
+        }
+    }
+
+    /// The error-modal contract (ADR 0007): title names the operation,
+    /// detail is verbatim and scrollable; every modal is also logged at
+    /// `✗` so the record survives dismissal.
+    pub fn show_error(&mut self, title: impl Into<String>, detail: impl Into<String>) {
+        let title = title.into();
+        let detail = detail.into();
+        let first = detail
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or_default()
+            .trim();
+        let text = if first.is_empty() {
+            title.clone()
+        } else {
+            format!("{title} — {first}")
+        };
+        self.push_log(Severity::Error, text);
+        self.error_modal = Some(ErrorModal {
+            title,
+            detail,
+            scroll: 0,
+        });
     }
 
     /// Contextual keybar hints for the focused panel (staging and commit
@@ -1416,7 +1683,8 @@ impl App {
             ],
             Panel::Diff => vec![("j/k", "scroll"), ("esc", "back")],
             Panel::Commits => vec![("j/k", "move")],
-            Panel::Status | Panel::Log => Vec::new(),
+            Panel::Log => vec![("j/k", "scroll")],
+            Panel::Status => Vec::new(),
         };
         hints.extend([
             ("0-5", "panels"),
@@ -1426,6 +1694,78 @@ impl App {
         ]);
         hints
     }
+}
+
+/// A core notice in the Log vocabulary. Severity is assigned here — the
+/// spec renders automatic membership decisions at `!`, fail-soft
+/// stale-hunk outcomes included; core keeps severity out (ADR 0007).
+pub fn notice_entry(notice: &Notice) -> LogEntry {
+    let (severity, text) = match notice {
+        Notice::AutoCaptured {
+            path,
+            new_start,
+            changelist,
+        } => (
+            Severity::Notice,
+            format!("auto-captured hunk at {path}:{new_start} → '{changelist}'"),
+        ),
+        Notice::AmbiguousOverlap {
+            path,
+            new_start,
+            candidates,
+            assigned_to,
+        } => {
+            let overlap = candidates
+                .iter()
+                .map(|name| format!("'{name}'"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let text = match assigned_to {
+                Some(name) => format!(
+                    "auto-captured hunk at {path}:{new_start} → '{name}' (ambiguous overlap: {overlap})"
+                ),
+                None => format!(
+                    "hunk at {path}:{new_start} left unassigned (ambiguous overlap: {overlap})"
+                ),
+            };
+            (Severity::Notice, text)
+        }
+        Notice::DormantRevival {
+            path,
+            changelist,
+            hunks,
+        } => {
+            let destination = match changelist {
+                Some(name) => format!("'{name}'"),
+                None => "unassigned".into(),
+            };
+            (
+                Severity::Notice,
+                format!(
+                    "restored {} to {destination} — {path}",
+                    count_noun(*hunks, "hunk")
+                ),
+            )
+        }
+        Notice::StaleHunk { path, new_start } => (
+            Severity::Notice,
+            format!("hunk at {path}:{new_start} changed since the last refresh; nothing applied"),
+        ),
+        Notice::HeadMoveDormancy { path, changelists } => {
+            let list = changelists
+                .iter()
+                .map(|name| format!("'{name}'"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            (
+                Severity::Notice,
+                format!(
+                    "external HEAD move changed {path} — records in {list} went dormant; affected hunks captured to active"
+                ),
+            )
+        }
+    };
+    LogEntry { severity, text }
 }
 
 fn file_row(file: &ChangedFile, group: Scope, indent: bool) -> FilesRow {
@@ -1548,6 +1888,7 @@ mod tests {
                     summary: "init".into(),
                 },
             ],
+            operation: None,
         }
     }
 
@@ -1850,13 +2191,193 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_refresh_keeps_the_last_snapshot() {
+    fn a_failed_refresh_keeps_the_last_snapshot_and_modals() {
         let mut app = app();
         app.on_refresh_started(Instant::now());
         app.on_refresh_failed("boom".into());
         assert!(app.snapshot.is_some());
-        assert_eq!(app.last_refresh_error.as_deref(), Some("boom"));
+        let modal = app.error_modal.as_ref().expect("the error modal opens");
+        assert_eq!(modal.title, "Refresh failed");
+        assert_eq!(modal.detail, "boom");
+        assert!(
+            app.log
+                .iter()
+                .any(|entry| entry.severity == Severity::Error
+                    && entry.text.contains("Refresh failed")),
+            "every modal is also logged at ✗ (ADR 0007)"
+        );
         assert!(!app.indicator_visible(Instant::now() + Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn a_repeated_refresh_failure_does_not_remodal() {
+        let mut app = app();
+        app.on_refresh_failed("boom".into());
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.error_modal.is_none());
+
+        // The polling engine retries and fails identically: silent.
+        app.on_refresh_failed("boom".into());
+        assert!(app.error_modal.is_none(), "same failure never re-modals");
+
+        // A success clears the memory; the next failure modals again.
+        app.apply_snapshot(snapshot());
+        app.on_refresh_failed("boom".into());
+        assert!(app.error_modal.is_some());
+    }
+
+    #[test]
+    fn the_error_modal_swallows_keys_scrolls_and_dismisses() {
+        let mut app = app();
+        app.show_error("Commit failed", "line one\nline two");
+        let before = app.scope();
+        assert_eq!(app.on_key(key(KeyCode::Char('j'))), None);
+        assert_eq!(app.error_modal.as_ref().unwrap().scroll, 1);
+        assert_eq!(app.on_key(key(KeyCode::Char('k'))), None);
+        assert_eq!(app.error_modal.as_ref().unwrap().scroll, 0);
+        assert_eq!(app.scope(), before, "keys never leak past the modal");
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.error_modal.is_none(), "enter dismisses");
+    }
+
+    #[test]
+    fn conditions_pin_and_self_clear() {
+        let mut app = app();
+        assert!(app.pins().is_empty());
+
+        app.on_watcher_degraded();
+        assert_eq!(app.pins(), vec!["watcher unavailable — polling"]);
+        assert!(
+            app.log
+                .iter()
+                .any(|entry| entry.severity == Severity::Notice
+                    && entry.text.contains("falling back to polling")),
+            "the event marks the moment the condition began"
+        );
+        app.on_watcher_recovered();
+        assert!(app.pins().is_empty(), "pins self-clear, never dismissed");
+
+        // Operation + detached HEAD pins derive from the snapshot.
+        let mut busy = snapshot();
+        busy.operation = Some(gitchange_core::GitOperation::Rebase);
+        busy.head = Head::Detached {
+            short_id: "abc1234".into(),
+        };
+        busy.files.push(ChangedFile {
+            path: "src/session.ts".into(),
+            kind: ChangeKind::Conflicted,
+            binary: false,
+            hunks: Vec::new(),
+        });
+        app.apply_snapshot(busy);
+        assert_eq!(
+            app.pins(),
+            vec![
+                "rebase in progress — 1 conflicted".to_owned(),
+                "detached HEAD — commits belong to no branch".to_owned(),
+            ]
+        );
+        assert!(
+            app.log
+                .iter()
+                .any(|entry| entry.text.contains("rebase detected")),
+            "the operation's start is logged once"
+        );
+    }
+
+    #[test]
+    fn notices_land_in_the_log_at_notice_severity() {
+        let mut app = app();
+        let mut next = snapshot();
+        next.notices = vec![gitchange_core::Notice::AutoCaptured {
+            path: "src/print.css".into(),
+            new_start: 41,
+            changelist: "fixes".into(),
+        }];
+        app.apply_snapshot(next);
+        assert!(app.log.iter().any(|entry| {
+            entry.severity == Severity::Notice
+                && entry
+                    .text
+                    .contains("auto-captured hunk at src/print.css:41")
+                && entry.text.contains("'fixes'")
+        }));
+    }
+
+    #[test]
+    fn the_operation_guard_makes_c_a_soft_noop() {
+        let mut app = app();
+        let mut busy = snapshot();
+        busy.operation = Some(gitchange_core::GitOperation::Merge);
+        app.apply_snapshot(busy);
+
+        app.on_key(key(KeyCode::Char('j'))); // 'fixes' — a committable scope
+        assert_eq!(
+            app.on_key(key(KeyCode::Char('c'))),
+            None,
+            "commit is globally guarded during a git operation"
+        );
+        assert!(app.overlay.is_none());
+        assert!(app.log.iter().any(|entry| {
+            entry.severity == Severity::Info
+                && entry.text == "merge in progress — conclude or abort it first"
+        }));
+
+        // Staging is never operation-guarded.
+        app.on_key(key(KeyCode::Char('3')));
+        assert!(matches!(
+            app.on_key(key(KeyCode::Char(' '))),
+            Some(Action::Op(Op::StageFile { .. }))
+        ));
+    }
+
+    #[test]
+    fn conflicted_files_group_first_and_space_refuses() {
+        let mut app = app();
+        let mut busy = snapshot();
+        busy.files.insert(
+            0,
+            ChangedFile {
+                path: "src/merge.ts".into(),
+                kind: ChangeKind::Conflicted,
+                binary: false,
+                hunks: Vec::new(),
+            },
+        );
+        app.apply_snapshot(busy);
+
+        let rows = app.files_rows();
+        let Some(FilesRow::Header {
+            label, conflicted, ..
+        }) = rows.first()
+        else {
+            panic!("expected a header first, got {rows:?}");
+        };
+        assert_eq!(label, "conflicts");
+        assert!(conflicted);
+        let Some(FilesRow::File { entry, .. }) = rows.get(1) else {
+            panic!("expected the conflicted file second");
+        };
+        assert_eq!(entry.path, "src/merge.ts");
+        assert_eq!(entry.group, Scope::Conflicts);
+
+        // `space` on conflicted content politely refuses (info).
+        app.on_key(key(KeyCode::Char('3')));
+        for _ in 0..app.file_entries().len() {
+            app.on_key(key(KeyCode::Char('k'))); // up to the conflicted row
+        }
+        assert_eq!(app.file_sel.as_ref().unwrap().path, "src/merge.ts");
+        assert_eq!(app.on_key(key(KeyCode::Char(' '))), None);
+        assert!(app.log.iter().any(|entry| {
+            entry.severity == Severity::Info && entry.text.contains("resolve outside gitchange")
+        }));
+
+        // The diff shows the one-line placeholder, never conflict text.
+        assert!(app.diff_lines().iter().any(|line| matches!(
+            line,
+            DiffLine::Conflict(text) if text == "conflicted — resolve outside gitchange"
+        )));
+        assert_eq!(app.diff_title(), "merge.ts (conflicted)");
     }
 
     #[test]
@@ -2239,9 +2760,10 @@ mod tests {
         assert_eq!(app.on_key(key(KeyCode::Char('c'))), None);
         assert!(app.overlay.is_none(), "c on the All view opens nothing");
         assert!(
-            app.feedback
+            app.log
                 .iter()
-                .any(|line| line.contains("all is a view")),
+                .any(|entry| entry.severity == Severity::Info
+                    && entry.text.contains("all is a view")),
             "…but says why (ADR 0004: a no-op with a message)"
         );
 
@@ -2355,7 +2877,7 @@ mod tests {
             }))
         );
 
-        // A hunk-less changelist gets a feedback line, not an offer.
+        // A hunk-less changelist gets a log line, not an offer.
         let mut next = snapshot();
         next.changelists.push(Changelist {
             name: "empty".into(),
@@ -2363,7 +2885,34 @@ mod tests {
         app.apply_snapshot(next);
         app.offer_stage_all(Some("empty".into()));
         assert!(app.overlay.is_none());
-        assert!(app.feedback.iter().any(|line| line.contains("empty")));
+        assert!(app.log.iter().any(|entry| entry.text.contains("empty")));
+    }
+
+    #[test]
+    fn hook_rejection_modal_lands_over_the_restored_dialog() {
+        let mut app = dialog_app(payload(5, 0));
+        let action = app.on_key(key(KeyCode::Enter));
+        let Some(Action::Commit(CommitStep::Commit(draft))) = action else {
+            panic!("expected a commit step, got {action:?}");
+        };
+
+        // The main loop's Err(HookRejected) path: dialog restored as
+        // confirmed, rejection modal on top (ADR 0007).
+        app.show_error(
+            "Commit failed",
+            "husky - pre-commit hook exited with code 1",
+        );
+        app.restore_commit_dialog(draft);
+
+        // The modal swallows keys; nothing reaches the dialog beneath.
+        app.on_key(key(KeyCode::Char('x')));
+        assert!(app.error_modal.is_some());
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.error_modal.is_none(), "esc dismisses the modal only");
+        let Some(Overlay::Commit(restored)) = &app.overlay else {
+            panic!("the dialog survives beneath the modal");
+        };
+        assert_eq!(restored.message, "fix: x", "the composed message is kept");
     }
 
     #[test]

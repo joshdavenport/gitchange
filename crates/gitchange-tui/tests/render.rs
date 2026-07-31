@@ -6,12 +6,13 @@
 use std::time::{Duration, Instant};
 
 use gitchange_core::{
-    ChangeKind, ChangedFile, Changelist, CommitInfo, Head, Hunk, HunkLine, HunkStage, Snapshot,
+    ChangeKind, ChangedFile, Changelist, CommitInfo, GitOperation, Head, Hunk, HunkLine, HunkStage,
+    Snapshot,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{Terminal, backend::TestBackend};
 
-use gitchange_tui::app::{App, INDICATOR_DELAY, Panel};
+use gitchange_tui::app::{App, INDICATOR_DELAY, Panel, Severity};
 use gitchange_tui::theme::Theme;
 use gitchange_tui::ui;
 
@@ -74,6 +75,7 @@ fn snapshot() -> Snapshot {
             author: "Josh Davenport-Smith".into(),
             summary: "fix: viewport sizing".into(),
         }],
+        operation: None,
     }
 }
 
@@ -222,12 +224,77 @@ fn the_delete_confirmation_names_the_unassigned_aftermath() {
 }
 
 #[test]
-fn op_feedback_lines_render_in_the_log_placeholder() {
+fn log_entries_render_with_their_severity_glyphs() {
     let mut app = App::new("repo");
     app.apply_snapshot(snapshot());
-    app.push_feedback(["a changelist named 'docs' already exists".to_owned()]);
+    app.push_log(Severity::Info, "staged hunk — src/print.css @@ -41,6");
+    app.push_log(Severity::Notice, "auto-captured 1 hunk → 'fixes'");
+    app.push_log(Severity::Error, "Commit failed — pre-commit hook exited 1");
     let text = render(&app);
-    assert!(text.contains("! a changelist named 'docs' already exists"));
+    assert!(text.contains("· staged hunk — src/print.css @@ -41,6"));
+    assert!(text.contains("! auto-captured 1 hunk → 'fixes'"));
+    assert!(text.contains("✗ Commit failed — pre-commit hook exited 1"));
+}
+
+#[test]
+fn pins_render_as_a_banner_atop_the_log_stream() {
+    let mut app = App::new("repo");
+    let mut busy = snapshot();
+    busy.operation = Some(GitOperation::Rebase);
+    busy.files.push(ChangedFile {
+        path: "src/merge.ts".into(),
+        kind: ChangeKind::Conflicted,
+        binary: false,
+        hunks: Vec::new(),
+    });
+    app.apply_snapshot(busy);
+    app.on_watcher_degraded();
+    let text = render(&app);
+    assert!(text.contains("▲ watcher unavailable — polling"));
+    assert!(text.contains("▲ rebase in progress — 1 conflicted"));
+    // The banner sits above the stream: the pin row precedes the
+    // rebase-detected event line.
+    let pin = text.find("▲ rebase in progress").unwrap();
+    let event = text.find("! rebase detected").unwrap();
+    assert!(pin < event, "pins render above the event stream");
+}
+
+#[test]
+fn the_conflicts_group_renders_first_without_stage_marks() {
+    let mut app = App::new("repo");
+    let mut busy = snapshot();
+    busy.files.push(ChangedFile {
+        path: "src/merge.ts".into(),
+        kind: ChangeKind::Conflicted,
+        binary: false,
+        hunks: Vec::new(),
+    });
+    app.apply_snapshot(busy);
+    let text = render(&app);
+    assert!(text.contains("▾ conflicts (1)"));
+    assert!(text.contains("U src/merge.ts"));
+    let conflicts = text.find("▾ conflicts").unwrap();
+    let fixes = text.find("▾ fixes").unwrap();
+    assert!(conflicts < fixes, "the Conflicts group renders first");
+    assert!(
+        !text.contains("○ U src/merge.ts"),
+        "no stage mark on a quarantined row"
+    );
+}
+
+#[test]
+fn the_error_modal_renders_the_detail_verbatim() {
+    let mut app = App::new("repo");
+    app.apply_snapshot(snapshot());
+    app.show_error(
+        "Commit failed",
+        "husky - pre-commit hook exited with code 1\neslint: 3 problems",
+    );
+    let text = render(&app);
+    assert!(text.contains("Commit failed"));
+    assert!(text.contains("husky - pre-commit hook exited with code 1"));
+    assert!(text.contains("eslint: 3 problems"));
+    assert!(text.contains("dismiss"));
 }
 
 #[test]

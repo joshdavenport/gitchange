@@ -217,8 +217,12 @@ fn status_prints_ambiguous_overlap_notices_on_stderr() {
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert_eq!(
         stderr,
+        // The untracked file's hunk is genuinely new, so its capture
+        // notices too (ticket #34: auto-capture is never silent).
         "gitchange: notice: hunk at tracked.txt:1 overlaps changelists \
-         'bugfix', 'feature'; assigned to active changelist 'feature'\n"
+         'bugfix', 'feature'; assigned to active changelist 'feature'\n\
+         gitchange: notice: auto-captured hunk at untracked.txt:1 → \
+         active changelist 'feature'\n"
     );
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(

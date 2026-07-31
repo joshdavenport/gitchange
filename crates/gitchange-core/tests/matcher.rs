@@ -71,7 +71,15 @@ fn a_moved_hunk_keeps_membership_via_exact_anchor_match() {
         vec![Some("two".into()), Some("one".into())],
         "top insertion captures to active; the moved hunk keeps its owner"
     );
-    assert!(snapshot.notices.is_empty());
+    assert_eq!(
+        snapshot.notices,
+        vec![Notice::AutoCaptured {
+            path: "a.txt".into(),
+            new_start: 1,
+            changelist: "two".into(),
+        }],
+        "only the capture notices; the exact-match survivor is quiet"
+    );
 }
 
 #[test]
@@ -433,4 +441,80 @@ fn new_hunks_capture_to_the_active_changelist() {
         .collect();
     assert_eq!(in_two, vec!["a.txt", "new.txt"]);
     assert!(snapshot.files_in(Some("one")).is_empty());
+}
+
+#[test]
+fn a_routine_auto_capture_notices_once() {
+    let fixture = RepoFixture::new();
+    fixture
+        .write("a.txt", &numbered(20, &[]))
+        .commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("one").unwrap();
+
+    fixture.write("a.txt", &numbered(20, &[(10, "ten!")]));
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(
+        snapshot.notices,
+        vec![Notice::AutoCaptured {
+            path: "a.txt".into(),
+            new_start: 7,
+            changelist: "one".into(),
+        }],
+        "a genuinely new hunk's capture is visible, never silent"
+    );
+
+    // The decision became a record: the next refresh is quiet.
+    let snapshot = repo.refresh().unwrap();
+    assert!(snapshot.notices.is_empty());
+}
+
+#[test]
+fn with_no_active_changelist_nothing_notices() {
+    let fixture = RepoFixture::new();
+    fixture
+        .write("a.txt", &numbered(20, &[]))
+        .commit_all("init")
+        .write("a.txt", &numbered(20, &[(10, "ten!")]));
+
+    let repo = repo(&fixture);
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(owners(&snapshot, "a.txt"), vec![None]);
+    assert!(
+        snapshot.notices.is_empty(),
+        "unassigned fall-through decides nothing worth spot-checking"
+    );
+}
+
+#[test]
+fn dormant_revival_notices_with_a_per_changelist_count() {
+    let mut fixture = RepoFixture::new();
+    fixture
+        .write("a.txt", &numbered(30, &[]))
+        .commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("one").unwrap();
+
+    // Two separate hunks, both owned by "one".
+    fixture.write("a.txt", &numbered(30, &[(5, "five!"), (20, "twenty!")]));
+    repo.refresh().unwrap();
+
+    fixture.stash();
+    repo.refresh().unwrap();
+
+    fixture.stash_pop();
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(
+        owners(&snapshot, "a.txt"),
+        vec![Some("one".into()), Some("one".into())]
+    );
+    assert_eq!(
+        snapshot.notices,
+        vec![Notice::DormantRevival {
+            path: "a.txt".into(),
+            changelist: Some("one".into()),
+            hunks: 2,
+        }],
+        "exact-match revival is an automatic decision: one notice, counted"
+    );
 }

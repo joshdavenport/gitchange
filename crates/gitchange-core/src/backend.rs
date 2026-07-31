@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use crate::commit::CommitOptions;
 use crate::diff::RepoDiffs;
 use crate::error::Error;
-use crate::snapshot::{CommitInfo, Head};
+use crate::snapshot::{CommitInfo, GitOperation, Head};
 
 /// A diff hunk's identity within one diff: (old_start, old_lines,
 /// new_start, new_lines). Unique per file because hunks never overlap.
@@ -41,6 +41,11 @@ pub trait GitBackend: Send {
     /// Up to `limit` commits reachable from HEAD, newest first; empty on
     /// an unborn branch.
     fn recent_commits(&self, limit: usize) -> Result<Vec<CommitInfo>, Error>;
+
+    /// The git operation in progress, if any (ADR 0007) — the commit
+    /// guard's one predicate. `None` covers bisect too: committing
+    /// during a bisect is legitimate.
+    fn operation(&self) -> Result<Option<GitOperation>, Error>;
 
     /// The paths whose tree entries differ between `baseline_oid`'s tree
     /// and the current HEAD's — the ADR 0012 guard's affected-path set,
