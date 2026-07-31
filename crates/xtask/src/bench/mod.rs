@@ -34,7 +34,8 @@ pub struct Args {
     /// Untimed warmup refreshes per case
     #[arg(long, default_value_t = 2)]
     pub warmup: usize,
-    /// Run one dimension only: files | hunks | records | huge-file
+    /// Run one dimension only: files | hunks | records | huge-file |
+    /// binaries
     #[arg(long)]
     pub dimension: Option<String>,
     /// Also write report.md and results.csv into this directory
@@ -65,6 +66,8 @@ fn matrix(args: &Args) -> Vec<CaseSpec> {
         dormant: 0,
         staged_files: 0,
         huge_lines: 0,
+        binary_files: 0,
+        binary_kib: 0,
         touch_every_iteration: false,
         warmup: args.warmup,
         iterations,
@@ -151,6 +154,30 @@ fn matrix(args: &Args) -> Vec<CaseSpec> {
         specs.push(spec);
     }
 
+    // Changed binaries at 1 MiB each: every refresh re-hashes each one's
+    // worktree bytes (ADR 0009's stated cost, deferred to this harness
+    // by issue #35's heads-up). Top scale = a few hundred MB of changed
+    // assets, the scenario the heads-up names.
+    let binary_scales: &[usize] = if args.quick { &[4, 16] } else { &[4, 16, 64, 256] };
+    for &n in binary_scales {
+        let mut spec = base(&format!("binary-{n}"), "binaries", n as u64);
+        spec.changelists = 0;
+        spec.binary_files = n;
+        spec.binary_kib = 1024;
+        specs.push(spec);
+    }
+    if !args.quick {
+        // Same 256 MiB total in 8 files instead of 256: if this matches
+        // binary-256, byte throughput dominates; if it's faster, the
+        // per-file overhead does.
+        let mut spec = base("binary-8x32m", "binaries", 8);
+        spec.changelists = 0;
+        spec.binary_files = 8;
+        spec.binary_kib = 32 * 1024;
+        spec.contrast_of = Some("binary-256".into());
+        specs.push(spec);
+    }
+
     specs
 }
 
@@ -172,7 +199,7 @@ pub fn run(args: &Args) -> Result<()> {
         .collect();
     if specs.is_empty() {
         bail!(
-            "no cases match dimension `{}` (files | hunks | records | huge-file)",
+            "no cases match dimension `{}` (files | hunks | records | huge-file | binaries)",
             args.dimension.as_deref().unwrap_or_default()
         );
     }

@@ -128,8 +128,31 @@ fn blurb(dimension: &str) -> &'static str {
         "huge-file" => {
             "single generated file rewritten in full, no changelists — the unbounded-diff-memory probe (ADR 0005 caveat)"
         }
+        "binaries" => {
+            "changed 1 MiB binary files, no changelists — every refresh re-hashes each one's worktree bytes (ADR 0009's stated cost)"
+        }
         _ => "",
     }
+}
+
+/// Dimensions whose cost driver is content volume: their tables carry
+/// content MB and peak RSS instead of hunk/record counts.
+fn sized_dimension(dimension: &str) -> Option<&'static str> {
+    match dimension {
+        "huge-file" => Some("lines"),
+        "binaries" => Some("files"),
+        _ => None,
+    }
+}
+
+fn fmt_rss(result: &CaseResult) -> String {
+    result
+        .peak_rss_after
+        .map(|after| {
+            let before = result.peak_rss_before.unwrap_or(0);
+            format!("{} → {}", fmt_mb(before), fmt_mb(after))
+        })
+        .unwrap_or_else(|| "n/a".into())
 }
 
 /// The full markdown report: one table per dimension, an overall shape
@@ -154,10 +177,11 @@ pub fn render_markdown(results: &[CaseResult], meta: &Meta) -> String {
             .partition(|r| r.spec.contrast_of.is_none());
 
         let _ = writeln!(out, "\n## {dimension} — {}\n", blurb(&dimension));
-        if dimension == "huge-file" {
+        let sized = sized_dimension(&dimension);
+        if let Some(scale_label) = sized {
             let _ = writeln!(
                 out,
-                "| case | lines | content MB | median ms | min | max | ×prev | step exp | peak RSS MB |"
+                "| case | {scale_label} | content MB | median ms | min | max | ×prev | step exp | peak RSS MB |"
             );
             let _ = writeln!(out, "|---|---|---|---|---|---|---|---|---|");
         } else {
@@ -180,14 +204,8 @@ pub fn render_markdown(results: &[CaseResult], meta: &Meta) -> String {
                 _ => ("—".into(), "—".into()),
             };
             let (min, max) = spread(&result.times_ms);
-            if dimension == "huge-file" {
-                let rss = result
-                    .peak_rss_after
-                    .map(|after| {
-                        let before = result.peak_rss_before.unwrap_or(0);
-                        format!("{} → {}", fmt_mb(before), fmt_mb(after))
-                    })
-                    .unwrap_or_else(|| "n/a".into());
+            if sized.is_some() {
+                let rss = fmt_rss(result);
                 let _ = writeln!(
                     out,
                     "| {} | {} | {} | {} | {} | {} | {} | {} | {} |",
@@ -241,7 +259,7 @@ pub fn render_markdown(results: &[CaseResult], meta: &Meta) -> String {
 
         if !contrast.is_empty() {
             let _ = writeln!(out, "\nContrasts:\n");
-            if dimension == "huge-file" {
+            if sized.is_some() {
                 let _ = writeln!(out, "| case | median ms | vs baseline | peak RSS MB |");
                 let _ = writeln!(out, "|---|---|---|---|");
             } else {
@@ -264,21 +282,14 @@ pub fn render_markdown(results: &[CaseResult], meta: &Meta) -> String {
                         }
                     })
                     .unwrap_or_else(|| "—".into());
-                if dimension == "huge-file" {
-                    let rss = result
-                        .peak_rss_after
-                        .map(|after| {
-                            let before = result.peak_rss_before.unwrap_or(0);
-                            format!("{} → {}", fmt_mb(before), fmt_mb(after))
-                        })
-                        .unwrap_or_else(|| "n/a".into());
+                if sized.is_some() {
                     let _ = writeln!(
                         out,
                         "| {} | {} | {} | {} |",
                         result.spec.name,
                         fmt_ms(med),
                         vs,
-                        rss
+                        fmt_rss(result)
                     );
                 } else {
                     let _ = writeln!(out, "| {} | {} | {} |", result.spec.name, fmt_ms(med), vs);
@@ -309,15 +320,15 @@ pub fn render_markdown(results: &[CaseResult], meta: &Meta) -> String {
 pub fn render_csv(results: &[CaseResult]) -> String {
     let mut out = String::from(
         "name,dimension,scale,files,hunks_per_file,changelists,live_records,dormant_records,\
-         staged_files,huge_lines,content_bytes,hunks_total,median_ms,min_ms,max_ms,iterations,\
-         peak_rss_before_bytes,peak_rss_after_bytes\n",
+         staged_files,huge_lines,binary_files,binary_kib,content_bytes,hunks_total,median_ms,\
+         min_ms,max_ms,iterations,peak_rss_before_bytes,peak_rss_after_bytes\n",
     );
     for result in results {
         let med = median(&result.times_ms);
         let (min, max) = spread(&result.times_ms);
         let _ = writeln!(
             out,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{:.3},{:.3},{:.3},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.3},{:.3},{:.3},{},{},{}",
             result.spec.name,
             result.spec.dimension,
             result.spec.scale,
@@ -328,6 +339,8 @@ pub fn render_csv(results: &[CaseResult]) -> String {
             result.dormant_records,
             result.spec.staged_files,
             result.spec.huge_lines,
+            result.spec.binary_files,
+            result.spec.binary_kib,
             result.content_bytes,
             result.hunks_total,
             med,
@@ -358,6 +371,8 @@ mod tests {
                 dormant: 0,
                 staged_files: 0,
                 huge_lines: 0,
+                binary_files: 0,
+                binary_kib: 0,
                 touch_every_iteration: false,
                 warmup: 1,
                 iterations: times.len(),
@@ -456,6 +471,29 @@ mod tests {
         assert!(md.contains("≈ linear"), "{md}");
         assert!(md.contains("Contrasts:"));
         assert!(md.contains("0.50× of files-100"));
+    }
+
+    #[test]
+    fn markdown_gives_binaries_the_sized_columns() {
+        let mut base = result("binary-4", "binaries", 4, &[5.0]);
+        base.spec.binary_files = 4;
+        base.spec.binary_kib = 1024;
+        base.content_bytes = 8 * 1024 * 1024;
+        base.peak_rss_before = Some(6 * 1024 * 1024);
+        base.peak_rss_after = Some(50 * 1024 * 1024);
+        let meta = Meta {
+            date: String::new(),
+            host: String::new(),
+            commit: String::new(),
+            iterations: 1,
+            warmup: 1,
+        };
+        let md = render_markdown(&[base], &meta);
+        assert!(
+            md.contains("| case | files | content MB |"),
+            "binaries table should carry the sized columns: {md}"
+        );
+        assert!(md.contains("6.0 → 50.0"), "{md}");
     }
 
     #[test]

@@ -28,7 +28,8 @@ pub const DORMANT_HUNKS_PER_FILE: usize = 40;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseSpec {
     pub name: String,
-    /// files | hunks | records | huge-file — the report groups by this.
+    /// files | hunks | records | huge-file | binaries — the report
+    /// groups by this.
     pub dimension: String,
     /// The varied dimension's value: the x-axis of the scaling fit.
     pub scale: u64,
@@ -46,6 +47,12 @@ pub struct CaseSpec {
     /// When > 0: the pathological case — one file of this many lines,
     /// every line rewritten, replacing the graduated layout.
     pub huge_lines: usize,
+    /// When > 0: changed binary files, replacing the graduated layout —
+    /// every refresh re-hashes each one's worktree bytes (ADR 0009's
+    /// stated cost, deferred to this harness).
+    pub binary_files: usize,
+    /// Size of each binary file in KiB.
+    pub binary_kib: usize,
     /// Re-edit one file's hunks before every timed refresh, so each
     /// iteration measures a genuinely-changed refresh: tier-2 re-match
     /// plus the state persist, not the steady-state no-rewrite path.
@@ -64,7 +71,8 @@ pub struct CaseResult {
     pub hunks_total: usize,
     pub live_records: usize,
     pub dormant_records: usize,
-    /// Baseline + edited file bytes for huge-file cases; 0 otherwise.
+    /// Baseline + edited file bytes for huge-file and binaries cases;
+    /// 0 otherwise.
     pub content_bytes: u64,
     /// Peak RSS after generation but before any refresh.
     pub peak_rss_before: Option<u64>,
@@ -82,6 +90,8 @@ pub fn run(spec: &CaseSpec) -> Result<CaseResult> {
     let mut sandbox = Sandbox::init(dir.path())?;
     let content_bytes = if spec.huge_lines > 0 {
         generate_huge(&mut sandbox, dir.path(), spec)?
+    } else if spec.binary_files > 0 {
+        generate_binaries(&mut sandbox, dir.path(), spec)?
     } else {
         generate(&mut sandbox, spec)?;
         0
@@ -308,6 +318,63 @@ fn generate_huge(sandbox: &mut Sandbox, root: &Path, spec: &CaseSpec) -> Result<
     Ok(bytes)
 }
 
+// --- changed binaries ---------------------------------------------------
+
+fn binary_path(index: usize) -> String {
+    format!("assets/blob_{index:04}.bin")
+}
+
+/// Deterministic binary bytes: an 8-byte NUL header (git's binary sniff
+/// looks for a NUL in the first 8000 bytes) then an LCG stream keyed by
+/// `seed`, so rewrites keep the size and change every byte.
+fn write_binary_blob(path: &Path, kib: usize, seed: u64) -> Result<u64> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut writer = BufWriter::new(File::create(path)?);
+    writer.write_all(&[0u8; 8])?;
+    let mut state = seed;
+    let mut chunk = [0u8; 1024];
+    for _ in 0..kib {
+        for byte in chunk.iter_mut() {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            *byte = (state >> 56) as u8;
+        }
+        writer.write_all(&chunk)?;
+    }
+    writer.flush()?;
+    Ok(8 + kib as u64 * 1024)
+}
+
+fn generate_binaries(sandbox: &mut Sandbox, root: &Path, spec: &CaseSpec) -> Result<u64> {
+    ensure!(
+        spec.changelists == 0
+            && spec.dormant == 0
+            && spec.staged_files == 0
+            && spec.files == 0
+            && !spec.touch_every_iteration,
+        "the binaries case probes raw hashing cost; keep membership out of it"
+    );
+    ensure!(spec.binary_kib > 0, "binary files need a size");
+    let mut bytes = 0u64;
+    for b in 0..spec.binary_files {
+        bytes += write_binary_blob(&root.join(binary_path(b)), spec.binary_kib, b as u64)?;
+    }
+    sandbox.commit_all("baseline")?;
+    // Rewrite every blob, same size, different bytes: each refresh's
+    // worktree diff re-hashes all of this content from disk.
+    for b in 0..spec.binary_files {
+        bytes += write_binary_blob(
+            &root.join(binary_path(b)),
+            spec.binary_kib,
+            b as u64 + 1_000_000,
+        )?;
+    }
+    Ok(bytes)
+}
+
 // --- verification -------------------------------------------------------
 
 /// Counts of (live, dormant) records in the state file. Read-only
@@ -340,6 +407,9 @@ fn record_counts(root: &Path) -> Result<(usize, usize)> {
 fn verify(spec: &CaseSpec, snapshot: &Snapshot, root: &Path) -> Result<(usize, usize, usize)> {
     let (expected_files, expected_hunks) = if spec.huge_lines > 0 {
         (1, 1)
+    } else if spec.binary_files > 0 {
+        // One whole-file degenerate hunk per changed binary (ADR 0009).
+        (spec.binary_files, spec.binary_files)
     } else {
         (spec.files, spec.files * spec.hunks_per_file)
     };
@@ -352,6 +422,17 @@ fn verify(spec: &CaseSpec, snapshot: &Snapshot, root: &Path) -> Result<(usize, u
             hunks_total,
             expected_files,
             expected_hunks
+        );
+    }
+    // A full rewrite misdetected as text would also be one hunk, so the
+    // counts alone can't prove the hash cost is being exercised.
+    let flagged_binary = snapshot.files.iter().filter(|f| f.binary).count();
+    if flagged_binary != spec.binary_files {
+        bail!(
+            "case `{}`: {flagged_binary} files detected as binary, expected {} — \
+             the worktree hash isn't being exercised as intended",
+            spec.name,
+            spec.binary_files
         );
     }
     let owned = snapshot
@@ -393,6 +474,8 @@ mod tests {
             dormant: 0,
             staged_files: 0,
             huge_lines: 0,
+            binary_files: 0,
+            binary_kib: 0,
             touch_every_iteration: false,
             warmup: 1,
             iterations: 1,
@@ -445,6 +528,22 @@ mod tests {
         assert_eq!(result.hunks_total, 1);
         // Three versions written: baseline + staged + worktree.
         assert!(result.content_bytes > 2 * 400 * 60);
+    }
+
+    #[test]
+    fn binary_case_is_whole_file_hunks_flagged_binary() {
+        let mut spec = spec("smoke-binary");
+        spec.changelists = 0;
+        spec.files = 0;
+        spec.binary_files = 2;
+        spec.binary_kib = 8;
+        let result = run(&spec).unwrap();
+        // verify() also asserts both files were detected as binary —
+        // the whole point of the dimension.
+        assert_eq!(result.hunks_total, 2);
+        assert_eq!(result.live_records, 0);
+        // Baseline + rewrite for each file, 8 KiB + NUL header each.
+        assert_eq!(result.content_bytes, 2 * 2 * (8 * 1024 + 8));
     }
 
     #[test]

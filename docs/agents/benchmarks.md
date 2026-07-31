@@ -8,7 +8,9 @@ wall-clock. A v0.1 exit criterion (issue #29, resolved in issue #16): all
 four ADR 0005 mitigations (lazy per-file diff detail, capped diff
 context, skipping huge files, incremental matching) stay
 measurement-gated behind this harness's numbers, and the gate ticket
-(#36) commits a run's results as the v0.1 exit record.
+(#36) commits a run's results as the v0.1 exit record. ADR 0009's
+binary-hashing refresh cost is likewise deferred here (no numeric
+target), via the binaries dimension.
 
 ## Commands
 
@@ -34,6 +36,7 @@ Varied one at a time, so each table reads as that dimension's shape:
 | `hunks` | hunks per file 2 → 128 | 25 changed files, all assigned |
 | `records` | dormant records 0 → 16000 | 50-file × 4-hunk diff, 200 live records |
 | `huge-file` | single file 32k → 512k lines, fully rewritten | no changelists — probes raw diff cost |
+| `binaries` | changed 1 MiB binary files 4 → 256 | no changelists — probes the per-refresh worktree content hash (ADR 0009) |
 
 Contrast cases (excluded from the shape fit, reported as ratios) split
 the costs #36 needs to attribute: `*-unassigned` twins run the same diff
@@ -45,12 +48,25 @@ timed refresh, so each iteration is a genuinely-changed refresh —
 re-match plus state persist inside the timer — where the graduated rows
 measure the steady state (unchanged tree, no-rewrite path).
 `huge-128k-staged` stages one huge rewrite and lays a second over it,
-putting the huge content through **both** diffs at once.
+putting the huge content through **both** diffs at once. `binary-8x32m`
+puts the same 256 MiB total as `binary-256` into 8 files instead of
+256: a match means byte throughput dominates the hash cost, a gap means
+per-file overhead does.
 
-The huge-file cases also report **peak RSS** (before first refresh →
-after all refreshes): both diffs load in full and nothing bounds that
-today (the ADR 0005 caveat this dimension exists to probe). Each case
-runs in its own subprocess so the high-water mark is per-case.
+The huge-file and binaries cases also report **peak RSS** (before first
+refresh → after all refreshes). For huge-file: both diffs load in full
+and nothing bounds that today (the ADR 0005 caveat this dimension
+exists to probe). For binaries: the worktree hash streams from disk
+(`git2::Oid::hash_file`), so a flat RSS here *confirms* the cost is
+time-only. Each case runs in its own subprocess so the high-water mark
+is per-case. In sized tables, content MB counts every generated version
+(baseline + rewrite); the bytes hashed per refresh are the worktree's
+share of that.
+
+ADR 0009's other refresh cost — two odb header reads per staged path,
+text files included — has no dedicated dimension: it rides inside
+`files-250-staged` (125 staged paths), which is where to look if staged
+breadth ever misbehaves.
 
 ## Mechanics
 
