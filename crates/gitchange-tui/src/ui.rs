@@ -477,6 +477,10 @@ fn tag_color(unassigned: bool, dim: bool, theme: &Theme) -> ratatui::style::Colo
 /// selection gets the selection background (the prototype's outline has
 /// no terminal equivalent) — `selected` arrives pre-gated on Diff focus
 /// (issue #45); the blurred selection keeps only its header cursor.
+///
+/// Additive: treatments patch over the line's own style, so callers may
+/// rely on styles they set beforehand (the origin colour, issue #46)
+/// surviving decoration.
 fn decorate(
     mut line: Line<'static>,
     foreign: bool,
@@ -484,7 +488,7 @@ fn decorate(
     width: usize,
     theme: &Theme,
 ) -> Line<'static> {
-    let mut style = Style::new();
+    let mut style = line.style;
     if foreign {
         style = style.add_modifier(Modifier::DIM);
     }
