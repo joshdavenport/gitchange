@@ -4,6 +4,7 @@ members = [
   "crates/gitchange-core",
   "crates/gitchange-tui",
   "crates/gitchange",
+  "crates/xtask",
 ]
 
 [workspace.package]

@@ -8,6 +8,10 @@ Issues live in this repo's GitHub Issues (`gh` CLI). The wayfinder map for the i
 
 Default canonical labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
 
+### Manual-testing sandboxes
+
+`cargo xtask sandbox make --all` builds resettable scenario repos under `.sandbox/` for eyeballing the TUI. See `docs/agents/sandbox.md`.
+
 ### Domain docs
 
 Single-context: `CONTEXT.md` glossary at the repo root, ADRs in `docs/adr/`. See `docs/agents/domain.md`.
