@@ -16,7 +16,12 @@ impl RepoFixture {
     /// Init a fresh repo in a temp dir with a committing identity set.
     pub fn new() -> Self {
         let dir = tempfile::tempdir().expect("create temp dir");
-        let repo = git2::Repository::init(dir.path()).expect("git init");
+        // Pin the initial branch: plain `init` takes it from the host's
+        // `init.defaultBranch`, so fixtures were `main` locally but
+        // `master` on unconfigured CI runners.
+        let mut init_options = git2::RepositoryInitOptions::new();
+        init_options.initial_head("main");
+        let repo = git2::Repository::init_opts(dir.path(), &init_options).expect("git init");
         {
             let mut config = repo.config().expect("open repo config");
             config.set_str("user.name", "gitchange-tests").unwrap();
