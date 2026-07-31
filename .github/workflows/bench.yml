@@ -1,0 +1,29 @@
+name: Bench
+
+# Manual-only: shared-runner timings are too noisy to gate anything on,
+# so this never runs in regular CI. Its one job (issue #36) is producing
+# a weaker-hardware data point — the scaling exponents, not the absolute
+# numbers, are the citable part of the artifact.
+on:
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: "Timed refreshes per case"
+        required: false
+        default: "5"
+
+jobs:
+  bench:
+    name: bench (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo xbench --iterations ${{ inputs.iterations }} --out bench-out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-report
+          path: bench-out/
+          if-no-files-found: error
