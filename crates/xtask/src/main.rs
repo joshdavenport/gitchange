@@ -1,7 +1,8 @@
-//! Repo tasks for gitchange development. Currently one family:
-//! `sandbox`, persistent manual-testing repos under `.sandbox/`
-//! (issue #42).
+//! Repo tasks for gitchange development. Two families: `sandbox`,
+//! persistent manual-testing repos under `.sandbox/` (issue #42), and
+//! `bench`, the RefreshJob benchmark harness (issue #29).
 
+mod bench;
 mod sandbox;
 
 use anyhow::Result;
@@ -20,6 +21,15 @@ enum Command {
     Sandbox {
         #[command(subcommand)]
         command: SandboxCommand,
+    },
+    /// Benchmark the real RefreshJob over synthetic repos at graduated
+    /// scales, reporting scaling shape per dimension (issue #29)
+    Bench(bench::Args),
+    /// (internal) run one benchmark case, emitting its result as JSON
+    #[command(hide = true)]
+    BenchCase {
+        /// The CaseSpec, JSON-encoded by the parent `bench` run
+        spec: String,
     },
 }
 
@@ -54,5 +64,7 @@ fn main() -> Result<()> {
             }
             SandboxCommand::Status => sandbox::status(),
         },
+        Command::Bench(args) => bench::run(&args),
+        Command::BenchCase { spec } => bench::run_child(&spec),
     }
 }

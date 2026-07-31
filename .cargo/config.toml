@@ -1,2 +1,4 @@
 [alias]
 xtask = "run --quiet -p xtask --"
+# The benchmark harness measures; debug numbers would mislead.
+xbench = "run --quiet --release -p xtask -- bench"

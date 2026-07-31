@@ -12,6 +12,10 @@ Default canonical labels (`needs-triage`, `needs-info`, `ready-for-agent`, `read
 
 `cargo xtask sandbox make --all` builds resettable scenario repos under `.sandbox/` for eyeballing the TUI. See `docs/agents/sandbox.md`.
 
+### Benchmark harness
+
+`cargo xbench` times the real RefreshJob over synthetic repos at graduated scales and reports scaling shape per dimension — the measurement gate for all ADR 0005 mitigations. See `docs/agents/benchmarks.md`.
+
 ### Domain docs
 
 Single-context: `CONTEXT.md` glossary at the repo root, ADRs in `docs/adr/`. See `docs/agents/domain.md`.
