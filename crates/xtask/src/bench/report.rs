@@ -62,10 +62,7 @@ pub fn fit_exponent(points: &[(f64, f64)]) -> Option<f64> {
     if denominator == 0.0 {
         return None;
     }
-    let numerator: f64 = logs
-        .iter()
-        .map(|(x, y)| (x - mean_x) * (y - mean_y))
-        .sum();
+    let numerator: f64 = logs.iter().map(|(x, y)| (x - mean_x) * (y - mean_y)).sum();
     Some(numerator / denominator)
 }
 

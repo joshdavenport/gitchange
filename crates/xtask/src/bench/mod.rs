@@ -75,7 +75,11 @@ fn matrix(args: &Args) -> Vec<CaseSpec> {
     };
     let mut specs = Vec::new();
 
-    let files_scales: &[usize] = if args.quick { &[10, 50] } else { &[10, 50, 250, 1000] };
+    let files_scales: &[usize] = if args.quick {
+        &[10, 50]
+    } else {
+        &[10, 50, 250, 1000]
+    };
     for &n in files_scales {
         let mut spec = base(&format!("files-{n}"), "files", n as u64);
         spec.files = n;
@@ -102,7 +106,11 @@ fn matrix(args: &Args) -> Vec<CaseSpec> {
         specs.push(spec);
     }
 
-    let hunk_scales: &[usize] = if args.quick { &[2, 8] } else { &[2, 8, 32, 128] };
+    let hunk_scales: &[usize] = if args.quick {
+        &[2, 8]
+    } else {
+        &[2, 8, 32, 128]
+    };
     for &h in hunk_scales {
         let mut spec = base(&format!("hunks-{h}"), "hunks", h as u64);
         spec.files = 25;
@@ -158,7 +166,11 @@ fn matrix(args: &Args) -> Vec<CaseSpec> {
     // worktree bytes (ADR 0009's stated cost, deferred to this harness
     // by issue #35's heads-up). Top scale = a few hundred MB of changed
     // assets, the scenario the heads-up names.
-    let binary_scales: &[usize] = if args.quick { &[4, 16] } else { &[4, 16, 64, 256] };
+    let binary_scales: &[usize] = if args.quick {
+        &[4, 16]
+    } else {
+        &[4, 16, 64, 256]
+    };
     for &n in binary_scales {
         let mut spec = base(&format!("binary-{n}"), "binaries", n as u64);
         spec.changelists = 0;
@@ -221,7 +233,8 @@ pub fn run(args: &Args) -> Result<()> {
     let meta = report::Meta {
         date: capture("date", &["-u", "+%Y-%m-%d"]).unwrap_or_else(|| "unknown".into()),
         host: host_description(),
-        commit: capture("git", &["rev-parse", "--short", "HEAD"]).unwrap_or_else(|| "unknown".into()),
+        commit: capture("git", &["rev-parse", "--short", "HEAD"])
+            .unwrap_or_else(|| "unknown".into()),
         iterations: specs[0].iterations,
         warmup: args.warmup,
     };

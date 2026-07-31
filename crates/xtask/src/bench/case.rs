@@ -208,7 +208,10 @@ fn generate(sandbox: &mut Sandbox, spec: &CaseSpec) -> Result<()> {
     let dormant_files = spec.dormant / DORMANT_HUNKS_PER_FILE;
 
     for f in 0..spec.files {
-        sandbox.write(&module_path(f), &module(f, spec.hunks_per_file, BlockVariant::Base))?;
+        sandbox.write(
+            &module_path(f),
+            &module(f, spec.hunks_per_file, BlockVariant::Base),
+        )?;
     }
     // Dormant-seed files get a disjoint file-id space so no anchor can
     // collide with a live module's.
@@ -387,12 +390,9 @@ fn record_counts(root: &Path) -> Result<(usize, usize)> {
     }
     let value: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path)?)
         .context("parse state.json for verification")?;
-    let records = value
-        .get("records")
-        .and_then(|r| r.as_array())
-        .context(
-            "state.json has no `records` array — schema drift? update the bench verification",
-        )?;
+    let records = value.get("records").and_then(|r| r.as_array()).context(
+        "state.json has no `records` array — schema drift? update the bench verification",
+    )?;
     let dormant = records
         .iter()
         .filter(|record| {
@@ -441,7 +441,11 @@ fn verify(spec: &CaseSpec, snapshot: &Snapshot, root: &Path) -> Result<(usize, u
         .flat_map(|f| &f.hunks)
         .filter(|h| h.changelist.is_some())
         .count();
-    let expected_owned = if spec.changelists > 0 { expected_hunks } else { 0 };
+    let expected_owned = if spec.changelists > 0 {
+        expected_hunks
+    } else {
+        0
+    };
     if owned != expected_owned {
         bail!(
             "case `{}`: {owned} hunks owned, expected {expected_owned}",
