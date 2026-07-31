@@ -1096,12 +1096,13 @@ impl App {
     }
 
     /// `enter` on a file (prototype variant C): focus the Diff panel
-    /// with its first hunk selected. Hunk-less files (binaries until
-    /// #35) have nothing to select.
+    /// with its first hunk selected. Hunk-less files have nothing to
+    /// select, and a binary's one whole-file hunk is a state that can
+    /// only waste keypresses — polite no-op, no log event (ADR 0009).
     fn enter_hunk_mode(&mut self) {
         let has_hunks = self
             .selected_file()
-            .is_some_and(|file| !file.hunks.is_empty());
+            .is_some_and(|file| !file.binary && !file.hunks.is_empty());
         if has_hunks {
             self.focus = Panel::Diff;
             self.hunk_sel = Some(0);
@@ -1494,8 +1495,9 @@ impl App {
             return lines;
         }
         if file.binary {
-            // The one-line sized summary is ticket #35 (ADR 0009).
-            lines.push(DiffLine::Placeholder("binary file".into()));
+            // The one-line sized placeholder (ADR 0009) — the text is
+            // what says "binary"; no new glyphs.
+            lines.push(DiffLine::Placeholder(binary_placeholder(file)));
             return lines;
         }
         if file.hunks.is_empty() {
@@ -1795,6 +1797,45 @@ pub fn kind_sigil(kind: ChangeKind) -> char {
     }
 }
 
+/// The Diff panel's one-line binary placeholder (ADR 0009):
+/// `Binary file changed (12.4 KB → 15.1 KB)`, with added/deleted
+/// variants showing the single existing side's size. Side presence, not
+/// change kind, picks the variant — an index-only binary has no worktree
+/// kind to trust.
+fn binary_placeholder(file: &ChangedFile) -> String {
+    let sides = file.binary_sides.as_ref();
+    let head = sides.and_then(|sides| sides.head.as_ref());
+    let changed = sides.and_then(|sides| sides.changed.as_ref());
+    match (head, changed) {
+        (Some(head), Some(changed)) => format!(
+            "Binary file changed ({} → {})",
+            human_size(head.size),
+            human_size(changed.size)
+        ),
+        (None, Some(changed)) => format!("Binary file added ({})", human_size(changed.size)),
+        (Some(head), None) => format!("Binary file deleted ({})", human_size(head.size)),
+        (None, None) => "Binary file changed".into(),
+    }
+}
+
+/// `12.4 KB`-style size, 1024-based, one decimal above bytes.
+fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 3] = ["KB", "MB", "GB"];
+    let mut value = bytes as f64;
+    let mut unit = None;
+    for next in UNITS {
+        if value < 1024.0 {
+            break;
+        }
+        value /= 1024.0;
+        unit = Some(next);
+    }
+    match unit {
+        Some(unit) => format!("{value:.1} {unit}"),
+        None => format!("{bytes} B"),
+    }
+}
+
 /// Step an index by `delta`, clamped to `[0, len)`.
 fn step(index: usize, delta: isize, len: usize) -> usize {
     if len == 0 {
@@ -1805,7 +1846,9 @@ fn step(index: usize, delta: isize, len: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use gitchange_core::{Changelist, CommitInfo, Head, Hunk, HunkLine, PayloadFile};
+    use gitchange_core::{
+        BinarySides, BlobInfo, Changelist, CommitInfo, Head, Hunk, HunkLine, OidAnchor, PayloadFile,
+    };
 
     use super::*;
 
@@ -1831,6 +1874,7 @@ mod tests {
             ],
             stage,
             index_only: false,
+            oid_anchor: None,
             changelist: changelist.map(str::to_owned),
         }
     }
@@ -1840,6 +1884,7 @@ mod tests {
             path: path.into(),
             kind: ChangeKind::Modified,
             binary: false,
+            binary_sides: None,
             hunks,
         }
     }
@@ -2267,6 +2312,7 @@ mod tests {
             path: "src/session.ts".into(),
             kind: ChangeKind::Conflicted,
             binary: false,
+            binary_sides: None,
             hunks: Vec::new(),
         });
         app.apply_snapshot(busy);
@@ -2341,6 +2387,7 @@ mod tests {
                 path: "src/merge.ts".into(),
                 kind: ChangeKind::Conflicted,
                 binary: false,
+                binary_sides: None,
                 hunks: Vec::new(),
             },
         );
@@ -2740,6 +2787,7 @@ mod tests {
                 staged_hunks: staged,
                 stale_hunks: stale,
                 hunks: Vec::new(),
+                whole_file: None,
             }],
         }
     }
@@ -2976,6 +3024,7 @@ mod tests {
             staged_hunks: 0,
             stale_hunks: 0,
             hunks: Vec::new(),
+            whole_file: None,
         });
         assert_eq!(payload_counts(&multi), "5 staged hunks in 2 files");
         assert_eq!(payload_counts(&payload(1, 0)), "1 staged hunk in 1 file");
@@ -3077,5 +3126,125 @@ mod tests {
         assert_eq!(app.on_key(key(KeyCode::Char('a'))), None);
         assert_eq!(app.on_key(key(KeyCode::Char('d'))), None);
         assert!(app.overlay.is_none(), "all/unassigned rows take no ops");
+    }
+
+    fn blob(size: u64) -> BlobInfo {
+        BlobInfo {
+            oid: format!("oid-{size}"),
+            size,
+        }
+    }
+
+    fn binary_file(
+        kind: ChangeKind,
+        head: Option<BlobInfo>,
+        changed: Option<BlobInfo>,
+        stage: HunkStage,
+    ) -> ChangedFile {
+        ChangedFile {
+            path: "assets/logo.png".into(),
+            kind,
+            binary: true,
+            binary_sides: Some(BinarySides {
+                head: head.clone(),
+                changed: changed.clone(),
+            }),
+            hunks: vec![Hunk {
+                old_start: 0,
+                old_lines: 0,
+                new_start: 0,
+                new_lines: 0,
+                lines: Vec::new(),
+                stage,
+                index_only: false,
+                oid_anchor: Some(OidAnchor {
+                    head: head.map(|blob| blob.oid),
+                    changed: changed.map(|blob| blob.oid),
+                }),
+                changelist: None,
+            }],
+        }
+    }
+
+    fn binary_app(file: ChangedFile) -> App {
+        let mut snapshot = snapshot();
+        snapshot.files = vec![file];
+        let mut app = App::new("repo");
+        app.apply_snapshot(snapshot);
+        app.on_key(key(KeyCode::Char('3'))); // focus Files, select the file
+        app
+    }
+
+    #[test]
+    fn binary_diff_placeholder_shows_sizes_per_variant() {
+        // ADR 0009: one-line sized placeholder, added/deleted variants
+        // with a single size; the text is what says "binary".
+        let modified = binary_app(binary_file(
+            ChangeKind::Modified,
+            Some(blob(12_698)),
+            Some(blob(15_462)),
+            HunkStage::Unstaged,
+        ));
+        assert!(modified.diff_lines().iter().any(|line| matches!(
+            line,
+            DiffLine::Placeholder(text) if text == "Binary file changed (12.4 KB \u{2192} 15.1 KB)"
+        )));
+
+        let added = binary_app(binary_file(
+            ChangeKind::Untracked,
+            None,
+            Some(blob(512)),
+            HunkStage::Unstaged,
+        ));
+        assert!(added.diff_lines().iter().any(|line| matches!(
+            line,
+            DiffLine::Placeholder(text) if text == "Binary file added (512 B)"
+        )));
+
+        let deleted = binary_app(binary_file(
+            ChangeKind::Deleted,
+            Some(blob(2 * 1024 * 1024)),
+            None,
+            HunkStage::Unstaged,
+        ));
+        assert!(deleted.diff_lines().iter().any(|line| matches!(
+            line,
+            DiffLine::Placeholder(text) if text == "Binary file deleted (2.0 MB)"
+        )));
+    }
+
+    #[test]
+    fn enter_on_a_binary_is_a_polite_no_op() {
+        // ADR 0009: hunk-mode entry on a binary selection does nothing —
+        // no focus change, no selection, no log event.
+        let mut app = binary_app(binary_file(
+            ChangeKind::Modified,
+            Some(blob(10)),
+            Some(blob(20)),
+            HunkStage::Unstaged,
+        ));
+        let logged = app.log.len();
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.focus, Panel::Files);
+        assert!(app.hunk_sel.is_none());
+        assert_eq!(app.log.len(), logged);
+    }
+
+    #[test]
+    fn space_on_a_stale_binary_restages_the_file() {
+        // `space` reads the derived marker: a `\u{25d1}` binary file is `\u{25d0}` at
+        // file level, so the toggle re-stages (index := worktree).
+        let mut app = binary_app(binary_file(
+            ChangeKind::Modified,
+            Some(blob(10)),
+            Some(blob(20)),
+            HunkStage::StagedStale,
+        ));
+        assert_eq!(
+            app.on_key(key(KeyCode::Char(' '))),
+            Some(Action::Op(Op::StageFile {
+                path: "assets/logo.png".into()
+            }))
+        );
     }
 }

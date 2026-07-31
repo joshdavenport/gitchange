@@ -260,6 +260,7 @@ impl Repo {
             .map(|path| CommitPathSpec {
                 path: path.path.clone(),
                 hunks: path.committed.clone(),
+                whole_file: path.whole_file.clone(),
             })
             .collect();
         let oid = self
@@ -403,12 +404,15 @@ fn find_fresh<'a>(
 /// Added, untracked, and deleted files present their whole change as one
 /// hunk, so hunk ops on them are the file ops — routed through the
 /// index-entry primitives, which also cover content libgit2 won't apply
-/// hunk-wise (untracked files aren't in any apply preimage).
+/// hunk-wise (untracked files aren't in any apply preimage). Binary
+/// files are the same shape by construction (ADR 0009): one whole-file
+/// hunk, `space` = whole-file index write.
 fn hunk_ops_are_file_ops(file: &ChangedFile) -> bool {
-    matches!(
-        file.kind,
-        ChangeKind::Added | ChangeKind::Untracked | ChangeKind::Deleted
-    ) && file.total_hunks() == 1
+    file.binary
+        || (matches!(
+            file.kind,
+            ChangeKind::Added | ChangeKind::Untracked | ChangeKind::Deleted
+        ) && file.total_hunks() == 1)
 }
 
 fn stale_notice(path: &str, hunk: &Hunk) -> Notice {

@@ -13,10 +13,49 @@ pub struct FileDiff {
     /// Repo-relative path, as git reports it.
     pub path: String,
     pub kind: ChangeKind,
-    /// Binary files carry no text hunks; whole-file degenerate hunks are
-    /// ticket 35 (ADR 0009).
+    /// Binary files carry no text hunks; their change is one whole-file
+    /// degenerate hunk in the universe (ADR 0009).
     pub binary: bool,
     pub hunks: Vec<DiffHunk>,
+    /// Blob identity and size per side (ADR 0009): the whole-file hunk's
+    /// anchor material and the diff placeholder's sizes. The changed
+    /// side is the diff's new side. Worktree diffs populate it only for
+    /// binary files — the on-disk content hash is the stated refresh
+    /// cost; index diffs populate it for every file (two odb header
+    /// reads), so a binary worktree over staged text still derives a
+    /// committable whole-file payload.
+    pub binary_sides: Option<BinarySides>,
+}
+
+/// The two sides of a binary file's change (ADR 0009). A `None` side
+/// doesn't exist: no `head` for added/untracked files, no `changed` for
+/// deletions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinarySides {
+    pub head: Option<BlobInfo>,
+    pub changed: Option<BlobInfo>,
+}
+
+impl BinarySides {
+    /// The changed-side content hash, `None` for a deletion.
+    pub fn changed_oid(&self) -> Option<String> {
+        self.changed.as_ref().map(|blob| blob.oid.clone())
+    }
+
+    /// The sides as the OID pair records anchor on (ADR 0009).
+    pub fn oid_anchor(&self) -> crate::state::OidAnchor {
+        crate::state::OidAnchor {
+            head: self.head.as_ref().map(|blob| blob.oid.clone()),
+            changed: self.changed_oid(),
+        }
+    }
+}
+
+/// One binary blob: its content hash (`hash-object`-style) and byte size.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlobInfo {
+    pub oid: String,
+    pub size: u64,
 }
 
 /// One text hunk. Old coordinates address the HEAD side in both diffs,

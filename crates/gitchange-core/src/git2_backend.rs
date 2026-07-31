@@ -4,7 +4,7 @@ use std::process::Command;
 
 use crate::backend::{CommitPathSpec, GitBackend, HunkHeader};
 use crate::commit::CommitOptions;
-use crate::diff::{ChangeKind, DiffHunk, FileDiff, HunkLine, RepoDiffs};
+use crate::diff::{BinarySides, BlobInfo, ChangeKind, DiffHunk, FileDiff, HunkLine, RepoDiffs};
 use crate::error::Error;
 use crate::snapshot::{CommitInfo, GitOperation, Head};
 
@@ -67,8 +67,8 @@ impl GitBackend for Git2Backend {
             .map_err(backend_error)?;
 
         Ok(RepoDiffs {
-            worktree: collect_file_diffs(&worktree)?,
-            index: collect_file_diffs(&index)?,
+            worktree: self.collect_file_diffs(&worktree, ChangedSide::Worktree)?,
+            index: self.collect_file_diffs(&index, ChangedSide::Index)?,
         })
     }
 
@@ -359,6 +359,35 @@ impl Git2Backend {
         temp.read_tree(&base_tree).map_err(backend_error)?;
 
         for spec in payload {
+            // A binary file's whole-file selection (ADR 0009): the live
+            // index entry — the staged blob — copied into the temp index
+            // verbatim; no apply machinery. The OID check mirrors the
+            // hunk freshness check below: an index that moved since the
+            // payload was derived must not commit a silent substitute.
+            if let Some(whole) = &spec.whole_file {
+                let live = self.repo.index().map_err(backend_error)?;
+                let entry = live.get_path(Path::new(&spec.path), 0);
+                let live_oid = entry.as_ref().map(|entry| entry.id.to_string());
+                if live_oid != whole.staged_oid {
+                    return Err(Error::Backend(
+                        format!(
+                            "the index changed while committing ({} staged blob); retry",
+                            spec.path
+                        )
+                        .into(),
+                    ));
+                }
+                match entry {
+                    Some(entry) => temp.add(&entry).map_err(backend_error)?,
+                    // The payload commits the file's staged deletion.
+                    None if temp.get_path(Path::new(&spec.path), 0).is_some() => {
+                        temp.remove_path(Path::new(&spec.path))
+                            .map_err(backend_error)?;
+                    }
+                    None => {}
+                }
+                continue;
+            }
             // Same options as `diffs()` produced the payload headers
             // from, so headers compare exactly.
             let mut diff_options = git2::DiffOptions::new();
@@ -587,32 +616,131 @@ fn ranges_overlap(a: (u32, u32), b: (u32, u32)) -> bool {
     a_start < b_end && b_start < a_end
 }
 
-fn collect_file_diffs(diff: &git2::Diff) -> Result<Vec<FileDiff>, Error> {
-    let mut files = Vec::new();
-    for (position, delta) in diff.deltas().enumerate() {
-        let Some(kind) = change_kind(delta.status()) else {
-            continue;
-        };
-        let path = utf8_path(&delta)?;
+/// Which content a diff's new side addresses — decides where a binary
+/// file's changed-side hash comes from (ADR 0009).
+#[derive(Clone, Copy)]
+enum ChangedSide {
+    /// diff(HEAD↔worktree): hash the on-disk content at refresh; libgit2
+    /// leaves workdir-side blob ids unset.
+    Worktree,
+    /// diff(HEAD↔index): the staged blob's id is already real.
+    Index,
+}
 
-        // Unmerged paths are quarantined (ADR 0007): listed, excluded
-        // from the hunk universe — no hunk content extracted.
-        let (binary, hunks) = if kind == ChangeKind::Conflicted {
-            (false, Vec::new())
-        } else {
-            match git2::Patch::from_diff(diff, position).map_err(backend_error)? {
-                Some(patch) => (patch.delta().flags().is_binary(), patch_hunks(&patch)?),
-                None => (delta.flags().is_binary(), Vec::new()),
-            }
-        };
-        files.push(FileDiff {
-            path,
-            kind,
-            binary,
-            hunks,
-        });
+impl Git2Backend {
+    fn collect_file_diffs(
+        &self,
+        diff: &git2::Diff,
+        changed_side: ChangedSide,
+    ) -> Result<Vec<FileDiff>, Error> {
+        let mut files = Vec::new();
+        for (position, delta) in diff.deltas().enumerate() {
+            let Some(kind) = change_kind(delta.status()) else {
+                continue;
+            };
+            let path = utf8_path(&delta)?;
+
+            // Unmerged paths are quarantined (ADR 0007): listed, excluded
+            // from the hunk universe — no hunk content extracted.
+            let (binary, hunks) = if kind == ChangeKind::Conflicted {
+                (false, Vec::new())
+            } else {
+                match git2::Patch::from_diff(diff, position).map_err(backend_error)? {
+                    Some(patch) => (patch.delta().flags().is_binary(), patch_hunks(&patch)?),
+                    None => (delta.flags().is_binary(), Vec::new()),
+                }
+            };
+            // Worktree diffs pay the anchor cost — a full content hash
+            // of the on-disk file (ADR 0009's stated refresh cost) —
+            // only for binary files. Index diffs carry sides for every
+            // file (two odb header reads): the commit plan needs a
+            // staged-blob OID even when a binary worktree change sits
+            // over staged text content.
+            let compute_sides = match changed_side {
+                ChangedSide::Worktree => binary,
+                ChangedSide::Index => kind != ChangeKind::Conflicted,
+            };
+            let binary_sides = if compute_sides {
+                Some(self.binary_sides(&delta, &path, changed_side)?)
+            } else {
+                None
+            };
+            files.push(FileDiff {
+                path,
+                kind,
+                binary,
+                hunks,
+                binary_sides,
+            });
+        }
+        Ok(files)
     }
-    Ok(files)
+
+    /// A delta's per-side blob info (ADR 0009): the HEAD-side blob from
+    /// the odb, the changed side hashed `hash-object`-style from disk
+    /// (worktree diff) or read off the staged blob (index diff). A
+    /// missing side — added files' HEAD, deletions' changed — is `None`.
+    /// Odb sides read headers only, never content.
+    ///
+    /// The disk hash sees raw bytes, no clean filters: under a filter
+    /// driver (Git LFS) the worktree hash can never equal the staged
+    /// blob, so such a file reads permanently `◑` — a known v0.1
+    /// limitation; running filters at refresh would mean odb writes.
+    fn binary_sides(
+        &self,
+        delta: &git2::DiffDelta,
+        path: &str,
+        changed_side: ChangedSide,
+    ) -> Result<BinarySides, Error> {
+        let blob_info = |id: git2::Oid| -> Result<Option<BlobInfo>, Error> {
+            if id.is_zero() {
+                return Ok(None);
+            }
+            let (size, _) = self
+                .repo
+                .odb()
+                .and_then(|odb| odb.read_header(id))
+                .map_err(backend_error)?;
+            Ok(Some(BlobInfo {
+                oid: id.to_string(),
+                size: size as u64,
+            }))
+        };
+        let head = blob_info(delta.old_file().id())?;
+        let changed = match changed_side {
+            ChangedSide::Worktree => self.worktree_blob_info(path)?,
+            ChangedSide::Index => blob_info(delta.new_file().id())?,
+        };
+        Ok(BinarySides { head, changed })
+    }
+
+    /// Hash the worktree content at `path` as a blob, `None` when
+    /// nothing is on disk. A symlink's blob is its target string (git
+    /// semantics), which also keeps a dangling link from failing the
+    /// refresh.
+    fn worktree_blob_info(&self, path: &str) -> Result<Option<BlobInfo>, Error> {
+        let Some(file) = self.repo.workdir().map(|root| root.join(path)) else {
+            return Ok(None);
+        };
+        let Ok(metadata) = file.symlink_metadata() else {
+            return Ok(None);
+        };
+        if metadata.file_type().is_symlink() {
+            let target = fs::read_link(&file).map_err(io_error)?;
+            let bytes = target.as_os_str().as_encoded_bytes();
+            let oid =
+                git2::Oid::hash_object(git2::ObjectType::Blob, bytes).map_err(backend_error)?;
+            return Ok(Some(BlobInfo {
+                oid: oid.to_string(),
+                size: bytes.len() as u64,
+            }));
+        }
+        let oid = git2::Oid::hash_file(git2::ObjectType::Blob, &file).map_err(backend_error)?;
+        Ok(Some(BlobInfo {
+            oid: oid.to_string(),
+            size: metadata.len(),
+        }))
+    }
 }
 
 fn patch_hunks(patch: &git2::Patch) -> Result<Vec<DiffHunk>, Error> {

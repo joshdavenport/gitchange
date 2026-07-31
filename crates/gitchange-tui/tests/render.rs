@@ -34,6 +34,7 @@ fn hunk(new_start: u32, changelist: Option<&str>, stage: HunkStage) -> Hunk {
         ],
         stage,
         index_only: false,
+        oid_anchor: None,
         changelist: changelist.map(str::to_owned),
     }
 }
@@ -45,12 +46,14 @@ fn snapshot() -> Snapshot {
                 path: "src/nav.astro".into(),
                 kind: ChangeKind::Modified,
                 binary: false,
+                binary_sides: None,
                 hunks: vec![hunk(8, None, HunkStage::Unstaged)],
             },
             ChangedFile {
                 path: "src/print.css".into(),
                 kind: ChangeKind::Modified,
                 binary: false,
+                binary_sides: None,
                 hunks: vec![
                     hunk(14, Some("fixes"), HunkStage::Staged),
                     hunk(63, Some("chores"), HunkStage::Unstaged),
@@ -245,6 +248,7 @@ fn pins_render_as_a_banner_atop_the_log_stream() {
         path: "src/merge.ts".into(),
         kind: ChangeKind::Conflicted,
         binary: false,
+        binary_sides: None,
         hunks: Vec::new(),
     });
     app.apply_snapshot(busy);
@@ -267,6 +271,7 @@ fn the_conflicts_group_renders_first_without_stage_marks() {
         path: "src/merge.ts".into(),
         kind: ChangeKind::Conflicted,
         binary: false,
+        binary_sides: None,
         hunks: Vec::new(),
     });
     app.apply_snapshot(busy);
@@ -315,6 +320,7 @@ fn payload(staged: usize, stale: usize) -> gitchange_core::CommitPayload {
             staged_hunks: staged,
             stale_hunks: stale,
             hunks: Vec::new(),
+            whole_file: None,
         }],
     }
 }

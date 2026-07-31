@@ -258,9 +258,9 @@ fn a_rename_presents_as_delete_plus_untracked() {
 }
 
 #[test]
-fn a_changed_binary_file_is_listed_without_text_hunks() {
-    // Whole-file degenerate hunks are ticket 35 (ADR 0009); until then a
-    // changed binary is visible with no hunks rather than an error.
+fn a_changed_binary_file_is_one_whole_file_hunk() {
+    // ADR 0009: a changed binary is one degenerate whole-file hunk with
+    // a blob-OID-pair anchor, not an error and not hunk-less.
     let fixture = RepoFixture::new();
     fixture
         .write_bytes("blob.bin", &[0u8, 1, 2, 3])
@@ -274,5 +274,94 @@ fn a_changed_binary_file_is_listed_without_text_hunks() {
     assert_eq!(file.path, "blob.bin");
     assert_eq!(file.kind, ChangeKind::Modified);
     assert!(file.binary);
+    assert_eq!(file.total_hunks(), 1);
+    assert_eq!(file.stage(), FileStage::Unstaged);
+    assert_eq!(file.hunks[0].stage, HunkStage::Unstaged);
+    assert!(file.hunks[0].lines.is_empty());
+
+    let anchor = file.hunks[0].oid_anchor.as_ref().expect("OID anchor");
+    assert!(anchor.head.is_some(), "HEAD-side blob OID");
+    assert!(anchor.changed.is_some(), "changed-side content hash");
+    assert_ne!(anchor.head, anchor.changed);
+
+    let sides = file.binary_sides.as_ref().expect("binary sides");
+    assert_eq!(sides.head.as_ref().map(|blob| blob.size), Some(4));
+    assert_eq!(sides.changed.as_ref().map(|blob| blob.size), Some(5));
+}
+
+#[test]
+fn binary_staging_is_derived_by_oid_compare() {
+    // The `●` case: staged, worktree unchanged since. The changed-side
+    // hash equals the staged blob's OID, so the file reads fully staged
+    // — the "staged binary derives ○ 0/0" gap this ticket closes.
+    let fixture = RepoFixture::new();
+    fixture
+        .write_bytes("blob.bin", &[0u8, 1, 2, 3])
+        .commit_all("init")
+        .write_bytes("blob.bin", &[0u8, 9, 9])
+        .stage("blob.bin");
+
+    let repo = Repo::discover(fixture.path()).unwrap();
+    let file = &repo.refresh().unwrap().files[0];
+    assert_eq!(file.stage(), FileStage::Staged);
+    assert_eq!(file.hunks[0].stage, HunkStage::Staged);
+    assert_eq!((file.staged_hunks(), file.total_hunks()), (1, 1));
+
+    // The edited `◑` flavour: index and worktree hold different blobs.
+    fixture.write_bytes("blob.bin", &[0u8, 7, 7, 7]);
+    let file = &repo.refresh().unwrap().files[0];
+    assert_eq!(file.hunks[0].stage, HunkStage::StagedStale);
+    assert!(!file.hunks[0].index_only);
+    assert_eq!((file.staged_hunks(), file.total_hunks()), (0, 1));
+
+    // The index-only `◑` flavour: staged then worktree-reverted.
+    fixture.write_bytes("blob.bin", &[0u8, 1, 2, 3]);
+    let file = &repo.refresh().unwrap().files[0];
+    assert_eq!(file.hunks[0].stage, HunkStage::StagedStale);
+    assert!(file.hunks[0].index_only);
+}
+
+#[test]
+fn added_and_deleted_binaries_have_one_sided_anchors() {
+    let fixture = RepoFixture::new();
+    fixture
+        .write_bytes("old.bin", &[0u8, 1, 2])
+        .commit_all("init")
+        .write_bytes("new.bin", &[0u8, 3, 4, 5, 6]);
+    std::fs::remove_file(fixture.path().join("old.bin")).unwrap();
+
+    let repo = Repo::discover(fixture.path()).unwrap();
+    let snapshot = repo.refresh().unwrap();
+
+    let added = snapshot.files.iter().find(|f| f.path == "new.bin").unwrap();
+    assert_eq!(added.kind, ChangeKind::Untracked);
+    let anchor = added.hunks[0].oid_anchor.as_ref().unwrap();
+    assert!(anchor.head.is_none());
+    assert!(anchor.changed.is_some());
+    let sides = added.binary_sides.as_ref().unwrap();
+    assert_eq!(sides.changed.as_ref().map(|blob| blob.size), Some(5));
+
+    let deleted = snapshot.files.iter().find(|f| f.path == "old.bin").unwrap();
+    assert_eq!(deleted.kind, ChangeKind::Deleted);
+    let anchor = deleted.hunks[0].oid_anchor.as_ref().unwrap();
+    assert!(anchor.head.is_some());
+    assert!(anchor.changed.is_none());
+}
+
+#[test]
+fn a_conflicted_binary_stays_quarantined() {
+    // Quarantine precedence (ADR 0007) survives whole-file hunks: a
+    // conflicted binary never derives one.
+    let fixture = RepoFixture::new();
+    fixture
+        .write_bytes("blob.bin", &[0u8, 1])
+        .commit_all("init")
+        .add_index_conflict("blob.bin");
+
+    let repo = Repo::discover(fixture.path()).unwrap();
+    let snapshot = repo.refresh().unwrap();
+
+    let file = &snapshot.files[0];
+    assert_eq!(file.kind, ChangeKind::Conflicted);
     assert!(file.hunks.is_empty());
 }

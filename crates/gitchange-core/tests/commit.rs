@@ -615,3 +615,164 @@ fn align_sets_index_to_worktree_for_the_changelists_stale_hunks() {
         "the discarded index-only hunk leaves no diff at all"
     );
 }
+
+#[test]
+fn a_changelist_containing_a_binary_commits_it_whole() {
+    // ADR 0009: the temp-index commit receives the staged blob
+    // whole-file; other changelists' content stays behind.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("a.txt", &text(&numbered_lines(5)))
+        .write_bytes("logo.png", &[0u8, 1, 2, 3])
+        .commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("art").unwrap();
+    fixture
+        .write_bytes("logo.png", &[0u8, 9, 9])
+        .stage("logo.png");
+    repo.refresh().unwrap();
+
+    // A second changelist owns a staged text edit that must not commit.
+    repo.create_changelist("other").unwrap();
+    repo.switch("other").unwrap();
+    let mut lines = numbered_lines(5);
+    lines[0] = "edited".into();
+    fixture.write("a.txt", &text(&lines)).stage("a.txt");
+    repo.refresh().unwrap();
+
+    let payload = repo.commit_payload(Some("art")).unwrap();
+    assert_eq!(payload.file_count(), 1);
+    assert_eq!(payload.staged_hunks(), 1, "the binary counts as one hunk");
+    assert_eq!(payload.stale_hunks(), 0);
+
+    commit(&repo, Some("art"), "binary whole-file");
+    assert_eq!(fixture.head_bytes("logo.png").unwrap(), vec![0u8, 9, 9]);
+    assert_eq!(
+        fixture.head_bytes("a.txt").unwrap(),
+        text(&numbered_lines(5)).into_bytes(),
+        "the other changelist's staged edit stays out of the commit"
+    );
+    assert_eq!(
+        fixture.index_content("a.txt").unwrap(),
+        text(&lines),
+        "the live index is untouched"
+    );
+
+    // The consumed record is removed; the path drops out of the diff.
+    let snapshot = repo.refresh().unwrap();
+    assert!(!snapshot.files.iter().any(|file| file.path == "logo.png"));
+}
+
+#[test]
+fn a_stale_binary_warns_and_commits_the_staged_blob() {
+    // ADR 0004's warn-and-confirm applies unchanged: the `◑` binary
+    // counts as a stale hunk and the commit carries the staged blob,
+    // not the worktree's newer bytes.
+    let fixture = RepoFixture::new();
+    fixture
+        .write_bytes("logo.png", &[0u8, 1])
+        .commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("art").unwrap();
+    fixture
+        .write_bytes("logo.png", &[0u8, 2, 2])
+        .stage("logo.png")
+        .write_bytes("logo.png", &[0u8, 3, 3, 3]);
+
+    let payload = repo.commit_payload(Some("art")).unwrap();
+    assert_eq!(payload.staged_hunks(), 0);
+    assert_eq!(payload.stale_hunks(), 1, "the ◑ binary is the warn count");
+
+    commit(&repo, Some("art"), "stale binary");
+    assert_eq!(fixture.head_bytes("logo.png").unwrap(), vec![0u8, 2, 2]);
+
+    // The retained record was rewritten against the new HEAD: the
+    // residual worktree change keeps its membership.
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(owners(&snapshot, "logo.png"), vec![Some("art".into())]);
+    assert_eq!(stages(&snapshot, "logo.png"), vec![HunkStage::Unstaged]);
+}
+
+#[test]
+fn a_staged_binary_deletion_commits_the_removal() {
+    let fixture = RepoFixture::new();
+    fixture
+        .write("keep.txt", "content\n")
+        .write_bytes("logo.png", &[0u8, 1])
+        .commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("art").unwrap();
+    fs::remove_file(fixture.path().join("logo.png")).unwrap();
+    fixture.stage_removal("logo.png");
+
+    let payload = repo.commit_payload(Some("art")).unwrap();
+    assert_eq!(payload.file_count(), 1);
+    assert_eq!(payload.staged_hunks(), 1);
+
+    commit(&repo, Some("art"), "drop binary");
+    assert!(fixture.head_bytes("logo.png").is_none());
+    assert!(fixture.head_bytes("keep.txt").is_some());
+}
+
+#[test]
+fn a_restaged_binary_blob_drifts_the_confirmation() {
+    // The payload's whole-file OID participates in drift equality
+    // (ADR 0004's freshness guard): re-staging new bytes between
+    // confirm and commit returns Drifted, nothing committed.
+    let fixture = RepoFixture::new();
+    fixture
+        .write_bytes("logo.png", &[0u8, 1])
+        .commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("art").unwrap();
+    fixture
+        .write_bytes("logo.png", &[0u8, 2, 2])
+        .stage("logo.png");
+
+    let confirmed = repo.commit_payload(Some("art")).unwrap();
+    fixture
+        .write_bytes("logo.png", &[0u8, 4, 4, 4, 4])
+        .stage("logo.png");
+
+    let outcome = repo
+        .commit(
+            Some("art"),
+            "drifted",
+            &CommitOptions::default(),
+            Some(&confirmed),
+        )
+        .unwrap();
+    assert!(matches!(outcome, CommitOutcome::Drifted { .. }));
+    assert_eq!(fixture.commit_count(), 1, "nothing was committed");
+}
+
+#[test]
+fn a_binary_worktree_over_staged_text_commits_the_staged_text() {
+    // The mixed case: text content staged, then the worktree file
+    // replaced with binary bytes. The universe sees one `◑` whole-file
+    // hunk; committing carries the staged text blob whole-file rather
+    // than silently excluding the path.
+    let fixture = RepoFixture::new();
+    fixture.write("notes.txt", "original\n").commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("work").unwrap();
+    fixture
+        .write("notes.txt", "staged text\n")
+        .stage("notes.txt");
+    fixture.write_bytes("notes.txt", &[0u8, 1, 2, 3]);
+
+    let payload = repo.commit_payload(Some("work")).unwrap();
+    assert_eq!(payload.file_count(), 1);
+    assert_eq!(payload.stale_hunks(), 1, "index and worktree differ: ◑");
+
+    commit(&repo, Some("work"), "mixed staged text");
+    assert_eq!(
+        fixture.head_bytes("notes.txt").unwrap(),
+        b"staged text\n".to_vec()
+    );
+    assert_eq!(
+        std::fs::read(fixture.path().join("notes.txt")).unwrap(),
+        vec![0u8, 1, 2, 3],
+        "the worktree is untouched"
+    );
+}

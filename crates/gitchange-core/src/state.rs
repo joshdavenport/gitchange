@@ -33,12 +33,29 @@ pub struct MembershipRecord {
     /// of deleted changelists, explicit moves).
     pub changelist: Option<String>,
     /// Verbatim hunk lines (`origin` + content), context included — the
-    /// identity evidence for tier-1 exact matching.
+    /// identity evidence for tier-1 exact matching. Empty for binary
+    /// records, whose identity lives in `oid_anchor` instead.
     pub anchor: Vec<String>,
+    /// The blob-OID-pair anchor of a binary whole-file record (ADR 0009):
+    /// present exactly when the record claims a binary file's degenerate
+    /// hunk. `default` keeps pre-binary schema-1 files readable; omitted
+    /// from text records to keep the file `cat`-debuggable (ADR 0002).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oid_anchor: Option<OidAnchor>,
     /// Unix epoch seconds since the hunk vanished from the diff; `None`
     /// while live. Dormant records revive only via tier-1 exact match
     /// (ADR 0002) and prune after 14 days.
     pub dormant_since: Option<u64>,
+}
+
+/// A binary record's identity evidence (ADR 0009): the HEAD-side blob
+/// OID and the changed-side content hash. A `None` side doesn't exist
+/// (no `head` for added files, no `changed` for deletions). Tier-1
+/// matching and dormant revival compare the changed side only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OidAnchor {
+    pub head: Option<String>,
+    pub changed: Option<String>,
 }
 
 impl MembershipRecord {
@@ -195,8 +212,8 @@ impl State {
         self.records.retain(|record| {
             record.path != path
                 || !hunks.iter().zip(&anchors).any(|(hunk, anchor)| {
-                    record.anchor == *anchor
-                        || (!record.is_dormant() && matcher::old_ranges_overlap(hunk, record))
+                    matcher::exact_anchor_match(record, hunk, anchor)
+                        || (!record.is_dormant() && matcher::overlap_claim(record, hunk))
                 })
         });
         for (hunk, anchor) in hunks.iter().zip(&anchors) {

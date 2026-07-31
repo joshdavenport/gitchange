@@ -203,7 +203,9 @@ fn match_file(
                 continue;
             }
             let matched = stored.iter().enumerate().find(|(j, record)| {
-                !consumed[*j] && record.is_dormant() == pass_dormant && record.anchor == anchors[i]
+                !consumed[*j]
+                    && record.is_dormant() == pass_dormant
+                    && exact_anchor_match(record, hunk, &anchors[i])
             });
             if let Some((j, record)) = matched {
                 let owner = record.changelist.clone();
@@ -261,7 +263,7 @@ fn match_file(
             .iter()
             .enumerate()
             .filter(|(j, record)| {
-                !consumed[*j] && !record.is_dormant() && old_ranges_overlap(hunk, record)
+                !consumed[*j] && !record.is_dormant() && overlap_claim(record, hunk)
             })
             .map(|(j, _)| j)
             .collect();
@@ -359,7 +361,40 @@ pub(crate) fn record_for(
         new_lines: hunk.new_lines,
         changelist: owner,
         anchor: anchor.to_vec(),
+        oid_anchor: hunk.oid_anchor.clone(),
         dormant_since: None,
+    }
+}
+
+/// Tier-1 identity: verbatim-anchor equality for text hunks; for a
+/// binary whole-file hunk, changed-side OID equality (ADR 0009) — the
+/// HEAD side deliberately doesn't participate, so a HEAD move alone
+/// never sheds an untouched binary change. The `oid_anchor` presence
+/// check keeps text and binary records from cross-matching (both sides
+/// have empty verbatim anchors for a binary).
+pub(crate) fn exact_anchor_match(
+    record: &MembershipRecord,
+    hunk: &Hunk,
+    anchor: &[String],
+) -> bool {
+    match &hunk.oid_anchor {
+        Some(oids) => record
+            .oid_anchor
+            .as_ref()
+            .is_some_and(|stored| stored.changed == oids.changed),
+        None => record.oid_anchor.is_none() && record.anchor == anchor,
+    }
+}
+
+/// Tier-2 claim: HEAD-side range overlap for text hunks; for a binary
+/// whole-file hunk, path continuity (ADR 0009) — the whole file *is*
+/// the hunk, so any binary record at the path trivially "overlaps" it
+/// and a re-export (same path, new content) keeps its membership.
+pub(crate) fn overlap_claim(record: &MembershipRecord, hunk: &Hunk) -> bool {
+    if hunk.oid_anchor.is_some() {
+        record.oid_anchor.is_some()
+    } else {
+        record.oid_anchor.is_none() && old_ranges_overlap(hunk, record)
     }
 }
 

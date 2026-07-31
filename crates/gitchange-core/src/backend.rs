@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::commit::CommitOptions;
+use crate::commit::{CommitOptions, WholeFilePayload};
 use crate::diff::RepoDiffs;
 use crate::error::Error;
 use crate::snapshot::{CommitInfo, GitOperation, Head};
@@ -88,9 +88,13 @@ pub trait GitBackend: Send {
 }
 
 /// One path's share of a commit payload: which diff(HEAD↔index) hunks
-/// the temporary index carries.
+/// the temporary index carries — or, for a binary file (ADR 0009), the
+/// whole-file selection: the live index entry copied in verbatim, with
+/// `whole_file.staged_oid` as the freshness check. `whole_file` and
+/// `hunks` are mutually exclusive.
 #[derive(Debug, Clone)]
 pub struct CommitPathSpec {
     pub path: String,
     pub hunks: Vec<HunkHeader>,
+    pub whole_file: Option<WholeFilePayload>,
 }

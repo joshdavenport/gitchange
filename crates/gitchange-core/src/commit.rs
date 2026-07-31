@@ -9,7 +9,7 @@
 use crate::backend::HunkHeader;
 use crate::diff::{DiffHunk, FileDiff};
 use crate::matcher::anchor_lines;
-use crate::state::{MembershipRecord, State};
+use crate::state::{MembershipRecord, OidAnchor, State};
 use crate::universe::{ChangedFile, Hunk, HunkStage};
 
 /// Flags for [`crate::Repo::commit`], both forwarded to the underlying
@@ -73,7 +73,20 @@ pub struct PayloadFile {
     /// The changelist's `◑` hunks here (edited and index-only flavours).
     pub stale_hunks: usize,
     /// The diff(HEAD↔index) hunks this commit carries, in file order.
+    /// Empty for a binary file, which commits via `whole_file` instead.
     pub hunks: Vec<PayloadHunk>,
+    /// A binary file's whole-file payload (ADR 0009); `None` for text
+    /// files. Participates in equality, so a re-staged binary blob
+    /// drifts a confirmation like re-staged text hunks do.
+    pub whole_file: Option<WholeFilePayload>,
+}
+
+/// What a binary file commits (ADR 0009): the staged blob, whole-file —
+/// the temp index receives the live index entry verbatim. `None`
+/// commits the file's staged deletion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WholeFilePayload {
+    pub staged_oid: Option<String>,
 }
 
 /// One committed index-content hunk, coordinates and verbatim lines —
@@ -97,8 +110,11 @@ pub(crate) struct CommitPlan {
 
 pub(crate) struct PathPlan {
     pub path: String,
-    /// Headers of the committed diff(HEAD↔index) hunks.
+    /// Headers of the committed diff(HEAD↔index) hunks; empty for a
+    /// binary file, which commits via `whole_file` instead.
     pub committed: Vec<HunkHeader>,
+    /// A binary file's whole-file selection (ADR 0009).
+    pub whole_file: Option<WholeFilePayload>,
     /// Records of fully-consumed hunks (`●`: index == worktree at commit
     /// time) — removed explicitly (ADR 0004).
     pub consumed: Vec<RecordKey>,
@@ -113,6 +129,7 @@ pub(crate) struct RecordKey {
     old_start: u32,
     old_lines: u32,
     anchor: Vec<String>,
+    oid_anchor: Option<OidAnchor>,
 }
 
 impl RecordKey {
@@ -121,6 +138,7 @@ impl RecordKey {
             old_start: hunk.old_start,
             old_lines: hunk.old_lines,
             anchor: crate::matcher::anchor_of(hunk),
+            oid_anchor: hunk.oid_anchor.clone(),
         }
     }
 
@@ -129,6 +147,7 @@ impl RecordKey {
             && record.old_start == self.old_start
             && record.old_lines == self.old_lines
             && record.anchor == self.anchor
+            && record.oid_anchor == self.oid_anchor
     }
 }
 
@@ -162,9 +181,52 @@ pub(crate) fn plan(
         if owned.is_empty() {
             continue;
         }
-        let index_hunks: &[DiffHunk] = index
-            .iter()
-            .find(|candidate| candidate.path == file.path)
+        let index_file = index.iter().find(|candidate| candidate.path == file.path);
+        // A binary file commits whole (ADR 0009): the staged blob copied
+        // into the temp index verbatim — no hunk selection to run. An
+        // owned non-unstaged hunk implies the index differs from HEAD
+        // here, so the index diff sees the path and carries sides (it
+        // does for text content too — the mixed binary-worktree-over-
+        // staged-text case commits its staged text whole-file); the
+        // `else` is defensive only.
+        if file.binary {
+            let Some(sides) = index_file.and_then(|file| file.binary_sides.as_ref()) else {
+                continue;
+            };
+            let whole_file = WholeFilePayload {
+                staged_oid: sides.changed_oid(),
+            };
+            let hunk = owned[0];
+            let mut consumed = Vec::new();
+            let mut retained = Vec::new();
+            if hunk.stage == HunkStage::Staged {
+                consumed.push(RecordKey::of(hunk));
+            } else {
+                retained.push(Retained {
+                    key: RecordKey::of(hunk),
+                    // Degenerate whole-file coordinates: the aftermath
+                    // rewrites binary records from the residual diff's
+                    // OIDs, not from this region.
+                    region: (0, 0),
+                });
+            }
+            payload_files.push(PayloadFile {
+                path: file.path.clone(),
+                staged_hunks: usize::from(hunk.stage == HunkStage::Staged),
+                stale_hunks: usize::from(hunk.stage == HunkStage::StagedStale),
+                hunks: Vec::new(),
+                whole_file: Some(whole_file.clone()),
+            });
+            paths.push(PathPlan {
+                path: file.path.clone(),
+                committed: Vec::new(),
+                whole_file: Some(whole_file),
+                consumed,
+                retained,
+            });
+            continue;
+        }
+        let index_hunks: &[DiffHunk] = index_file
             .map(|candidate| candidate.hunks.as_slice())
             .unwrap_or(&[]);
         // The committable atoms are index hunks; selection mirrors the
@@ -220,10 +282,12 @@ pub(crate) fn plan(
                     lines: anchor_lines(&hunk.lines),
                 })
                 .collect(),
+            whole_file: None,
         });
         paths.push(PathPlan {
             path: file.path.clone(),
             committed: headers,
+            whole_file: None,
             consumed,
             retained,
         });
@@ -266,6 +330,22 @@ pub(crate) fn apply_aftermath(state: &mut State, plans: &[PathPlan], residual: &
                 .iter()
                 .find(|retained| retained.key.matches(record))
             {
+                // A retained binary `◑` record rewrites from the residual
+                // diff's OIDs (ADR 0009): the whole file is the hunk, so
+                // there is no region to overlap — coordinates stay
+                // degenerate. No residual (the worktree moved on) leaves
+                // the record for the next refresh to resolve — dormancy
+                // at worst, visible per ADR 0002.
+                if record.oid_anchor.is_some() {
+                    let sides = residual
+                        .iter()
+                        .find(|file| file.path == plan.path)
+                        .and_then(|file| file.binary_sides.as_ref());
+                    if let Some(sides) = sides {
+                        record.oid_anchor = Some(sides.oid_anchor());
+                    }
+                    continue;
+                }
                 let found = residual_hunks.iter().enumerate().find(|(i, hunk)| {
                     !residual_used[*i]
                         && ranges_overlap((hunk.old_start, hunk.old_lines), retained.region)

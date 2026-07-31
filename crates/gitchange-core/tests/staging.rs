@@ -491,3 +491,92 @@ fn identical_hunks_stage_the_one_at_the_requested_position() {
         Some(file("delta", "EDIT").as_str())
     );
 }
+
+#[test]
+fn staging_a_binary_whole_file_hunk_is_a_whole_file_index_write() {
+    // ADR 0009: `space` on an unstaged binary = plain `git add`
+    // semantics through the whole-file hunk, no apply machinery.
+    let fixture = RepoFixture::new();
+    fixture
+        .write_bytes("blob.bin", &[0u8, 1, 2, 3])
+        .commit_all("init")
+        .write_bytes("blob.bin", &[0u8, 9, 9]);
+    let repo = Repo::discover(fixture.path()).unwrap();
+
+    let snapshot = repo.refresh().unwrap();
+    let hunk = snapshot.files[0].hunks[0].clone();
+    let notices = repo.stage_hunk("blob.bin", &hunk).unwrap();
+    assert!(notices.is_empty());
+    assert_eq!(fixture.index_bytes("blob.bin").unwrap(), vec![0u8, 9, 9]);
+    assert_eq!(
+        repo.refresh().unwrap().files[0].stage(),
+        FileStage::Staged,
+        "a staged binary derives ● — the pre-ticket-35 0/0 gap is closed"
+    );
+
+    // Unstage: index entry back to HEAD's blob.
+    let snapshot = repo.refresh().unwrap();
+    let hunk = snapshot.files[0].hunks[0].clone();
+    repo.unstage_hunk("blob.bin", &hunk).unwrap();
+    assert_eq!(fixture.index_bytes("blob.bin").unwrap(), vec![0u8, 1, 2, 3]);
+}
+
+#[test]
+fn staging_an_untracked_binary_and_unstaging_drops_the_entry() {
+    let fixture = RepoFixture::new();
+    fixture
+        .write("keep.txt", "content\n")
+        .commit_all("init")
+        .write_bytes("new.bin", &[0u8, 4, 4]);
+    let repo = Repo::discover(fixture.path()).unwrap();
+
+    let snapshot = repo.refresh().unwrap();
+    let file = snapshot
+        .files
+        .iter()
+        .find(|file| file.path == "new.bin")
+        .unwrap();
+    let hunk = file.hunks[0].clone();
+    repo.stage_hunk("new.bin", &hunk).unwrap();
+    assert_eq!(fixture.index_bytes("new.bin").unwrap(), vec![0u8, 4, 4]);
+
+    // Unstage a newly added file: the entry is dropped, not reset.
+    let snapshot = repo.refresh().unwrap();
+    let file = snapshot
+        .files
+        .iter()
+        .find(|file| file.path == "new.bin")
+        .unwrap();
+    let hunk = file.hunks[0].clone();
+    repo.unstage_hunk("new.bin", &hunk).unwrap();
+    assert!(fixture.index_bytes("new.bin").is_none());
+}
+
+#[test]
+fn space_on_a_stale_binary_restages_the_worktree_blob() {
+    // Both `◑` flavours: `space` sets index := worktree (ADR 0009).
+    let fixture = RepoFixture::new();
+    fixture
+        .write_bytes("blob.bin", &[0u8, 1])
+        .commit_all("init")
+        .write_bytes("blob.bin", &[0u8, 2, 2])
+        .stage("blob.bin")
+        .write_bytes("blob.bin", &[0u8, 3, 3, 3]);
+    let repo = Repo::discover(fixture.path()).unwrap();
+
+    let snapshot = repo.refresh().unwrap();
+    let hunk = snapshot.files[0].hunks[0].clone();
+    assert_eq!(hunk.stage, HunkStage::StagedStale);
+    repo.stage_hunk("blob.bin", &hunk).unwrap();
+    assert_eq!(fixture.index_bytes("blob.bin").unwrap(), vec![0u8, 3, 3, 3]);
+
+    // Index-only flavour: worktree reverted to HEAD; `space` discards
+    // the staged blob (index := worktree = HEAD).
+    fixture.write_bytes("blob.bin", &[0u8, 5]).stage("blob.bin");
+    fixture.write_bytes("blob.bin", &[0u8, 1]);
+    let snapshot = repo.refresh().unwrap();
+    let hunk = snapshot.files[0].hunks[0].clone();
+    assert!(hunk.index_only);
+    repo.stage_hunk("blob.bin", &hunk).unwrap();
+    assert_eq!(fixture.index_bytes("blob.bin").unwrap(), vec![0u8, 1]);
+}

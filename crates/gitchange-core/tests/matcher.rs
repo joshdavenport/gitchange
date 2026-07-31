@@ -518,3 +518,129 @@ fn dormant_revival_notices_with_a_per_changelist_count() {
         "exact-match revival is an automatic decision: one notice, counted"
     );
 }
+
+#[test]
+fn a_reexported_binary_keeps_its_changelist_via_path_continuity() {
+    // ADR 0009 tier 2: same path, still binary-changed, different
+    // content — membership holds and the anchor updates. The whole file
+    // is the hunk, so a re-export is an edit of your own hunk.
+    let fixture = RepoFixture::new();
+    fixture
+        .write_bytes("logo.png", &[0u8, 1, 2, 3])
+        .commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("art").unwrap();
+
+    fixture.write_bytes("logo.png", &[0u8, 9, 9]);
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(
+        snapshot.notices,
+        vec![Notice::AutoCaptured {
+            path: "logo.png".into(),
+            new_start: 0,
+            changelist: "art".into(),
+        }],
+        "a binary's first whole-file hunk captures with a notice too"
+    );
+    let first_anchor = state_json(&fixture)["records"][0]["oid_anchor"].clone();
+
+    // A second changelist becomes active: drift must not recapture.
+    repo.create_changelist("other").unwrap();
+    repo.switch("other").unwrap();
+    fixture.write_bytes("logo.png", &[0u8, 5, 5, 5, 5]);
+
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(owners(&snapshot, "logo.png"), vec![Some("art".into())]);
+    let json = state_json(&fixture);
+    assert_eq!(json["records"][0]["path"], "logo.png");
+    assert_ne!(
+        json["records"][0]["oid_anchor"], first_anchor,
+        "the anchor follows the re-exported content"
+    );
+    assert!(
+        json["records"][0]["oid_anchor"]["changed"].is_string(),
+        "binary records store OIDs, cat-debuggable"
+    );
+}
+
+#[test]
+fn an_unchanged_binary_matches_exactly_after_a_move() {
+    // Tier 1: the changed-side OID alone pins identity, so an untouched
+    // binary change survives refreshes without drifting to active.
+    let fixture = RepoFixture::new();
+    fixture
+        .write_bytes("logo.png", &[0u8, 1, 2, 3])
+        .commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("art").unwrap();
+    fixture.write_bytes("logo.png", &[0u8, 9, 9]);
+    repo.refresh().unwrap();
+
+    repo.create_changelist("other").unwrap();
+    repo.switch("other").unwrap();
+
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(owners(&snapshot, "logo.png"), vec![Some("art".into())]);
+    assert!(
+        snapshot.notices.is_empty(),
+        "an exact match is not a capture"
+    );
+}
+
+#[test]
+fn binary_dormant_revival_is_exact_only() {
+    // ADR 0009: revival needs path *and* changed-side OID. A different
+    // binary change at a path with a dormant record is a fresh change,
+    // captured to active — never inheritance from dormancy.
+    let fixture = RepoFixture::new();
+    fixture
+        .write_bytes("logo.png", &[0u8, 1, 2, 3])
+        .commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("art").unwrap();
+    fixture.write_bytes("logo.png", &[0u8, 9, 9]);
+    repo.refresh().unwrap();
+
+    // Revert on disk: the diff vanishes, the record goes dormant.
+    fixture.write_bytes("logo.png", &[0u8, 1, 2, 3]);
+    repo.refresh().unwrap();
+    assert!(
+        state_json(&fixture)["records"][0]["dormant_since"].is_u64(),
+        "vanished binary change goes dormant"
+    );
+
+    // Different content at the path: fresh capture, not a revival.
+    repo.create_changelist("other").unwrap();
+    repo.switch("other").unwrap();
+    fixture.write_bytes("logo.png", &[0u8, 5, 5, 5]);
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(owners(&snapshot, "logo.png"), vec![Some("other".into())]);
+
+    // The exact bytes back: tier-1 revival to the dormant owner.
+    fixture.write_bytes("logo.png", &[0u8, 9, 9]);
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(owners(&snapshot, "logo.png"), vec![Some("art".into())]);
+}
+
+#[test]
+fn a_binary_whole_file_hunk_moves_between_changelists() {
+    // The whole-file hunk flows through the explicit move op like any
+    // hunk (ADR 0009: movable between changelists).
+    let fixture = RepoFixture::new();
+    fixture
+        .write_bytes("logo.png", &[0u8, 1, 2, 3])
+        .commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("art").unwrap();
+    repo.create_changelist("other").unwrap();
+    fixture.write_bytes("logo.png", &[0u8, 9, 9]);
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(owners(&snapshot, "logo.png"), vec![Some("art".into())]);
+
+    let hunk = snapshot.files[0].hunks[0].clone();
+    let notices = repo.move_hunks("logo.png", &[hunk], Some("other")).unwrap();
+    assert!(notices.is_empty());
+
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(owners(&snapshot, "logo.png"), vec![Some("other".into())]);
+}

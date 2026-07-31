@@ -81,8 +81,8 @@ pub struct Snapshot {
 impl Snapshot {
     /// The files belonging to one changelist for the All view — a file is
     /// "in" a changelist when at least one hunk is owned by it. `None`
-    /// selects unassigned, which also holds hunk-less files (changed
-    /// binaries until ticket 35).
+    /// selects unassigned, which also holds hunk-less files (mode-only
+    /// staged changes, empty-file adds).
     pub fn files_in(&self, changelist: Option<&str>) -> Vec<&ChangedFile> {
         self.files
             .iter()

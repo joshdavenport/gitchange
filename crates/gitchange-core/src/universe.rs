@@ -4,7 +4,8 @@
 
 use std::collections::BTreeMap;
 
-use crate::diff::{ChangeKind, DiffHunk, FileDiff, HunkLine, RepoDiffs};
+use crate::diff::{BinarySides, ChangeKind, DiffHunk, FileDiff, HunkLine, RepoDiffs};
+use crate::state::OidAnchor;
 
 /// One file in the hunk universe, staging derived.
 #[derive(Debug, Clone)]
@@ -12,14 +13,16 @@ pub struct ChangedFile {
     /// Repo-relative path, as git reports it.
     pub path: String,
     pub kind: ChangeKind,
-    /// Binary files carry no text hunks until ticket 35's whole-file
-    /// degenerate hunks (ADR 0009); they stay visible regardless — with
-    /// the known gap that a hunk-less file derives `○ 0/0` even when its
-    /// content is staged, until ticket 35 lands OID-compare derivation.
+    /// A binary file's change is one whole-file degenerate hunk
+    /// (ADR 0009): OID-anchored, staging derived by OID compare.
     pub binary: bool,
     /// Hunks in file order: the worktree diff's hunks plus any index-only
     /// hunks (staged then worktree-reverted).
     pub hunks: Vec<Hunk>,
+    /// A binary file's per-side blob info, worktree view preferred — the
+    /// diff placeholder's size material (ADR 0009). `None` for text
+    /// files.
+    pub binary_sides: Option<BinarySides>,
 }
 
 impl ChangedFile {
@@ -70,6 +73,9 @@ pub struct Hunk {
     /// the worktree) — their coordinates and lines address index content,
     /// not the worktree, so staging ops treat them differently.
     pub index_only: bool,
+    /// The blob-OID-pair anchor of a binary whole-file hunk (ADR 0009);
+    /// `None` for text hunks, whose identity is their verbatim lines.
+    pub oid_anchor: Option<OidAnchor>,
     /// Owning changelist, written by the matcher after universe
     /// derivation; `None` is unassigned.
     pub changelist: Option<String>,
@@ -135,12 +141,26 @@ fn merge_file(worktree: Option<FileDiff>, index: Option<FileDiff>) -> ChangedFil
         let either = worktree.as_ref().or(index.as_ref()).expect("one diff side");
         (either.path.clone(), either.binary)
     };
+    // Worktree view preferred, like text hunk coordinates; gated on the
+    // binary flag because index diffs carry sides for text files too.
+    let binary_sides = if binary {
+        worktree
+            .as_ref()
+            .and_then(|file| file.binary_sides.clone())
+            .or_else(|| index.as_ref().and_then(|file| file.binary_sides.clone()))
+    } else {
+        None
+    };
     // Quarantine (ADR 0007): the index side of an unmerged path reports
     // `Conflicted` with no hunks, but the worktree side still diffs as
     // `Modified` — conflict markers as content. Merged `Conflicted`
-    // drops every hunk so nothing matches or stages conflict text.
+    // drops every hunk so nothing matches or stages conflict text —
+    // checked before the binary branch, so a conflicted binary is
+    // quarantined, never a whole-file hunk.
     let hunks = if kind == ChangeKind::Conflicted {
         Vec::new()
+    } else if binary {
+        vec![binary_whole_file_hunk(worktree.as_ref(), index.as_ref())]
     } else {
         pair_hunks(
             worktree.map(|file| file.hunks).unwrap_or_default(),
@@ -152,6 +172,57 @@ fn merge_file(worktree: Option<FileDiff>, index: Option<FileDiff>) -> ChangedFil
         kind,
         binary,
         hunks,
+        binary_sides,
+    }
+}
+
+/// ADR 0009: a changed binary file is one whole-file degenerate hunk —
+/// zeroed coordinates, no lines, staging derived by comparing the two
+/// diffs' changed-side content hashes instead of lines.
+fn binary_whole_file_hunk(worktree: Option<&FileDiff>, index: Option<&FileDiff>) -> Hunk {
+    let changed_oid = |file: Option<&FileDiff>| {
+        file.and_then(|file| file.binary_sides.as_ref())
+            .and_then(BinarySides::changed_oid)
+    };
+    let (stage, index_only) = match (worktree, index) {
+        // The index diff doesn't see the path: nothing staged.
+        (Some(_), None) => (HunkStage::Unstaged, false),
+        // Both diffs see it: `●` when the staged blob is the worktree
+        // content, the edited `◑` flavour otherwise.
+        (Some(worktree), Some(index)) => {
+            if changed_oid(Some(worktree)) == changed_oid(Some(index)) {
+                (HunkStage::Staged, false)
+            } else {
+                (HunkStage::StagedStale, false)
+            }
+        }
+        // Index-only: staged then worktree-reverted, the other `◑`
+        // flavour.
+        (None, Some(_)) => (HunkStage::StagedStale, true),
+        (None, None) => unreachable!("a merged file has at least one side"),
+    };
+    // The anchor's changed side is what the universe presents: worktree
+    // content when the worktree diff sees the path, the staged blob for
+    // index-only files — mirroring text hunks' coordinate convention.
+    let anchored = if index_only { index } else { worktree };
+    Hunk {
+        old_start: 0,
+        old_lines: 0,
+        new_start: 0,
+        new_lines: 0,
+        lines: Vec::new(),
+        stage,
+        index_only,
+        oid_anchor: Some(
+            anchored
+                .and_then(|file| file.binary_sides.as_ref())
+                .map(BinarySides::oid_anchor)
+                .unwrap_or(OidAnchor {
+                    head: None,
+                    changed: None,
+                }),
+        ),
+        changelist: None,
     }
 }
 
@@ -228,6 +299,7 @@ fn to_hunk(hunk: DiffHunk, stage: HunkStage, index_only: bool) -> Hunk {
         lines: hunk.lines,
         stage,
         index_only,
+        oid_anchor: None,
         changelist: None,
     }
 }
