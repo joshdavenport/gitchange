@@ -10,11 +10,14 @@ pub mod ui;
 use std::time::Instant;
 
 use crossbeam_channel::{at, never, select, unbounded};
-use gitchange_core::{Engine, EngineEvent};
-use ratatui::crossterm::event::{DisableFocusChange, EnableFocusChange, Event, KeyEventKind};
+use gitchange_core::{Engine, EngineEvent, Notice, Repo};
+use ratatui::crossterm::event::{
+    DisableFocusChange, EnableFocusChange, Event, KeyEventKind, KeyboardEnhancementFlags,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use ratatui::crossterm::execute;
 
-use app::{Action, App};
+use app::{Action, App, Op};
 use theme::Theme;
 
 #[derive(Debug, thiserror::Error)]
@@ -33,6 +36,9 @@ pub enum Error {
 pub fn run() -> Result<(), Error> {
     let cwd = std::env::current_dir()?;
     let engine = Engine::spawn(&cwd)?;
+    // Sync mutations run on this handle, never the Engine's (its Repo
+    // belongs to the refresh thread).
+    let repo = Repo::discover(&cwd)?;
     let repo_name = engine
         .workdir()
         .file_name()
@@ -41,7 +47,15 @@ pub fn run() -> Result<(), Error> {
 
     let mut terminal = ratatui::init();
     let _ = execute!(std::io::stdout(), EnableFocusChange);
-    let result = event_loop(&mut terminal, &engine, App::new(repo_name));
+    // Kitty-protocol terminals report `shift+enter` (hunk mode's
+    // add-selected-hunk) only with this flag; elsewhere the push is a
+    // harmless no-op and shift+enter reads as plain enter.
+    let _ = execute!(
+        std::io::stdout(),
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    );
+    let result = event_loop(&mut terminal, &engine, &repo, App::new(repo_name));
+    let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
     let _ = execute!(std::io::stdout(), DisableFocusChange);
     ratatui::restore();
     result
@@ -50,6 +64,7 @@ pub fn run() -> Result<(), Error> {
 fn event_loop(
     terminal: &mut ratatui::DefaultTerminal,
     engine: &Engine,
+    repo: &Repo,
     mut app: App,
 ) -> Result<(), Error> {
     // Terminal input on its own thread, bridged into the Select loop.
@@ -88,6 +103,12 @@ fn event_loop(
                     match app.on_key(key) {
                         Some(Action::Quit) => return Ok(()),
                         Some(Action::Refresh) => engine.request_refresh(),
+                        Some(Action::Op(op)) => {
+                            app.push_feedback(run_op(repo, op));
+                            // Mutation-triggered refresh: bypasses the
+                            // debounce (ADR 0005).
+                            engine.request_refresh();
+                        }
                         None => {}
                     }
                 }
@@ -99,5 +120,51 @@ fn event_loop(
             },
             recv(timer) -> _ => {}
         }
+    }
+}
+
+/// Execute one sync op, returning the lines the Log placeholder shows —
+/// errors and fail-soft notices; success is silent (the refresh that
+/// follows is the feedback).
+fn run_op(repo: &Repo, op: Op) -> Vec<String> {
+    let done = |result: Result<(), gitchange_core::Error>| match result {
+        Ok(()) => Vec::new(),
+        Err(error) => vec![error.to_string()],
+    };
+    match op {
+        Op::CreateChangelist { name } => done(repo.create_changelist(&name)),
+        Op::RenameChangelist { from, to } => done(repo.rename_changelist(&from, &to)),
+        Op::DeleteChangelist { name } => done(repo.delete_changelist(&name)),
+        Op::SetActive { name } => done(repo.switch(&name)),
+        Op::Move {
+            path,
+            hunks,
+            target,
+            create,
+        } => {
+            // A name that already exists is a valid target: fall through
+            // to the move rather than stranding it behind the create.
+            if create
+                && let Err(error) = repo.create_changelist(&target)
+                && !matches!(error, gitchange_core::Error::ChangelistExists { .. })
+            {
+                return vec![error.to_string()];
+            }
+            match repo.move_hunks(&path, &hunks, Some(&target)) {
+                Ok(notices) => notices.iter().map(notice_line).collect(),
+                Err(error) => vec![error.to_string()],
+            }
+        }
+    }
+}
+
+/// Minimal notice rendering until ticket #34's Log vocabulary; moves
+/// only ever raise `StaleHunk`.
+fn notice_line(notice: &Notice) -> String {
+    match notice {
+        Notice::StaleHunk { path, new_start } => {
+            format!("hunk at {path}:{new_start} changed since the last refresh; nothing applied")
+        }
+        other => format!("{other:?}"),
     }
 }

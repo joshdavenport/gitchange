@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
+use crate::matcher;
+use crate::universe::Hunk;
 
 /// Names claimed by pseudo-views (`CONTEXT.md`): never valid for user
 /// changelists.
@@ -170,6 +172,42 @@ impl State {
                 record.changelist = None;
             }
         }
+    }
+
+    /// Point `path`'s records at `target` for the given fresh hunks —
+    /// the explicit move op (ticket #32). `target: None` claims them for
+    /// unassigned, the same sticky claim delete-orphans carry. Competing
+    /// claims are replaced: records anchor-matching a moved hunk, and
+    /// live records overlapping its HEAD-side range, are removed so
+    /// neither matching tier re-claims the hunk for its old owner.
+    pub(crate) fn move_records(
+        &mut self,
+        path: &str,
+        hunks: &[&Hunk],
+        target: Option<&str>,
+    ) -> Result<(), Error> {
+        if let Some(name) = target
+            && !self.contains(name)
+        {
+            return Err(Error::UnknownChangelist { name: name.into() });
+        }
+        let anchors: Vec<Vec<String>> = hunks.iter().map(|hunk| matcher::anchor_of(hunk)).collect();
+        self.records.retain(|record| {
+            record.path != path
+                || !hunks.iter().zip(&anchors).any(|(hunk, anchor)| {
+                    record.anchor == *anchor
+                        || (!record.is_dormant() && matcher::old_ranges_overlap(hunk, record))
+                })
+        });
+        for (hunk, anchor) in hunks.iter().zip(&anchors) {
+            self.records.push(matcher::record_for(
+                path,
+                hunk,
+                anchor,
+                target.map(str::to_owned),
+            ));
+        }
+        Ok(())
     }
 
     /// Set the active marker.

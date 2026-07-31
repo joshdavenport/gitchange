@@ -171,6 +171,66 @@ fn an_empty_repo_renders_without_a_snapshot() {
 }
 
 #[test]
+fn hunk_mode_swaps_the_title_and_keybar() {
+    let mut app = App::new("repo");
+    app.apply_snapshot(snapshot());
+    app.on_key(key(KeyCode::Char('3')));
+    app.on_key(key(KeyCode::Enter));
+    let text = render(&app);
+    assert!(text.contains("print.css — hunk 1 of 2"));
+    assert!(text.contains("add all hunks to changelist"));
+    assert!(text.contains("shift+enter"));
+}
+
+#[test]
+fn the_move_popup_lists_changelists_and_the_escape_hatch() {
+    let mut app = App::new("repo");
+    app.apply_snapshot(snapshot());
+    app.on_key(key(KeyCode::Char('3')));
+    app.on_key(key(KeyCode::Char('m')));
+    let text = render(&app);
+    assert!(text.contains("Move to changelist"));
+    assert!(text.contains("M src/print.css"));
+    assert!(text.contains("fixes (active)"));
+    assert!(text.contains("+ create new changelist…"));
+    assert!(text.contains("enter move · esc cancel"));
+}
+
+#[test]
+fn text_inputs_frame_their_label_on_the_border() {
+    let mut app = App::new("repo");
+    app.apply_snapshot(snapshot());
+    app.on_key(key(KeyCode::Char('n')));
+    for c in "docs".chars() {
+        app.on_key(key(KeyCode::Char(c)));
+    }
+    let text = render(&app);
+    assert!(text.contains("New changelist"));
+    assert!(text.contains("docs"));
+}
+
+#[test]
+fn the_delete_confirmation_names_the_unassigned_aftermath() {
+    let mut app = App::new("repo");
+    app.apply_snapshot(snapshot());
+    app.on_key(key(KeyCode::Char('j'))); // select 'fixes'
+    app.on_key(key(KeyCode::Char('d')));
+    let text = render(&app);
+    assert!(text.contains("Delete changelist"));
+    assert!(text.contains("Delete 'fixes'?"));
+    assert!(text.contains("Its hunks move to unassigned."));
+}
+
+#[test]
+fn op_feedback_lines_render_in_the_log_placeholder() {
+    let mut app = App::new("repo");
+    app.apply_snapshot(snapshot());
+    app.push_feedback(["a changelist named 'docs' already exists".to_owned()]);
+    let text = render(&app);
+    assert!(text.contains("! a changelist named 'docs' already exists"));
+}
+
+#[test]
 fn focused_panel_number_keys_move_the_border_highlight() {
     let mut app = App::new("repo");
     app.apply_snapshot(snapshot());

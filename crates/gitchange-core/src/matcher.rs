@@ -36,9 +36,9 @@ pub enum Notice {
         /// the degenerate hand-edited-state case where none is active.
         assigned_to: Option<String>,
     },
-    /// A stage/unstage acted on a snapshot hunk that no longer exists in
-    /// the live tree (ADR 0005's stale-action rule): fail-soft, nothing
-    /// was applied.
+    /// A stage/unstage/move acted on a snapshot hunk that no longer
+    /// exists in the live tree (ADR 0005's stale-action rule): fail-soft,
+    /// nothing was applied for that hunk.
     StaleHunk {
         path: String,
         /// Line the requested hunk started at when the snapshot was
@@ -287,7 +287,7 @@ fn match_file(
     }
 }
 
-fn record_for(
+pub(crate) fn record_for(
     path: &str,
     hunk: &Hunk,
     anchor: &[String],
@@ -333,7 +333,7 @@ fn into_dormant(mut record: MembershipRecord, now_epoch_secs: u64) -> Option<Mem
 
 /// Overlap on HEAD-side ranges, widening empty ranges (pure insertions)
 /// to one line so an edit to an inserted hunk still pairs with it.
-fn old_ranges_overlap(hunk: &Hunk, record: &MembershipRecord) -> bool {
+pub(crate) fn old_ranges_overlap(hunk: &Hunk, record: &MembershipRecord) -> bool {
     let span = |start: u32, lines: u32| (start, start + lines.max(1));
     let (a_start, a_end) = span(hunk.old_start, hunk.old_lines);
     let (b_start, b_end) = span(record.old_start, record.old_lines);

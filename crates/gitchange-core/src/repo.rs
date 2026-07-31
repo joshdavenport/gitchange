@@ -296,6 +296,34 @@ impl Repo {
         Ok(notices)
     }
 
+    /// Move snapshot hunks of `path` to `target` (`None` = unassigned):
+    /// an explicit membership op, one locked load-mutate-save cycle
+    /// (ADR 0002). Validates at apply like staging (ADR 0005): each hunk
+    /// is content-matched against the live tree; a vanished hunk fails
+    /// soft with a `Notice::StaleHunk` while the rest still move. The
+    /// caller's follow-up refresh re-derives membership from the written
+    /// records.
+    pub fn move_hunks(
+        &self,
+        path: &str,
+        hunks: &[Hunk],
+        target: Option<&str>,
+    ) -> Result<Vec<Notice>, Error> {
+        let files = universe::build(self.backend.diffs()?);
+        let mut notices = Vec::new();
+        let mut fresh = Vec::new();
+        for hunk in hunks {
+            match find_fresh(&files, path, hunk) {
+                Some((_, found)) => fresh.push(found),
+                None => notices.push(stale_notice(path, hunk)),
+            }
+        }
+        if !fresh.is_empty() {
+            self.update_state(|state| state.move_records(path, &fresh, target))?;
+        }
+        Ok(notices)
+    }
+
     /// Create a changelist. The first one created becomes active.
     pub fn create_changelist(&self, name: &str) -> Result<(), Error> {
         self.update_state(|state| state.create(name))
