@@ -78,8 +78,15 @@ fn panel_block<'a>(
     } else {
         theme.colors.title
     };
+    // The separator follows the number so the whole `[n]─Title` prefix
+    // reads as one focused unit (issue #45).
+    let prefix_color = if focused {
+        theme.colors.border_focus
+    } else {
+        theme.colors.dim
+    };
     let mut spans = vec![
-        Span::styled(format!("[{}]─", panel.number()), theme.colors.dim),
+        Span::styled(format!("[{}]─", panel.number()), prefix_color),
         Span::styled(title, Style::new().fg(title_color)),
     ];
     if let Some(alt) = alt {

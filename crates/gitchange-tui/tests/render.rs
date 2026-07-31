@@ -584,6 +584,47 @@ fn the_selection_tint_follows_panel_focus() {
 }
 
 #[test]
+fn the_panel_number_prefix_follows_focus() {
+    let theme = Theme::default();
+    let mut app = App::new("repo");
+    app.apply_snapshot(snapshot());
+
+    // Default focus is Changelists: its whole `[2]─` prefix takes the
+    // focus colour; the blurred Files panel's `[3]─` stays dim.
+    let buffer = render_buffer(&app);
+    let (cx, cy) = find_text(&buffer, "[2]─");
+    let (fx, fy) = find_text(&buffer, "[3]─");
+    for dx in 0..4 {
+        assert_eq!(
+            fg_at(&buffer, cx + dx, cy),
+            theme.colors.border_focus,
+            "focused [2]─ cell {dx}"
+        );
+        assert_eq!(
+            fg_at(&buffer, fx + dx, fy),
+            theme.colors.dim,
+            "blurred [3]─ cell {dx}"
+        );
+    }
+
+    // Focus Files: the colours swap.
+    app.on_key(key(KeyCode::Char('3')));
+    let buffer = render_buffer(&app);
+    for dx in 0..4 {
+        assert_eq!(
+            fg_at(&buffer, cx + dx, cy),
+            theme.colors.dim,
+            "blurred [2]─ cell {dx}"
+        );
+        assert_eq!(
+            fg_at(&buffer, fx + dx, fy),
+            theme.colors.border_focus,
+            "focused [3]─ cell {dx}"
+        );
+    }
+}
+
+#[test]
 fn the_commits_selection_tint_disappears_entirely_on_blur() {
     let theme = Theme::default();
     let mut app = App::new("repo");
