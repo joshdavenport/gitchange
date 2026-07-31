@@ -4,7 +4,7 @@
 //! produces. Reset is nuke-and-rebuild; `status` compares against a
 //! build-time fingerprint in `.sandbox/.meta/`.
 
-mod builder;
+pub(crate) mod builder;
 mod fingerprint;
 mod scenarios;
 
@@ -17,7 +17,7 @@ use builder::Sandbox;
 use scenarios::Scenario;
 
 /// Project root, derived from this crate's manifest at compile time.
-fn project_root() -> PathBuf {
+pub(crate) fn project_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|p| p.parent())

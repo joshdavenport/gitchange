@@ -1358,8 +1358,10 @@ dependencies = [
  "anyhow",
  "clap",
  "gitchange-core",
+ "libc",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
