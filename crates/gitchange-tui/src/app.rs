@@ -6,7 +6,9 @@
 
 use std::time::{Duration, Instant};
 
-use gitchange_core::{ChangeKind, ChangedFile, FileStage, Hunk, HunkStage, Snapshot};
+use gitchange_core::{
+    ChangeKind, ChangedFile, CommitPayload, FileStage, Hunk, HunkStage, Snapshot,
+};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// The deferred-indicator threshold (ADR 0005): refreshes shorter than
@@ -150,6 +152,9 @@ pub enum Action {
     /// A synchronous mutation for the main loop's own `Repo` handle
     /// (never the Engine's); a refresh request follows it.
     Op(Op),
+    /// One commit-flow IO step (ticket #33); outcomes come back through
+    /// the App's `commit_*`/`open_*` methods.
+    Commit(CommitStep),
 }
 
 /// One synchronous repo mutation (ticket #32). The main loop executes
@@ -178,6 +183,104 @@ pub enum Op {
         target: String,
         create: bool,
     },
+    /// `space` on a Files row: whole-file staging, `git add` semantics.
+    StageFile {
+        path: String,
+    },
+    /// `space` on a `●` Files row: `git reset -- <path>` semantics.
+    UnstageFile {
+        path: String,
+    },
+    /// `space` on a `○`/`◑` hunk: index := worktree for its region.
+    StageHunk {
+        path: String,
+        hunk: Hunk,
+    },
+    /// `space` on a `●` hunk: index := HEAD for its region.
+    UnstageHunk {
+        path: String,
+        hunk: Hunk,
+    },
+}
+
+/// The commit flow's IO steps (ADR 0004), executed by the main loop on
+/// its own `Repo` handle. The toggle/branching logic stays in [`App`];
+/// these carry everything the loop needs so no dialog state lives
+/// outside the [`Overlay`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommitStep {
+    /// `c`: derive the payload behind a synchronous refresh, then open
+    /// the dialog (or the stage-all offer on an empty payload).
+    Open { changelist: Option<String> },
+    /// The zero-staged offer confirmed: stage the changelist's unstaged
+    /// hunks, then derive the payload and open the dialog.
+    StageAllAndOpen { changelist: Option<String> },
+    /// The confirmed dialog: commit against its inspected payload — the
+    /// drift guard compares this exact payload (ADR 0004).
+    Commit(CommitDraft),
+    /// The ◑ warn's align option: index := worktree over the
+    /// changelist's ◑ hunks, then commit the aligned payload.
+    AlignAndCommit(CommitDraft),
+}
+
+/// Everything the commit dialog holds (commit-flow prototype variant A):
+/// the target changelist, the inspected payload, the independent
+/// message/body drafts, and the flag toggles. Kept whole through the
+/// warn/drift overlays so a failed commit restores the dialog untouched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitDraft {
+    /// `None` commits unassigned — committable like any changelist
+    /// (ADR 0004).
+    pub changelist: Option<String>,
+    pub payload: CommitPayload,
+    /// The one-line commit subject.
+    pub message: String,
+    /// The optional multiline body (`tab` reaches it).
+    pub body: String,
+    /// Which input holds the cursor.
+    pub body_focus: bool,
+    pub no_verify: bool,
+    pub amend: bool,
+}
+
+impl CommitDraft {
+    fn new(changelist: Option<String>, payload: CommitPayload) -> Self {
+        Self {
+            changelist,
+            payload,
+            message: String::new(),
+            body: String::new(),
+            body_focus: false,
+            no_verify: false,
+            amend: false,
+        }
+    }
+
+    /// The dialog title's changelist name.
+    pub fn changelist_label(&self) -> &str {
+        self.changelist.as_deref().unwrap_or("unassigned")
+    }
+}
+
+/// "N staged hunks in M files", singulars handled — the payload
+/// summary's counts (the dialog appends the ◑ tail, coloured) and the
+/// drift notice's was/now line.
+pub fn payload_counts(payload: &CommitPayload) -> String {
+    format!(
+        "{} in {}",
+        count_noun(
+            payload.staged_hunks() + payload.stale_hunks(),
+            "staged hunk"
+        ),
+        count_noun(payload.file_count(), "file"),
+    )
+}
+
+/// "1 hunk" / "2 hunks" — the count-plus-noun shape the commit modals
+/// keep needing.
+pub fn count_noun(count: usize, noun: &str) -> String {
+    let plural = if count == 1 { "" } else { "s" };
+    format!("{count} {noun}{plural}")
 }
 
 /// A modal above the panel stack. At most one is open; it swallows every
@@ -192,6 +295,27 @@ pub enum Overlay {
     ConfirmDelete { name: String },
     /// The centered move popup (prototype variant D).
     Move { payload: MovePayload, row: usize },
+    /// The all-in-one commit dialog (commit-flow prototype variant A).
+    Commit(CommitDraft),
+    /// The ◑ staged-stale warn-and-confirm over the dialog (variant B,
+    /// ADR 0004).
+    CommitStale(CommitDraft),
+    /// The zero-staged stage-all offer (variant C, ADR 0004 — core never
+    /// auto-stages).
+    CommitStageAll {
+        changelist: Option<String>,
+        /// The changelist's hunk/file counts, captured at open for the
+        /// "stage all N hunks in M files" line.
+        hunks: usize,
+        files: usize,
+    },
+    /// Drift re-confirm keeping the message (variant D, the ADR 0004
+    /// freshness guard): `draft.payload` is already the fresh payload;
+    /// `previous` is what the dialog had confirmed.
+    CommitDrift {
+        draft: CommitDraft,
+        previous: CommitPayload,
+    },
 }
 
 /// What an [`Overlay::Input`] submission means.
@@ -451,6 +575,27 @@ impl App {
                     self.overlay = Some(Overlay::ConfirmDelete { name });
                 }
             }
+            KeyCode::Char(' ') => return self.stage_toggle(),
+            KeyCode::Char('c') => {
+                // `c` on the All view is a polite no-op with a message
+                // (ADR 0004) — commit needs one changelist scoped;
+                // unassigned is committable like any changelist.
+                match self.scope() {
+                    Scope::All => {
+                        self.push_feedback([
+                            "select a changelist to commit — all is a view".to_owned()
+                        ]);
+                    }
+                    Scope::Changelist(name) => {
+                        return Some(Action::Commit(CommitStep::Open {
+                            changelist: Some(name),
+                        }));
+                    }
+                    Scope::Unassigned => {
+                        return Some(Action::Commit(CommitStep::Open { changelist: None }));
+                    }
+                }
+            }
             KeyCode::Char('m') => {
                 if self.focus == Panel::Files
                     && let Some(entry) = self.file_sel.clone()
@@ -553,6 +698,51 @@ impl App {
                     None
                 }
             },
+            Overlay::Commit(draft) => self.on_commit_dialog_key(key, draft),
+            Overlay::CommitStale(draft) => match key.code {
+                // Commit as-is: ◑ content ships exactly as the index
+                // holds it (ADR 0004 — never silent, never blocking).
+                KeyCode::Enter => Some(Action::Commit(CommitStep::Commit(draft))),
+                KeyCode::Char('w') => Some(Action::Commit(CommitStep::AlignAndCommit(draft))),
+                KeyCode::Esc => {
+                    self.overlay = Some(Overlay::Commit(draft));
+                    None
+                }
+                _ => {
+                    self.overlay = Some(Overlay::CommitStale(draft));
+                    None
+                }
+            },
+            Overlay::CommitStageAll {
+                changelist,
+                hunks,
+                files,
+            } => match key.code {
+                KeyCode::Enter => Some(Action::Commit(CommitStep::StageAllAndOpen { changelist })),
+                KeyCode::Esc => None,
+                _ => {
+                    self.overlay = Some(Overlay::CommitStageAll {
+                        changelist,
+                        hunks,
+                        files,
+                    });
+                    None
+                }
+            },
+            Overlay::CommitDrift { draft, previous } => match key.code {
+                // The fresh payload was shown; committing it is the
+                // re-confirmation (message kept in the draft).
+                KeyCode::Enter => Some(Action::Commit(CommitStep::Commit(draft))),
+                KeyCode::Char('e') => {
+                    self.overlay = Some(Overlay::Commit(draft));
+                    None
+                }
+                KeyCode::Esc => None,
+                _ => {
+                    self.overlay = Some(Overlay::CommitDrift { draft, previous });
+                    None
+                }
+            },
             Overlay::Move { payload, row } => {
                 let rows = self.move_rows();
                 let row = row.min(rows.len().saturating_sub(1));
@@ -588,6 +778,123 @@ impl App {
                 }
             }
         }
+    }
+
+    /// The commit dialog's keys (prototype variant A): `enter` commit
+    /// (from the message; in the body it breaks the line), `tab` toggles
+    /// message/body, `ctrl+n`/`ctrl+a` toggle the flags, `esc` cancels.
+    fn on_commit_dialog_key(&mut self, key: KeyEvent, mut draft: CommitDraft) -> Option<Action> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Esc => return None,
+            KeyCode::Tab => draft.body_focus = !draft.body_focus,
+            KeyCode::Char('n') if ctrl => draft.no_verify = !draft.no_verify,
+            KeyCode::Char('a') if ctrl => draft.amend = !draft.amend,
+            KeyCode::Enter if draft.body_focus => draft.body.push('\n'),
+            KeyCode::Enter => {
+                // An empty subject would only bounce off `git commit`;
+                // ignore it like the input overlays do.
+                if draft.message.trim().is_empty() {
+                    self.overlay = Some(Overlay::Commit(draft));
+                    return None;
+                }
+                // ◑ in the payload → warn-and-confirm first (variant B);
+                // otherwise straight to the commit step.
+                if draft.payload.stale_hunks() > 0 {
+                    self.overlay = Some(Overlay::CommitStale(draft));
+                    return None;
+                }
+                return Some(Action::Commit(CommitStep::Commit(draft)));
+            }
+            KeyCode::Backspace => {
+                if draft.body_focus {
+                    draft.body.pop();
+                } else {
+                    draft.message.pop();
+                }
+            }
+            KeyCode::Char(c) if !ctrl => {
+                if draft.body_focus {
+                    draft.body.push(c);
+                } else {
+                    draft.message.push(c);
+                }
+            }
+            _ => {}
+        }
+        self.overlay = Some(Overlay::Commit(draft));
+        None
+    }
+
+    // ── commit-flow outcomes (fed back by the main loop) ────────────
+
+    /// A derived payload arrived for `c`'s dialog (variant A). Empty
+    /// payloads route through [`App::offer_stage_all`] instead.
+    pub fn open_commit_dialog(&mut self, changelist: Option<String>, payload: CommitPayload) {
+        self.overlay = Some(Overlay::Commit(CommitDraft::new(changelist, payload)));
+    }
+
+    /// The payload came back empty: offer stage-all-and-commit
+    /// (variant C) when the changelist has hunks at all, otherwise say
+    /// why nothing opened.
+    pub fn offer_stage_all(&mut self, changelist: Option<String>) {
+        let owner = changelist.as_deref();
+        let mut hunks = 0;
+        let mut files = 0;
+        for file in self
+            .snapshot
+            .as_ref()
+            .map(|snapshot| &snapshot.files[..])
+            .unwrap_or_default()
+        {
+            let owned = file
+                .hunks
+                .iter()
+                .filter(|hunk| hunk.changelist.as_deref() == owner)
+                .count();
+            if owned > 0 {
+                files += 1;
+                hunks += owned;
+            }
+        }
+        if hunks == 0 {
+            let label = owner.unwrap_or("unassigned");
+            self.push_feedback([format!("nothing to commit in '{label}'")]);
+            return;
+        }
+        self.overlay = Some(Overlay::CommitStageAll {
+            changelist,
+            hunks,
+            files,
+        });
+    }
+
+    /// The refresh-before-commit guard tripped (ADR 0004): re-confirm
+    /// against the fresh payload, message and flags kept (variant D).
+    pub fn commit_drifted(&mut self, mut draft: CommitDraft, fresh: CommitPayload) {
+        let previous = std::mem::replace(&mut draft.payload, fresh);
+        self.overlay = Some(Overlay::CommitDrift { draft, previous });
+    }
+
+    /// A failed commit (hook rejection, anything git refused) restores
+    /// the dialog exactly as confirmed — the error line goes through
+    /// [`App::push_feedback`]; the full rejection modal is ticket #34's.
+    pub fn restore_commit_dialog(&mut self, draft: CommitDraft) {
+        self.overlay = Some(Overlay::Commit(draft));
+    }
+
+    /// The align-and-commit path found ◑ hunks *still* in the payload
+    /// (align is fail-soft, and edits can land mid-flow): re-warn
+    /// rather than commit content the user hasn't seen flagged —
+    /// ADR 0004's warn-and-confirm is never silent.
+    pub fn reconfirm_stale(&mut self, draft: CommitDraft) {
+        self.overlay = Some(Overlay::CommitStale(draft));
+    }
+
+    /// Success closes the flow. No toast — the new commit appearing in
+    /// the Commits panel is the feedback.
+    pub fn commit_succeeded(&mut self) {
+        self.overlay = None;
     }
 
     /// Leaving the Diff panel (or refocusing it) always ends hunk mode.
@@ -626,6 +933,34 @@ impl App {
             Scope::Changelist(name) => Some(name),
             Scope::All | Scope::Unassigned => None,
         }
+    }
+
+    /// `space`'s decide-by-current-state toggle (ticket #33): in hunk
+    /// mode the selected hunk (`○`/`◑` → stage, `●` → unstage), in the
+    /// Files panel the whole file (`●` → unstage, else stage). Core
+    /// exposes stage and unstage separately; the toggle lives here.
+    fn stage_toggle(&self) -> Option<Action> {
+        if self.hunk_sel.is_some() {
+            let index = self.hunk_sel?;
+            let file = self.selected_file()?;
+            let hunk = file.hunks.get(index)?.clone();
+            let path = file.path.clone();
+            let op = match hunk.stage {
+                HunkStage::Staged => Op::UnstageHunk { path, hunk },
+                HunkStage::Unstaged | HunkStage::StagedStale => Op::StageHunk { path, hunk },
+            };
+            return Some(Action::Op(op));
+        }
+        if self.focus != Panel::Files {
+            return None;
+        }
+        let file = self.selected_file()?;
+        let path = file.path.clone();
+        let op = match file.stage() {
+            FileStage::Staged => Op::UnstageFile { path },
+            FileStage::Unstaged | FileStage::PartiallyStaged => Op::StageFile { path },
+        };
+        Some(Action::Op(op))
     }
 
     /// The hunk-mode selection as a move payload.
@@ -1049,8 +1384,10 @@ impl App {
         if self.hunk_sel.is_some() {
             return vec![
                 ("j/k", "next/prev hunk"),
+                ("space", "stage/unstage hunk"),
                 ("enter", "add all hunks to changelist"),
                 ("shift+enter/m", "add hunk to changelist"),
+                ("c", "commit changelist"),
                 ("esc", "back to files"),
                 ("?", "keybindings"),
             ];
@@ -1063,11 +1400,14 @@ impl App {
                 ("d", "delete"),
                 ("r", "rename"),
                 ("a", "set active"),
+                ("c", "commit"),
             ],
             Panel::Files => vec![
                 ("j/k", "move"),
+                ("space", "stage file"),
                 ("enter", "hunks"),
                 ("m", "move to changelist"),
+                ("c", "commit"),
                 ("n", "new"),
                 ("d", "delete"),
                 ("r", "rename"),
@@ -1125,7 +1465,7 @@ fn step(index: usize, delta: isize, len: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use gitchange_core::{Changelist, CommitInfo, Head, Hunk, HunkLine};
+    use gitchange_core::{Changelist, CommitInfo, Head, Hunk, HunkLine, PayloadFile};
 
     use super::*;
 
@@ -1795,6 +2135,312 @@ mod tests {
     }
 
     // ── changelist ops (n/d/r/a) ────────────────────────────────────
+
+    // ── space staging (ticket #33) ──────────────────────────────────
+
+    #[test]
+    fn space_in_files_toggles_whole_file_by_its_marker() {
+        let mut app = app();
+        app.on_key(key(KeyCode::Char('3'))); // print.css (◐ partial)
+        assert_eq!(
+            app.on_key(key(KeyCode::Char(' '))),
+            Some(Action::Op(Op::StageFile {
+                path: "src/print.css".into()
+            })),
+            "◐ stages the rest"
+        );
+
+        // A fully-staged file toggles the other way.
+        let mut staged = snapshot();
+        for hunk in &mut staged.files[1].hunks {
+            hunk.stage = HunkStage::Staged;
+        }
+        app.apply_snapshot(staged);
+        assert_eq!(
+            app.on_key(key(KeyCode::Char(' '))),
+            Some(Action::Op(Op::UnstageFile {
+                path: "src/print.css".into()
+            })),
+            "● unstages"
+        );
+    }
+
+    #[test]
+    fn space_in_hunk_mode_toggles_the_selected_hunk() {
+        let mut app = hunk_mode_app(); // print.css: ● at 14, ○ at 41, ○ at 63
+        let action = app.on_key(key(KeyCode::Char(' ')));
+        assert!(
+            matches!(
+                action,
+                Some(Action::Op(Op::UnstageHunk { ref path, ref hunk }))
+                    if path == "src/print.css" && hunk.new_start == 14
+            ),
+            "● hunk unstages, got {action:?}"
+        );
+
+        app.on_key(key(KeyCode::Char('j')));
+        let action = app.on_key(key(KeyCode::Char(' ')));
+        assert!(
+            matches!(
+                action,
+                Some(Action::Op(Op::StageHunk { ref hunk, .. })) if hunk.new_start == 41
+            ),
+            "○ hunk stages, got {action:?}"
+        );
+
+        // A ◑ hunk stages too: index := worktree re-stages the edit.
+        let mut stale = snapshot();
+        stale.files[1].hunks[1].stage = HunkStage::StagedStale;
+        app.apply_snapshot(stale);
+        let action = app.on_key(key(KeyCode::Char(' ')));
+        assert!(
+            matches!(
+                action,
+                Some(Action::Op(Op::StageHunk { ref hunk, .. })) if hunk.new_start == 41
+            ),
+            "◑ hunk stages, got {action:?}"
+        );
+    }
+
+    #[test]
+    fn space_outside_files_and_hunk_mode_does_nothing() {
+        let mut app = app();
+        assert_eq!(app.on_key(key(KeyCode::Char(' '))), None); // changelists
+        app.on_key(key(KeyCode::Char('0'))); // diff scroll mode
+        assert_eq!(app.on_key(key(KeyCode::Char(' '))), None);
+    }
+
+    // ── commit flow (ticket #33, commit-flow prototype A–D) ─────────
+
+    fn payload(staged: usize, stale: usize) -> CommitPayload {
+        CommitPayload {
+            files: vec![PayloadFile {
+                path: "src/print.css".into(),
+                staged_hunks: staged,
+                stale_hunks: stale,
+                hunks: Vec::new(),
+            }],
+        }
+    }
+
+    /// Open the dialog and type a subject line.
+    fn dialog_app(payload: CommitPayload) -> App {
+        let mut app = app();
+        app.open_commit_dialog(Some("fixes".into()), payload);
+        for c in "fix: x".chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+        app
+    }
+
+    #[test]
+    fn c_on_all_is_a_polite_noop_and_opens_the_flow_scoped() {
+        let mut app = app();
+        assert_eq!(app.on_key(key(KeyCode::Char('c'))), None);
+        assert!(app.overlay.is_none(), "c on the All view opens nothing");
+        assert!(
+            app.feedback
+                .iter()
+                .any(|line| line.contains("all is a view")),
+            "…but says why (ADR 0004: a no-op with a message)"
+        );
+
+        app.on_key(key(KeyCode::Char('j'))); // 'fixes'
+        assert_eq!(
+            app.on_key(key(KeyCode::Char('c'))),
+            Some(Action::Commit(CommitStep::Open {
+                changelist: Some("fixes".into())
+            }))
+        );
+
+        for _ in 0..2 {
+            app.on_key(key(KeyCode::Char('j'))); // down to 'unassigned'
+        }
+        assert_eq!(
+            app.on_key(key(KeyCode::Char('c'))),
+            Some(Action::Commit(CommitStep::Open { changelist: None })),
+            "unassigned is committable"
+        );
+    }
+
+    #[test]
+    fn dialog_edits_message_body_and_flags_then_commits() {
+        let mut app = dialog_app(payload(2, 0));
+        app.on_key(key(KeyCode::Tab));
+        for c in "why".chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+        app.on_key(key(KeyCode::Enter)); // newline in the body, not commit
+        for c in "more".chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+        app.on_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
+        app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+        app.on_key(key(KeyCode::Tab)); // back to the message
+        let action = app.on_key(key(KeyCode::Enter));
+        let Some(Action::Commit(CommitStep::Commit(draft))) = action else {
+            panic!("expected a commit step, got {action:?}");
+        };
+        assert_eq!(draft.message, "fix: x");
+        assert_eq!(draft.body, "why\nmore");
+        assert!(draft.no_verify && draft.amend);
+        assert_eq!(draft.changelist.as_deref(), Some("fixes"));
+        assert!(app.overlay.is_none(), "confirming closes the dialog");
+    }
+
+    #[test]
+    fn dialog_ignores_enter_on_an_empty_message_and_esc_cancels() {
+        let mut app = app();
+        app.open_commit_dialog(Some("fixes".into()), payload(1, 0));
+        assert_eq!(app.on_key(key(KeyCode::Enter)), None);
+        assert!(matches!(app.overlay, Some(Overlay::Commit(_))));
+        // Overlays swallow global keys: 'q' types, it doesn't quit.
+        assert_eq!(app.on_key(key(KeyCode::Char('q'))), None);
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.overlay.is_none());
+    }
+
+    #[test]
+    fn a_stale_payload_routes_through_the_warn_overlay() {
+        let mut app = dialog_app(payload(4, 1));
+        assert_eq!(app.on_key(key(KeyCode::Enter)), None);
+        assert!(
+            matches!(app.overlay, Some(Overlay::CommitStale(_))),
+            "◑ in the payload warns before committing"
+        );
+
+        // esc returns to the dialog with the draft intact.
+        app.on_key(key(KeyCode::Esc));
+        let Some(Overlay::Commit(ref draft)) = app.overlay else {
+            panic!("expected the dialog back, got {:?}", app.overlay);
+        };
+        assert_eq!(draft.message, "fix: x");
+
+        // enter on the warn commits as-is.
+        app.on_key(key(KeyCode::Enter));
+        let action = app.on_key(key(KeyCode::Enter));
+        assert!(matches!(
+            action,
+            Some(Action::Commit(CommitStep::Commit(_)))
+        ));
+
+        // w aligns index to worktree, then commits.
+        let mut app = dialog_app(payload(4, 1));
+        app.on_key(key(KeyCode::Enter));
+        let action = app.on_key(key(KeyCode::Char('w')));
+        assert!(matches!(
+            action,
+            Some(Action::Commit(CommitStep::AlignAndCommit(_)))
+        ));
+    }
+
+    #[test]
+    fn an_empty_payload_offers_stage_all_with_the_changelists_counts() {
+        let mut app = app();
+        app.offer_stage_all(Some("fixes".into()));
+        assert_eq!(
+            app.overlay,
+            Some(Overlay::CommitStageAll {
+                changelist: Some("fixes".into()),
+                hunks: 2,
+                files: 1,
+            }),
+            "fixes owns two print.css hunks"
+        );
+        let action = app.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            action,
+            Some(Action::Commit(CommitStep::StageAllAndOpen {
+                changelist: Some("fixes".into())
+            }))
+        );
+
+        // A hunk-less changelist gets a feedback line, not an offer.
+        let mut next = snapshot();
+        next.changelists.push(Changelist {
+            name: "empty".into(),
+        });
+        app.apply_snapshot(next);
+        app.offer_stage_all(Some("empty".into()));
+        assert!(app.overlay.is_none());
+        assert!(app.feedback.iter().any(|line| line.contains("empty")));
+    }
+
+    #[test]
+    fn drift_reconfirms_with_the_message_kept() {
+        let mut app = dialog_app(payload(5, 0));
+        let action = app.on_key(key(KeyCode::Enter));
+        let Some(Action::Commit(CommitStep::Commit(draft))) = action else {
+            panic!("expected a commit step, got {action:?}");
+        };
+
+        // The main loop reports drift with a fresh payload.
+        app.commit_drifted(draft, payload(4, 0));
+        let Some(Overlay::CommitDrift {
+            ref draft,
+            ref previous,
+        }) = app.overlay
+        else {
+            panic!("expected the drift overlay, got {:?}", app.overlay);
+        };
+        assert_eq!(draft.message, "fix: x", "message kept");
+        assert_eq!(draft.payload, payload(4, 0), "payload replaced");
+        assert_eq!(*previous, payload(5, 0));
+
+        // e goes back to editing with everything kept.
+        app.on_key(key(KeyCode::Char('e')));
+        assert!(matches!(app.overlay, Some(Overlay::Commit(_))));
+
+        // enter from the dialog re-commits the updated payload.
+        let action = app.on_key(key(KeyCode::Enter));
+        assert!(matches!(
+            action,
+            Some(Action::Commit(CommitStep::Commit(ref draft)))
+                if draft.payload == payload(4, 0)
+        ));
+    }
+
+    #[test]
+    fn a_failed_commit_restores_the_dialog_and_success_closes_it() {
+        let mut app = dialog_app(payload(3, 0));
+        let Some(Action::Commit(CommitStep::Commit(draft))) = app.on_key(key(KeyCode::Enter))
+        else {
+            panic!("expected a commit step");
+        };
+        app.restore_commit_dialog(draft.clone());
+        assert!(
+            matches!(app.overlay, Some(Overlay::Commit(ref restored)) if *restored == draft),
+            "the dialog comes back exactly as confirmed"
+        );
+        app.commit_succeeded();
+        assert!(
+            app.overlay.is_none(),
+            "no toast; the refresh is the feedback"
+        );
+    }
+
+    #[test]
+    fn payload_counts_wording_matches_the_prototype() {
+        let mut multi = payload(4, 1);
+        multi.files.push(PayloadFile {
+            path: "src/a.ts".into(),
+            staged_hunks: 0,
+            stale_hunks: 0,
+            hunks: Vec::new(),
+        });
+        assert_eq!(payload_counts(&multi), "5 staged hunks in 2 files");
+        assert_eq!(payload_counts(&payload(1, 0)), "1 staged hunk in 1 file");
+        let draft = CommitDraft {
+            changelist: Some("fixes".into()),
+            payload: payload(1, 0),
+            message: String::new(),
+            body: String::new(),
+            body_focus: false,
+            no_verify: false,
+            amend: false,
+        };
+        assert_eq!(draft.changelist_label(), "fixes");
+    }
 
     #[test]
     fn n_opens_an_input_whose_submission_creates_a_changelist() {

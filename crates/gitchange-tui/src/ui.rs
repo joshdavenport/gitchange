@@ -11,7 +11,10 @@ use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
-use crate::app::{App, DiffLine, FilesRow, InputKind, MoveRow, Overlay, Panel, Scope};
+use crate::app::{
+    App, CommitDraft, DiffLine, FilesRow, InputKind, MoveRow, Overlay, Panel, Scope, count_noun,
+    payload_counts,
+};
 use crate::theme::Theme;
 
 pub fn draw(frame: &mut Frame, app: &App, theme: &Theme, now: Instant) {
@@ -425,12 +428,21 @@ fn modal_block(title: &str, theme: &Theme) -> Block<'static> {
 
 /// The `enter <verb> · esc cancel` hint line modals carry.
 fn modal_hints(verb: &str, theme: &Theme) -> Line<'static> {
-    Line::from(vec![
-        Span::styled("enter", theme.colors.warn),
-        Span::styled(format!(" {verb} · "), theme.colors.dim),
-        Span::styled("esc", theme.colors.warn),
-        Span::styled(" cancel", theme.colors.dim),
-    ])
+    key_hints_line(&[("enter", verb), ("esc", "cancel")], theme)
+}
+
+/// A `key label · key label` hint line — the commit modals carry more
+/// than the two-verb [`modal_hints`] shape.
+fn key_hints_line(pairs: &[(&str, &str)], theme: &Theme) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (index, (key, label)) in pairs.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(" · ", theme.colors.dim));
+        }
+        spans.push(Span::styled((*key).to_owned(), theme.colors.warn));
+        spans.push(Span::styled(format!(" {label}"), theme.colors.dim));
+    }
+    Line::from(spans)
 }
 
 fn draw_overlay(frame: &mut Frame, area: Rect, app: &App, overlay: &Overlay, theme: &Theme) {
@@ -462,6 +474,79 @@ fn draw_overlay(frame: &mut Frame, area: Rect, app: &App, overlay: &Overlay, the
             frame.render_widget(Clear, popup);
             frame.render_widget(
                 Paragraph::new(lines).block(modal_block("Delete changelist", theme)),
+                popup,
+            );
+        }
+        Overlay::Commit(draft) => draw_commit_dialog(frame, area, draft, theme, true),
+        Overlay::CommitStale(draft) => {
+            // The dialog stays visible under the warn (prototype
+            // variant B) — its state is untouched, only the cursor goes.
+            draw_commit_dialog(frame, area, draft, theme, false);
+            draw_stale_warn(frame, area, draft, theme);
+        }
+        Overlay::CommitStageAll {
+            changelist,
+            hunks,
+            files,
+        } => {
+            let label = changelist.as_deref().unwrap_or("unassigned");
+            let lines = vec![
+                Line::from(vec![
+                    Span::styled(
+                        label.to_owned(),
+                        Style::new().fg(changelist_color(changelist.is_some(), theme)),
+                    ),
+                    Span::raw(" has no staged hunks."),
+                ]),
+                Line::raw(format!(
+                    "Stage all {} in {} and commit?",
+                    count_noun(*hunks, "hunk"),
+                    count_noun(*files, "file"),
+                )),
+                Line::raw(""),
+                key_hints_line(
+                    &[("enter", "stage all & continue"), ("esc", "cancel")],
+                    theme,
+                ),
+            ];
+            let width = (lines.iter().map(Line::width).max().unwrap_or(0) as u16 + 4).max(52);
+            let popup = centered(area, width, lines.len() as u16 + 2);
+            frame.render_widget(Clear, popup);
+            frame.render_widget(
+                Paragraph::new(lines).block(modal_block("Nothing staged", theme)),
+                popup,
+            );
+        }
+        Overlay::CommitDrift { draft, previous } => {
+            let was = payload_counts(previous);
+            let mut now_spans = vec![Span::styled(
+                format!("was: {was} → now: "),
+                theme.colors.dim,
+            )];
+            now_spans.extend(payload_spans(&draft.payload, theme.colors.text, theme));
+            let lines = vec![
+                Line::raw("The working tree changed while you were writing the message."),
+                Line::from(now_spans),
+                Line::raw(""),
+                Line::from(vec![
+                    Span::styled("message (kept)  ", theme.colors.dim),
+                    Span::raw(draft.message.clone()),
+                ]),
+                Line::raw(""),
+                key_hints_line(
+                    &[
+                        ("enter", "commit updated payload"),
+                        ("e", "edit message"),
+                        ("esc", "cancel"),
+                    ],
+                    theme,
+                ),
+            ];
+            let width = (lines.iter().map(Line::width).max().unwrap_or(0) as u16 + 4).max(60);
+            let popup = centered(area, width, lines.len() as u16 + 2);
+            frame.render_widget(Clear, popup);
+            frame.render_widget(
+                Paragraph::new(lines).block(warn_block("Payload changed — re-confirm", theme)),
                 popup,
             );
         }
@@ -514,6 +599,228 @@ fn draw_overlay(frame: &mut Frame, area: Rect, app: &App, overlay: &Overlay, the
     }
 }
 
+/// A warn-framed modal block — the ◑ warn and drift re-confirm frames.
+fn warn_block(title: &str, theme: &Theme) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme.colors.warn))
+        .title(Line::styled(
+            title.to_owned(),
+            Style::new().fg(theme.colors.warn),
+        ))
+}
+
+/// The block cursor the input overlays share.
+fn cursor() -> Span<'static> {
+    Span::styled(" ", Style::new().add_modifier(Modifier::REVERSED))
+}
+
+/// A changelist name's colour: the changelist tint for named ones, the
+/// warning tint for unassigned — the cascade the commit modals share.
+fn changelist_color(named: bool, theme: &Theme) -> ratatui::style::Color {
+    if named {
+        theme.colors.changelist
+    } else {
+        theme.colors.warn
+    }
+}
+
+/// The payload counts with the ◑ tail coloured — "5 staged hunks in
+/// 2 files · 1 ◑" (the issue's one-line summary), shared by the dialog
+/// and the drift notice's now side.
+fn payload_spans(
+    payload: &gitchange_core::CommitPayload,
+    counts_color: ratatui::style::Color,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    let mut spans = vec![Span::styled(
+        payload_counts(payload),
+        Style::new().fg(counts_color),
+    )];
+    let stale = payload.stale_hunks();
+    if stale > 0 {
+        spans.push(Span::styled(format!(" · {stale} ◑"), theme.colors.warn));
+    }
+    spans
+}
+
+/// The all-in-one commit dialog (commit-flow prototype variant A):
+/// one-line payload summary, independent message/body inputs with
+/// text-on-border framing, flag toggles, hints. `active` drops the
+/// cursor while the ◑ warn sits on top.
+fn draw_commit_dialog(
+    frame: &mut Frame,
+    area: Rect,
+    draft: &CommitDraft,
+    theme: &Theme,
+    active: bool,
+) {
+    let popup = centered(area, 64, 13);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme.colors.border_focus))
+        .title(Line::from(vec![
+            Span::styled(
+                "Commit changelist — ",
+                Style::new().fg(theme.colors.border_focus),
+            ),
+            Span::styled(
+                draft.changelist_label().to_owned(),
+                Style::new().fg(changelist_color(draft.changelist.is_some(), theme)),
+            ),
+        ]));
+    let inner = block.inner(popup);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block, popup);
+
+    let [
+        payload_area,
+        message_area,
+        body_area,
+        flags_area,
+        hints_area,
+    ] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(3),
+        Constraint::Length(5),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+
+    let mut summary = vec![Span::styled("payload: ", theme.colors.dim)];
+    summary.extend(payload_spans(&draft.payload, theme.colors.dim, theme));
+    frame.render_widget(Paragraph::new(Line::from(summary)), payload_area);
+
+    // Text-on-border input framing: the label sits on the input's own
+    // border; the focused input carries the cursor and focus colour.
+    let input_block = |label: &str, focused: bool| {
+        let color = if focused && active {
+            theme.colors.border_focus
+        } else {
+            theme.colors.border
+        };
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::new().fg(color))
+            .title(Line::styled(label.to_owned(), theme.colors.dim))
+    };
+
+    let mut message_line = Line::from(Span::raw(draft.message.clone()));
+    if active && !draft.body_focus {
+        message_line.push_span(cursor());
+    }
+    frame.render_widget(
+        Paragraph::new(message_line).block(input_block("message", !draft.body_focus)),
+        message_area,
+    );
+
+    let body_lines: Vec<Line> = if draft.body.is_empty() && (!active || !draft.body_focus) {
+        vec![Line::styled("…optional (tab)", theme.colors.dim)]
+    } else {
+        let mut lines: Vec<Line> = draft
+            .body
+            .split('\n')
+            .map(|line| Line::raw(line.to_owned()))
+            .collect();
+        if active && draft.body_focus {
+            lines
+                .last_mut()
+                .expect("split yields at least one line")
+                .push_span(cursor());
+        }
+        lines
+    };
+    // Keep the cursor's line visible once the body outgrows the input.
+    let body_scroll = keep_visible(body_lines.len().saturating_sub(1), 3);
+    frame.render_widget(
+        Paragraph::new(body_lines)
+            .block(input_block("body", draft.body_focus))
+            .scroll((body_scroll, 0)),
+        body_area,
+    );
+
+    let flag = |set: bool, label: &str| {
+        let mark = if set { "[x]" } else { "[ ]" };
+        let style = if set {
+            Style::new().fg(theme.colors.warn)
+        } else {
+            Style::new().fg(theme.colors.dim)
+        };
+        Span::styled(format!("{mark} {label}"), style)
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            flag(draft.no_verify, "--no-verify"),
+            Span::raw("   "),
+            flag(draft.amend, "--amend"),
+        ])),
+        flags_area,
+    );
+
+    frame.render_widget(
+        Paragraph::new(key_hints_line(
+            &[
+                ("enter", "commit"),
+                ("tab", "body"),
+                ("ctrl+n", "no-verify"),
+                ("ctrl+a", "amend"),
+                ("esc", "cancel"),
+            ],
+            theme,
+        )),
+        hints_area,
+    );
+}
+
+/// The ◑ staged-stale warn-and-confirm (prototype variant B, ADR 0004),
+/// drawn over the dimmed dialog.
+fn draw_stale_warn(frame: &mut Frame, area: Rect, draft: &CommitDraft, theme: &Theme) {
+    let stale = draft.payload.stale_hunks();
+    let total = draft.payload.staged_hunks() + stale;
+    let mut lines = vec![
+        Line::raw(format!(
+            "{stale} of {total} payload hunks {} ◑ — the index holds a",
+            if stale == 1 { "is" } else { "are" },
+        )),
+        Line::raw("different version than the worktree. Committing as-is"),
+        Line::raw("commits content that isn't what you see."),
+        Line::raw(""),
+    ];
+    for file in &draft.payload.files {
+        if file.stale_hunks == 0 {
+            continue;
+        }
+        lines.push(Line::from(vec![
+            Span::styled("◑ ", theme.colors.warn),
+            Span::raw(file.path.clone()),
+            Span::styled(
+                format!(" ({})", count_noun(file.stale_hunks, "stale hunk")),
+                theme.colors.dim,
+            ),
+        ]));
+    }
+    lines.push(Line::raw(""));
+    lines.push(key_hints_line(
+        &[
+            ("enter", "commit as-is"),
+            ("w", "align index to worktree & commit"),
+            ("esc", "back"),
+        ],
+        theme,
+    ));
+    let width = (lines.iter().map(Line::width).max().unwrap_or(0) as u16 + 4).max(56);
+    let popup = centered(area, width, lines.len() as u16 + 2);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(lines).block(warn_block("◑ staged-stale hunks in payload", theme)),
+        popup,
+    );
+}
+
 fn draw_keybar(frame: &mut Frame, area: Rect, app: &App, theme: &Theme, now: Instant) {
     let mut spans = Vec::new();
     for (index, (key, label)) in app.key_hints().into_iter().enumerate() {
@@ -548,6 +855,8 @@ fn draw_help(frame: &mut Frame, area: Rect, theme: &Theme) {
         ("enter", "drill in: changelist → files → hunk mode"),
         ("enter", "hunk mode: add all hunks to changelist"),
         ("shift+enter", "hunk mode: add hunk to changelist"),
+        ("space", "stage/unstage file (hunk mode: hunk)"),
+        ("c", "commit changelist"),
         ("m", "move file to changelist"),
         ("n", "new changelist"),
         ("d", "delete changelist"),

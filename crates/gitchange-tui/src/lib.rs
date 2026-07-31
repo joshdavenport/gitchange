@@ -10,14 +10,14 @@ pub mod ui;
 use std::time::Instant;
 
 use crossbeam_channel::{at, never, select, unbounded};
-use gitchange_core::{Engine, EngineEvent, Notice, Repo};
+use gitchange_core::{CommitOptions, CommitOutcome, Engine, EngineEvent, HunkStage, Notice, Repo};
 use ratatui::crossterm::event::{
     DisableFocusChange, EnableFocusChange, Event, KeyEventKind, KeyboardEnhancementFlags,
     PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::execute;
 
-use app::{Action, App, Op};
+use app::{Action, App, CommitDraft, CommitStep, Op};
 use theme::Theme;
 
 #[derive(Debug, thiserror::Error)]
@@ -109,6 +109,14 @@ fn event_loop(
                             // debounce (ADR 0005).
                             engine.request_refresh();
                         }
+                        Some(Action::Commit(step)) => {
+                            run_commit_step(repo, &mut app, step);
+                            // Every step mutates or synchronously
+                            // refreshed the state file; the immediate
+                            // request keeps the snapshot in step
+                            // (ADR 0005).
+                            engine.request_refresh();
+                        }
                         None => {}
                     }
                 }
@@ -136,6 +144,10 @@ fn run_op(repo: &Repo, op: Op) -> Vec<String> {
         Op::RenameChangelist { from, to } => done(repo.rename_changelist(&from, &to)),
         Op::DeleteChangelist { name } => done(repo.delete_changelist(&name)),
         Op::SetActive { name } => done(repo.switch(&name)),
+        Op::StageFile { path } => done(repo.stage_file(&path)),
+        Op::UnstageFile { path } => done(repo.unstage_file(&path)),
+        Op::StageHunk { path, hunk } => hunk_op(repo.stage_hunk(&path, &hunk)),
+        Op::UnstageHunk { path, hunk } => hunk_op(repo.unstage_hunk(&path, &hunk)),
         Op::Move {
             path,
             hunks,
@@ -154,6 +166,116 @@ fn run_op(repo: &Repo, op: Op) -> Vec<String> {
                 Ok(notices) => notices.iter().map(notice_line).collect(),
                 Err(error) => vec![error.to_string()],
             }
+        }
+    }
+}
+
+/// A fail-soft hunk op's outcome as Log placeholder lines: notices when
+/// it applied partially or not at all, the error otherwise.
+fn hunk_op(result: Result<Vec<Notice>, gitchange_core::Error>) -> Vec<String> {
+    match result {
+        Ok(notices) => notices.iter().map(notice_line).collect(),
+        Err(error) => vec![error.to_string()],
+    }
+}
+
+/// Execute one commit-flow IO step (ticket #33, ADR 0004); outcomes go
+/// back into the App — dialog opened, drift re-confirm, or the dialog
+/// restored with a feedback line on failure.
+fn run_commit_step(repo: &Repo, app: &mut App, step: CommitStep) {
+    match step {
+        CommitStep::Open { changelist } => open_commit_dialog(repo, app, changelist),
+        CommitStep::StageAllAndOpen { changelist } => {
+            // Stage the changelist's unstaged hunks from a fresh
+            // snapshot, fail-soft per hunk, then fall into the dialog.
+            match repo.refresh() {
+                Ok(snapshot) => {
+                    let owner = changelist.as_deref();
+                    for file in &snapshot.files {
+                        for hunk in &file.hunks {
+                            if hunk.changelist.as_deref() == owner
+                                && hunk.stage == HunkStage::Unstaged
+                            {
+                                app.push_feedback(hunk_op(repo.stage_hunk(&file.path, hunk)));
+                            }
+                        }
+                    }
+                    open_commit_dialog(repo, app, changelist);
+                }
+                Err(error) => app.push_feedback([error.to_string()]),
+            }
+        }
+        CommitStep::Commit(draft) => run_commit(repo, app, draft),
+        CommitStep::AlignAndCommit(mut draft) => {
+            // The ◑ warn's align option: index := worktree over the
+            // changelist's stale hunks, then commit what that produced —
+            // the payload is re-derived so the drift guard compares the
+            // aligned content, not the stale confirmation.
+            match repo.align(draft.changelist.as_deref()) {
+                Ok(notices) => app.push_feedback(notices.iter().map(notice_line)),
+                Err(error) => {
+                    app.push_feedback([error.to_string()]);
+                    app.restore_commit_dialog(draft);
+                    return;
+                }
+            }
+            match repo.commit_payload(draft.changelist.as_deref()) {
+                Ok(payload) => {
+                    draft.payload = payload;
+                    // Align is fail-soft and edits can land mid-flow, so
+                    // ◑ can survive it: re-warn instead of committing
+                    // content whose flag the user never saw (ADR 0004 —
+                    // never silent).
+                    if draft.payload.stale_hunks() > 0 {
+                        app.reconfirm_stale(draft);
+                    } else {
+                        run_commit(repo, app, draft);
+                    }
+                }
+                Err(error) => {
+                    app.push_feedback([error.to_string()]);
+                    app.restore_commit_dialog(draft);
+                }
+            }
+        }
+    }
+}
+
+/// Derive the payload behind a sync refresh and open the dialog — or the
+/// stage-all offer when nothing is staged (ADR 0004: core never
+/// auto-stages; `commit_payload` reports empty rather than erroring).
+fn open_commit_dialog(repo: &Repo, app: &mut App, changelist: Option<String>) {
+    match repo.commit_payload(changelist.as_deref()) {
+        Ok(payload) if payload.is_empty() => app.offer_stage_all(changelist),
+        Ok(payload) => app.open_commit_dialog(changelist, payload),
+        Err(error) => app.push_feedback([error.to_string()]),
+    }
+}
+
+/// Run the confirmed commit. Failure restores the dialog exactly as
+/// confirmed (the issue's dialog-restore path); drift loops back to the
+/// re-confirm overlay with the fresh payload.
+fn run_commit(repo: &Repo, app: &mut App, draft: CommitDraft) {
+    let message = if draft.body.trim().is_empty() {
+        draft.message.clone()
+    } else {
+        format!("{}\n\n{}", draft.message, draft.body.trim_end())
+    };
+    let options = CommitOptions {
+        no_verify: draft.no_verify,
+        amend: draft.amend,
+    };
+    match repo.commit(
+        draft.changelist.as_deref(),
+        &message,
+        &options,
+        Some(&draft.payload),
+    ) {
+        Ok(CommitOutcome::Committed { .. }) => app.commit_succeeded(),
+        Ok(CommitOutcome::Drifted { payload }) => app.commit_drifted(draft, payload),
+        Err(error) => {
+            app.push_feedback([error.to_string()]);
+            app.restore_commit_dialog(draft);
         }
     }
 }
