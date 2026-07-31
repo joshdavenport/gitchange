@@ -309,13 +309,19 @@ fn control_loop(
     // leaked lockfile.
     let mut retrying_contention = false;
 
-    let trigger = |job_running: &mut bool, pending: &mut bool| {
-        if *job_running {
-            *pending = true;
-        } else if run_tx.send(()).is_ok() {
-            *job_running = true;
-        }
-    };
+    // Any triggered run subsumes an armed debounce: the job it dispatches
+    // (or the pending follow-up it queues) starts after the debounced
+    // filesystem change, so letting the deadline fire anyway would only
+    // buy a redundant third refresh.
+    let trigger =
+        |job_running: &mut bool, pending: &mut bool, debounce_deadline: &mut Option<Instant>| {
+            *debounce_deadline = None;
+            if *job_running {
+                *pending = true;
+            } else if run_tx.send(()).is_ok() {
+                *job_running = true;
+            }
+        };
     // Notify once, poll from here on (ADR 0005) — entered at spawn when
     // the watcher never came up, or later when it dies.
     let enter_degraded = |degraded: &mut bool, poll_deadline: &mut Option<Instant>| {
@@ -331,7 +337,7 @@ fn control_loop(
         enter_degraded(&mut degraded, &mut poll_deadline);
     }
     // Initial refresh: the frontend gets its first snapshot unasked.
-    trigger(&mut job_running, &mut pending);
+    trigger(&mut job_running, &mut pending, &mut debounce_deadline);
 
     loop {
         let next_deadline = [debounce_deadline, poll_deadline]
@@ -342,11 +348,9 @@ fn control_loop(
 
         select! {
             recv(requests) -> msg => match msg {
-                // Immediate: no debounce, and any armed debounce is
-                // subsumed by the refresh that's about to run.
+                // Immediate: no debounce.
                 Ok(()) => {
-                    debounce_deadline = None;
-                    trigger(&mut job_running, &mut pending);
+                    trigger(&mut job_running, &mut pending, &mut debounce_deadline);
                 }
                 // Engine dropped: shut down. run_tx drops with this
                 // frame, ending the worker.
@@ -370,6 +374,15 @@ fn control_loop(
             },
             recv(done_rx) -> msg => match msg {
                 Ok(outcome) => {
+                    // Fold every request already queued into the single
+                    // follow-up decision: `select!` picks ready channels
+                    // in random order, so without this drain a request
+                    // that preceded the completion could be seen after
+                    // it and spawn a redundant extra run.
+                    while requests.try_recv().is_ok() {
+                        pending = true;
+                        debounce_deadline = None;
+                    }
                     job_running = false;
                     match outcome {
                         RunOutcome::Done => retrying_contention = false,
@@ -382,7 +395,7 @@ fn control_loop(
                     }
                     if pending {
                         pending = false;
-                        trigger(&mut job_running, &mut pending);
+                        trigger(&mut job_running, &mut pending, &mut debounce_deadline);
                     }
                 }
                 // Worker died (refresh panicked); nothing left to drive.
@@ -391,12 +404,11 @@ fn control_loop(
             recv(timer) -> _ => {
                 let now = Instant::now();
                 if debounce_deadline.is_some_and(|deadline| deadline <= now) {
-                    debounce_deadline = None;
-                    trigger(&mut job_running, &mut pending);
+                    trigger(&mut job_running, &mut pending, &mut debounce_deadline);
                 }
                 if poll_deadline.is_some_and(|deadline| deadline <= now) {
                     poll_deadline = Some(now + config.poll_interval);
-                    trigger(&mut job_running, &mut pending);
+                    trigger(&mut job_running, &mut pending, &mut debounce_deadline);
                 }
             },
         }
@@ -584,12 +596,14 @@ mod tests {
             Ok(empty_snapshot())
         });
 
-        // The initial refresh is now blocked in flight. Everything sent
-        // while it runs must collapse into a single follow-up.
+        // The initial refresh is now blocked in flight. Every request
+        // sent while it runs must collapse into a single follow-up.
+        // Requests only — an fs event here would race its debounce
+        // window against the gate releases (issue #48); coalescing of
+        // fs events has its own test.
         for _ in 0..5 {
             engine.engine.request_refresh();
         }
-        engine.send(paths(&["/repo/src/main.rs"]));
 
         gate_tx.send(()).unwrap(); // release the initial job
         engine.recv_complete();
