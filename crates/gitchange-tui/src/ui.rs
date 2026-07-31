@@ -140,9 +140,25 @@ fn fill_width(mut line: Line<'static>, width: usize) -> Line<'static> {
 }
 
 /// The selected-row treatment every panel shares: the selection
-/// background across the full inner `width`.
-fn select_row(line: Line<'static>, width: usize, theme: &Theme) -> Line<'static> {
-    fill_width(line, width).style(Style::new().bg(theme.colors.selection))
+/// background across the full inner `width` — but only while the owning
+/// panel holds `focused` (issue #45); a blurred panel keeps its cursor
+/// marks and drops the tint.
+fn select_row(line: Line<'static>, width: usize, focused: bool, theme: &Theme) -> Line<'static> {
+    if focused {
+        fill_width(line, width).style(Style::new().bg(theme.colors.selection))
+    } else {
+        line
+    }
+}
+
+/// The selection cursor's leading column: glyph on the selected row, a
+/// same-width blank elsewhere so glyph columns stay aligned.
+fn cursor_span(selected: bool, theme: &Theme) -> Span<'static> {
+    if selected {
+        Span::styled(format!("{} ", theme.glyphs.cursor), theme.colors.cursor)
+    } else {
+        Span::raw("  ")
+    }
 }
 
 fn draw_changelists(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
@@ -152,7 +168,12 @@ fn draw_changelists(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         .iter()
         .enumerate()
         .map(|(index, row)| {
-            let mut spans = match &row.scope {
+            let selected = index == app.changelist_row;
+            // The cursor column leads every row (issue #45): additive,
+            // never recolouring the type glyphs or names it precedes,
+            // and it persists while the panel is blurred.
+            let mut spans = vec![cursor_span(selected, theme)];
+            spans.extend(match &row.scope {
                 // Conflicts is a Files-row group, never a Changelists
                 // row; the arm exists for exhaustiveness.
                 Scope::All | Scope::Conflicts => vec![
@@ -174,11 +195,11 @@ fn draw_changelists(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                     Span::styled(format!("{} ", theme.glyphs.unassigned), theme.colors.warn),
                     Span::styled("unassigned", theme.colors.warn),
                 ],
-            };
+            });
             spans.push(Span::styled(format!(" ({})", row.count), theme.colors.dim));
             let line = Line::from(spans);
-            if index == app.changelist_row {
-                select_row(line, width, theme)
+            if selected {
+                select_row(line, width, app.focus == Panel::Changelists, theme)
             } else {
                 line
             }
@@ -248,7 +269,7 @@ fn draw_files(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                     spans.push(Span::raw(" "));
                     spans.push(Span::raw(entry.path.clone()));
                 } else {
-                    spans.push(stage_span(*stage, theme));
+                    spans.push(stage_span(*stage, selected, theme));
                     spans.push(Span::raw(" "));
                     spans.push(kind_span(*kind, theme));
                     spans.push(Span::raw(" "));
@@ -257,7 +278,7 @@ fn draw_files(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                 }
                 let line = Line::from(spans);
                 if selected {
-                    select_row(line, width, theme)
+                    select_row(line, width, app.focus == Panel::Files, theme)
                 } else {
                     line
                 }
@@ -294,7 +315,7 @@ fn draw_commits(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                 Span::raw(commit.summary.clone()),
             ]);
             if index == app.commit_row {
-                select_row(line, width, theme)
+                select_row(line, width, app.focus == Panel::Commits, theme)
             } else {
                 line
             }
@@ -312,10 +333,11 @@ fn draw_commits(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 
 fn draw_diff(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let width = area.width.saturating_sub(2) as usize;
+    let focused = app.focus == Panel::Diff;
     let lines: Vec<Line> = app
         .diff_lines()
         .into_iter()
-        .map(|line| render_diff_line(line, theme, width))
+        .map(|line| render_diff_line(line, theme, width, focused))
         .collect();
     // Hunk mode tracks the selection (a couple of context lines above
     // its header, clamped so the tail never overscrolls); scroll mode
@@ -340,7 +362,7 @@ fn draw_diff(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     frame.render_widget(Paragraph::new(lines).block(block).scroll((scroll, 0)), area);
 }
 
-fn render_diff_line(line: DiffLine, theme: &Theme, width: usize) -> Line<'static> {
+fn render_diff_line(line: DiffLine, theme: &Theme, width: usize, focused: bool) -> Line<'static> {
     match line {
         DiffLine::FileHeader(text) => Line::styled(text, theme.colors.dim),
         DiffLine::Placeholder(text) => Line::styled(text, theme.colors.dim),
@@ -352,10 +374,17 @@ fn render_diff_line(line: DiffLine, theme: &Theme, width: usize) -> Line<'static
             foreign,
             selected,
         } => {
-            let mut spans = vec![Span::styled(
+            // The selected hunk's header carries the cursor (issue #45):
+            // it persists while the panel is blurred, since the move key
+            // acts on the selection cross-panel.
+            let mut spans = Vec::new();
+            if selected {
+                spans.push(cursor_span(true, theme));
+            }
+            spans.push(Span::styled(
                 text.clone(),
                 Style::new().fg(theme.colors.hunk_header),
-            )];
+            ));
             if let Some(tag) = tag {
                 let glyph = tag
                     .stage
@@ -367,8 +396,9 @@ fn render_diff_line(line: DiffLine, theme: &Theme, width: usize) -> Line<'static
                 );
                 // The prototype floats the tag at the header's right
                 // edge; pad to the panel width, minimum two spaces.
+                let lead = if selected { 2 } else { 0 };
                 let pad = width
-                    .saturating_sub(text.chars().count() + pill.chars().count())
+                    .saturating_sub(lead + text.chars().count() + pill.chars().count())
                     .max(2);
                 spans.push(Span::raw(" ".repeat(pad)));
                 spans.push(Span::styled(
@@ -376,7 +406,13 @@ fn render_diff_line(line: DiffLine, theme: &Theme, width: usize) -> Line<'static
                     Style::new().fg(tag_color(tag.unassigned, tag.dim, theme)),
                 ));
             }
-            decorate(Line::from(spans), foreign, selected, width, theme)
+            decorate(
+                Line::from(spans),
+                foreign,
+                selected && focused,
+                width,
+                theme,
+            )
         }
         DiffLine::Content {
             origin,
@@ -394,7 +430,7 @@ fn render_diff_line(line: DiffLine, theme: &Theme, width: usize) -> Line<'static
             decorate(
                 Line::styled(format!("{origin}{text}"), style),
                 foreign,
-                selected,
+                selected && focused,
                 width,
                 theme,
             )
@@ -417,7 +453,8 @@ fn tag_color(unassigned: bool, dim: bool, theme: &Theme) -> ratatui::style::Colo
 /// Line-level diff treatments: foreign rows get the DIM attribute (the
 /// prototype's ~45% opacity — terminal cells can't blend), the hunk-mode
 /// selection gets the selection background (the prototype's outline has
-/// no terminal equivalent).
+/// no terminal equivalent) — `selected` arrives pre-gated on Diff focus
+/// (issue #45); the blurred selection keeps only its header cursor.
 fn decorate(
     mut line: Line<'static>,
     foreign: bool,
@@ -731,9 +768,10 @@ fn draw_overlay(frame: &mut Frame, area: Rect, app: &App, overlay: &Overlay, the
             let width = (lines.iter().map(Line::width).max().unwrap_or(0) as u16 + 4).max(40);
             // The popup's width follows its widest row, so the selected
             // row can only be padded to the inner width once it's known.
+            // Modal, so always effectively focused: unconditional tint.
             if let Some(index) = selected_line {
                 let line = std::mem::take(&mut lines[index]);
-                lines[index] = select_row(line, width.saturating_sub(2) as usize, theme);
+                lines[index] = select_row(line, width.saturating_sub(2) as usize, true, theme);
             }
             let popup = centered(area, width, lines.len() as u16 + 2);
             frame.render_widget(Clear, popup);
@@ -1042,15 +1080,17 @@ fn draw_help(frame: &mut Frame, area: Rect, theme: &Theme) {
     frame.render_widget(Paragraph::new(lines).block(block), popup);
 }
 
-fn stage_span(stage: FileStage, theme: &Theme) -> Span<'static> {
-    match stage {
-        FileStage::Staged => Span::styled(theme.glyphs.staged.to_string(), theme.colors.staged),
-        FileStage::PartiallyStaged => Span::styled(
-            theme.glyphs.partially_staged.to_string(),
-            theme.colors.staged,
-        ),
-        FileStage::Unstaged => Span::styled(theme.glyphs.unstaged.to_string(), theme.colors.dim),
-    }
+/// The staging glyph. On the selected row it doubles as the Files
+/// cursor and takes the cursor colour (issue #45), blurred or focused —
+/// no extra column.
+fn stage_span(stage: FileStage, selected: bool, theme: &Theme) -> Span<'static> {
+    let (glyph, color) = match stage {
+        FileStage::Staged => (theme.glyphs.staged, theme.colors.staged),
+        FileStage::PartiallyStaged => (theme.glyphs.partially_staged, theme.colors.staged),
+        FileStage::Unstaged => (theme.glyphs.unstaged, theme.colors.dim),
+    };
+    let color = if selected { theme.colors.cursor } else { color };
+    Span::styled(glyph.to_string(), color)
 }
 
 fn hunk_stage_glyph(stage: HunkStage, theme: &Theme) -> char {

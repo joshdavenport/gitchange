@@ -411,7 +411,9 @@ pub struct App {
     pub diff_scroll: u16,
     /// Hunk-mode selection (prototype variant C): `Some` while `enter`
     /// on a file has focused the Diff panel for per-hunk work; `0`-key
-    /// focus is plain scroll mode (`None`).
+    /// focus is plain scroll mode (`None`). Survives a blur to another
+    /// panel (issue #45) — the cursor stays visible for the cross-panel
+    /// move key — and ends when the underlying file selection moves.
     pub hunk_sel: Option<usize>,
     /// The open modal, if any.
     pub overlay: Option<Overlay>,
@@ -648,7 +650,9 @@ impl App {
                 .map(|file| &file.hunks[..])
                 .unwrap_or_default();
             self.hunk_sel = if hunks.is_empty() {
-                self.focus = Panel::Files;
+                if self.focus == Panel::Diff {
+                    self.focus = Panel::Files;
+                }
                 None
             } else {
                 let survived = old_hunk.as_ref().and_then(|(lines, new_start)| {
@@ -1082,10 +1086,15 @@ impl App {
         self.overlay = None;
     }
 
-    /// Leaving the Diff panel (or refocusing it) always ends hunk mode.
+    /// Move panel focus. Hunk mode survives a blur to another panel —
+    /// its cursor must stay visible because the move key acts on it
+    /// cross-panel (issue #45) — but refocusing the Diff panel itself
+    /// (`0`) is scroll mode, so that resets it.
     fn set_focus(&mut self, panel: Panel) {
         self.focus = panel;
-        self.hunk_sel = None;
+        if panel == Panel::Diff {
+            self.hunk_sel = None;
+        }
     }
 
     fn focus_files(&mut self) {
@@ -1126,7 +1135,9 @@ impl App {
     /// Files panel the whole file (`●` → unstage, else stage). Core
     /// exposes stage and unstage separately; the toggle lives here.
     fn stage_toggle(&mut self) -> Option<Action> {
-        if self.hunk_sel.is_some() {
+        // A blurred hunk selection doesn't own `space` — staging follows
+        // the focused panel.
+        if self.focus == Panel::Diff && self.hunk_sel.is_some() {
             let index = self.hunk_sel?;
             let file = self.selected_file()?;
             let hunk = file.hunks.get(index)?.clone();
@@ -1236,6 +1247,8 @@ impl App {
                 let next = entries.get(step(position, delta, entries.len())).cloned();
                 if next != self.file_sel {
                     self.diff_scroll = 0;
+                    // A blurred hunk selection belongs to the old file.
+                    self.hunk_sel = None;
                 }
                 self.file_sel = next;
             }
@@ -1284,6 +1297,7 @@ impl App {
         }
         self.changelist_row = row;
         self.diff_scroll = 0;
+        self.hunk_sel = None;
         self.file_sel = self.file_entries().first().cloned();
     }
 
@@ -1650,7 +1664,7 @@ impl App {
     /// keys arrive with #33). Hunk mode swaps in its own bar (prototype
     /// variant C).
     pub fn key_hints(&self) -> Vec<(&'static str, &'static str)> {
-        if self.hunk_sel.is_some() {
+        if self.focus == Panel::Diff && self.hunk_sel.is_some() {
             return vec![
                 ("j/k", "next/prev hunk"),
                 ("space", "stage/unstage hunk"),

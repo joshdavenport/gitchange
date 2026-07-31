@@ -85,9 +85,13 @@ fn snapshot() -> Snapshot {
 }
 
 fn render_buffer(app: &App) -> Buffer {
+    render_buffer_themed(app, &Theme::default())
+}
+
+fn render_buffer_themed(app: &App, theme: &Theme) -> Buffer {
     let mut terminal = Terminal::new(TestBackend::new(140, 40)).unwrap();
     terminal
-        .draw(|frame| ui::draw(frame, app, &Theme::default(), Instant::now()))
+        .draw(|frame| ui::draw(frame, app, theme, Instant::now()))
         .unwrap();
     terminal.backend().buffer().clone()
 }
@@ -456,6 +460,7 @@ fn the_selected_files_row_tint_spans_the_full_inner_width() {
     let theme = Theme::default();
     let mut app = App::new("repo");
     app.apply_snapshot(snapshot());
+    app.on_key(key(KeyCode::Char('3'))); // the tint needs Files focus
     let buffer = render_buffer(&app);
 
     // The initially selected file row (print.css, under 'fixes').
@@ -463,7 +468,11 @@ fn the_selected_files_row_tint_spans_the_full_inner_width() {
     let border = border_right_of(&buffer, x, y);
     // From the inner left edge past the text's end up to the border.
     assert_bg_span(&buffer, y, 1, border, theme.colors.selection);
-    assert_eq!(bg_at(&buffer, border, y), Color::Reset, "border stays untinted");
+    assert_eq!(
+        bg_at(&buffer, border, y),
+        Color::Reset,
+        "border stays untinted"
+    );
 }
 
 #[test]
@@ -491,7 +500,11 @@ fn the_hunk_mode_selection_tint_spans_the_full_inner_width() {
         let (x, y) = find_text(&buffer, needle);
         let border = border_right_of(&buffer, x, y);
         assert_bg_span(&buffer, y, x, border, theme.colors.selection);
-        assert_eq!(bg_at(&buffer, border, y), Color::Reset, "border stays untinted");
+        assert_eq!(
+            bg_at(&buffer, border, y),
+            Color::Reset,
+            "border stays untinted"
+        );
     }
     // The unselected hunk does not.
     let (x, y) = find_text(&buffer, "+added at 63");
@@ -510,8 +523,16 @@ fn the_pin_banner_tint_spans_the_full_inner_width() {
     let (x, y) = find_text(&buffer, "▲ watcher unavailable");
     let border = border_right_of(&buffer, x, y);
     assert_bg_span(&buffer, y, x, border, theme.colors.selection);
-    assert_eq!(fg_at(&buffer, x, y), theme.colors.warn, "banner keeps its warn fg");
-    assert_eq!(bg_at(&buffer, border, y), Color::Reset, "border stays untinted");
+    assert_eq!(
+        fg_at(&buffer, x, y),
+        theme.colors.warn,
+        "banner keeps its warn fg"
+    );
+    assert_eq!(
+        bg_at(&buffer, border, y),
+        Color::Reset,
+        "border stays untinted"
+    );
 }
 
 #[test]
@@ -526,7 +547,166 @@ fn the_move_popup_selection_tint_spans_the_popup_inner_width() {
     let (x, y) = find_text(&buffer, "fixes (active)");
     let border = border_right_of(&buffer, x, y);
     assert_bg_span(&buffer, y, x, border, theme.colors.selection);
-    assert_eq!(bg_at(&buffer, border, y), Color::Reset, "border stays untinted");
+    assert_eq!(
+        bg_at(&buffer, border, y),
+        Color::Reset,
+        "border stays untinted"
+    );
+}
+
+// ── focus-conditional selection + cursors (issue #45) ───────────────
+
+#[test]
+fn the_selection_tint_follows_panel_focus() {
+    let theme = Theme::default();
+    let mut app = App::new("repo");
+    app.apply_snapshot(snapshot());
+
+    // Default focus is Changelists: its selected row tints; the Files
+    // and Commits selections do not.
+    let buffer = render_buffer(&app);
+    let (cx, cy) = find_text(&buffer, "≡ all");
+    let c_border = border_right_of(&buffer, cx, cy);
+    let (fx, fy) = find_text(&buffer, "src/print.css 1/2");
+    let f_border = border_right_of(&buffer, fx, fy);
+    let (kx, ky) = find_text(&buffer, "91a05c13");
+    let k_border = border_right_of(&buffer, kx, ky);
+    assert_bg_span(&buffer, cy, cx, c_border, theme.colors.selection);
+    assert_bg_span(&buffer, fy, fx, f_border, Color::Reset);
+    assert_bg_span(&buffer, ky, kx, k_border, Color::Reset);
+
+    // Focus Files: the tints swap.
+    app.on_key(key(KeyCode::Char('3')));
+    let buffer = render_buffer(&app);
+    assert_bg_span(&buffer, cy, cx, c_border, Color::Reset);
+    assert_bg_span(&buffer, fy, fx, f_border, theme.colors.selection);
+    assert_bg_span(&buffer, ky, kx, k_border, Color::Reset);
+}
+
+#[test]
+fn the_commits_selection_tint_disappears_entirely_on_blur() {
+    let theme = Theme::default();
+    let mut app = App::new("repo");
+    app.apply_snapshot(snapshot());
+    app.on_key(key(KeyCode::Char('4')));
+    let buffer = render_buffer(&app);
+    let (x, y) = find_text(&buffer, "91a05c13");
+    let border = border_right_of(&buffer, x, y);
+    assert_bg_span(&buffer, y, x, border, theme.colors.selection);
+
+    app.on_key(key(KeyCode::Char('2')));
+    let buffer = render_buffer(&app);
+    assert_bg_span(&buffer, y, x, border, Color::Reset);
+    // No persistent marker of any kind: no cursor glyph on the row.
+    for cell_x in 1..border {
+        assert_ne!(buffer[(cell_x, y)].symbol(), "❯");
+    }
+}
+
+#[test]
+fn the_changelists_cursor_persists_on_blur_and_never_recolours() {
+    let theme = Theme::default();
+    let mut app = App::new("repo");
+    app.apply_snapshot(snapshot());
+    app.on_key(key(KeyCode::Char('j'))); // select 'fixes'
+
+    let assert_cursor_row = |buffer: &Buffer, bg: Color| {
+        let (x, y) = find_text(buffer, "* fixes");
+        assert_eq!(buffer[(x - 2, y)].symbol(), "❯", "cursor leads the row");
+        assert_eq!(fg_at(buffer, x - 2, y), theme.colors.cursor);
+        // The type glyph and name keep their own colours.
+        assert_eq!(fg_at(buffer, x, y), theme.colors.active);
+        assert_eq!(fg_at(buffer, x + 2, y), theme.colors.changelist);
+        let border = border_right_of(buffer, x, y);
+        assert_bg_span(buffer, y, x - 2, border, bg);
+    };
+
+    assert_cursor_row(&render_buffer(&app), theme.colors.selection);
+    app.on_key(key(KeyCode::Char('4'))); // blur: cursor stays, tint goes
+    assert_cursor_row(&render_buffer(&app), Color::Reset);
+}
+
+#[test]
+fn unselected_changelist_rows_keep_a_blank_cursor_column() {
+    let mut app = App::new("repo");
+    app.apply_snapshot(snapshot());
+    let buffer = render_buffer(&app); // 'all' selected
+
+    // The blank stand-in keeps the glyph and name columns aligned.
+    let (all_x, all_y) = find_text(&buffer, "≡ all");
+    let (fixes_x, fixes_y) = find_text(&buffer, "* fixes");
+    assert_eq!(fixes_x, all_x, "glyph columns align");
+    let (chores_x, _) = find_text(&buffer, "chores (1)");
+    assert_eq!(chores_x, all_x + 2, "name columns align");
+    assert_eq!(buffer[(all_x - 2, all_y)].symbol(), "❯");
+    assert_eq!(buffer[(all_x - 2, fixes_y)].symbol(), " ");
+    assert_eq!(buffer[(all_x - 1, fixes_y)].symbol(), " ");
+}
+
+#[test]
+fn the_files_stage_glyph_doubles_as_the_cursor_on_the_selected_row() {
+    let theme = Theme::default();
+    let mut app = App::new("repo");
+    app.apply_snapshot(snapshot());
+    app.on_key(key(KeyCode::Char('3')));
+
+    // print.css (selected, partially staged ◐) takes the cursor colour;
+    // nav.astro's ○ keeps its normal dim.
+    let assert_glyphs = |buffer: &Buffer| {
+        let (x, y) = find_text(buffer, "src/print.css 1/2");
+        assert_eq!(buffer[(x - 4, y)].symbol(), "◐");
+        assert_eq!(fg_at(buffer, x - 4, y), theme.colors.cursor);
+        let (ox, oy) = find_text(buffer, "src/nav.astro");
+        assert_eq!(buffer[(ox - 4, oy)].symbol(), "○");
+        assert_eq!(fg_at(buffer, ox - 4, oy), theme.colors.dim);
+    };
+
+    assert_glyphs(&render_buffer(&app));
+    app.on_key(key(KeyCode::Char('4'))); // blur: the cursor colour stays
+    assert_glyphs(&render_buffer(&app));
+}
+
+#[test]
+fn the_hunk_cursor_glyph_survives_a_blur() {
+    let theme = Theme::default();
+    let mut app = App::new("repo");
+    app.apply_snapshot(snapshot());
+    app.on_key(key(KeyCode::Char('3')));
+    app.on_key(key(KeyCode::Enter)); // hunk mode, hunk 1 selected
+
+    let buffer = render_buffer(&app);
+    let (x, y) = find_text(&buffer, "@@ -14");
+    assert_eq!(buffer[(x - 2, y)].symbol(), "❯");
+    assert_eq!(fg_at(&buffer, x - 2, y), theme.colors.cursor);
+    let border = border_right_of(&buffer, x, y);
+    assert_bg_span(&buffer, y, x, border, theme.colors.selection);
+
+    // Blur to Commits: the selection survives (the move key acts on it
+    // cross-panel), the cursor stays, only the tint goes.
+    app.on_key(key(KeyCode::Char('4')));
+    assert_eq!(app.hunk_sel, Some(0), "hunk mode survives a blur");
+    let buffer = render_buffer(&app);
+    assert_eq!(buffer[(x - 2, y)].symbol(), "❯");
+    assert_eq!(fg_at(&buffer, x - 2, y), theme.colors.cursor);
+    assert_bg_span(&buffer, y, x, border, Color::Reset);
+}
+
+#[test]
+fn the_cursor_tokens_drive_the_rendering() {
+    let mut theme = Theme::default();
+    theme.glyphs.cursor = '▶';
+    theme.colors.cursor = Color::LightBlue;
+    // The default must stay distinct from the glyphs it sits beside.
+    let default = Theme::default();
+    assert_ne!(default.colors.cursor, default.colors.active);
+    assert_ne!(default.colors.cursor, default.colors.changelist);
+
+    let mut app = App::new("repo");
+    app.apply_snapshot(snapshot());
+    let buffer = render_buffer_themed(&app, &theme);
+    let (x, y) = find_text(&buffer, "≡ all");
+    assert_eq!(buffer[(x - 2, y)].symbol(), "▶");
+    assert_eq!(fg_at(&buffer, x - 2, y), Color::LightBlue);
 }
 
 #[test]

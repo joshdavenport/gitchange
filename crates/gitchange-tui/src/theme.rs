@@ -30,6 +30,9 @@ pub struct Colors {
     pub hunk_header: Color,
     /// Selected-row background.
     pub selection: Color,
+    /// The persistent selection cursor (issue #45) — distinct from
+    /// `active` and `changelist`, whose glyphs it sits beside.
+    pub cursor: Color,
 }
 
 pub struct Glyphs {
@@ -57,6 +60,8 @@ pub struct Glyphs {
     /// prototype's bordered pill.
     pub tag_open: char,
     pub tag_close: char,
+    /// The persistent selection cursor (issue #45).
+    pub cursor: char,
 }
 
 impl Default for Theme {
@@ -79,6 +84,7 @@ impl Default for Theme {
                 conflicted: Color::Red,
                 hunk_header: Color::Cyan,
                 selection: Color::DarkGray,
+                cursor: Color::Cyan,
             },
             glyphs: Glyphs {
                 staged: '●',
@@ -98,6 +104,7 @@ impl Default for Theme {
                 pin: '▲',
                 tag_open: '⟨',
                 tag_close: '⟩',
+                cursor: '❯',
             },
         }
     }
