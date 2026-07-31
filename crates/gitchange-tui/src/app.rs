@@ -1097,6 +1097,13 @@ impl App {
         }
     }
 
+    /// A hunk selection owns keys (and the keybar) only while the Diff
+    /// panel is focused — a blurred one stays visible for the
+    /// cross-panel move key but claims nothing else (issue #45).
+    fn hunk_mode_focused(&self) -> bool {
+        self.focus == Panel::Diff && self.hunk_sel.is_some()
+    }
+
     fn focus_files(&mut self) {
         self.set_focus(Panel::Files);
         if self.file_sel.is_none() {
@@ -1135,9 +1142,7 @@ impl App {
     /// Files panel the whole file (`●` → unstage, else stage). Core
     /// exposes stage and unstage separately; the toggle lives here.
     fn stage_toggle(&mut self) -> Option<Action> {
-        // A blurred hunk selection doesn't own `space` — staging follows
-        // the focused panel.
-        if self.focus == Panel::Diff && self.hunk_sel.is_some() {
+        if self.hunk_mode_focused() {
             let index = self.hunk_sel?;
             let file = self.selected_file()?;
             let hunk = file.hunks.get(index)?.clone();
@@ -1664,7 +1669,7 @@ impl App {
     /// keys arrive with #33). Hunk mode swaps in its own bar (prototype
     /// variant C).
     pub fn key_hints(&self) -> Vec<(&'static str, &'static str)> {
-        if self.focus == Panel::Diff && self.hunk_sel.is_some() {
+        if self.hunk_mode_focused() {
             return vec![
                 ("j/k", "next/prev hunk"),
                 ("space", "stage/unstage hunk"),

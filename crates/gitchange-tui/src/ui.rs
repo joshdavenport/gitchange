@@ -147,11 +147,17 @@ fn fill_width(mut line: Line<'static>, width: usize) -> Line<'static> {
 }
 
 /// The selected-row treatment every panel shares: the selection
-/// background across the full inner `width` — but only while the owning
-/// panel holds `focused` (issue #45); a blurred panel keeps its cursor
-/// marks and drops the tint.
-fn select_row(line: Line<'static>, width: usize, focused: bool, theme: &Theme) -> Line<'static> {
-    if focused {
+/// background across the full inner `width` — but only while the row is
+/// `selected` and the owning panel holds `focused` (issue #45); a
+/// blurred panel keeps its cursor marks and drops the tint.
+fn select_row(
+    line: Line<'static>,
+    width: usize,
+    selected: bool,
+    focused: bool,
+    theme: &Theme,
+) -> Line<'static> {
+    if selected && focused {
         fill_width(line, width).style(Style::new().bg(theme.colors.selection))
     } else {
         line
@@ -205,11 +211,13 @@ fn draw_changelists(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             });
             spans.push(Span::styled(format!(" ({})", row.count), theme.colors.dim));
             let line = Line::from(spans);
-            if selected {
-                select_row(line, width, app.focus == Panel::Changelists, theme)
-            } else {
-                line
-            }
+            select_row(
+                line,
+                width,
+                selected,
+                app.focus == Panel::Changelists,
+                theme,
+            )
         })
         .collect();
     let count = format!("{} of {}", app.changelist_row + 1, rows.len());
@@ -284,11 +292,7 @@ fn draw_files(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                     spans.push(Span::styled(format!(" {staged}/{total}"), theme.colors.dim));
                 }
                 let line = Line::from(spans);
-                if selected {
-                    select_row(line, width, app.focus == Panel::Files, theme)
-                } else {
-                    line
-                }
+                select_row(line, width, selected, app.focus == Panel::Files, theme)
             }
         })
         .collect();
@@ -321,11 +325,13 @@ fn draw_commits(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                 Span::styled(format!(" {} ", initials(&commit.author)), theme.colors.dim),
                 Span::raw(commit.summary.clone()),
             ]);
-            if index == app.commit_row {
-                select_row(line, width, app.focus == Panel::Commits, theme)
-            } else {
-                line
-            }
+            select_row(
+                line,
+                width,
+                index == app.commit_row,
+                app.focus == Panel::Commits,
+                theme,
+            )
         })
         .collect();
     let count = if commits.is_empty() {
@@ -341,10 +347,11 @@ fn draw_commits(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 fn draw_diff(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let width = area.width.saturating_sub(2) as usize;
     let focused = app.focus == Panel::Diff;
+    let hunk_mode = app.hunk_sel.is_some();
     let lines: Vec<Line> = app
         .diff_lines()
         .into_iter()
-        .map(|line| render_diff_line(line, theme, width, focused))
+        .map(|line| render_diff_line(line, theme, width, focused, hunk_mode))
         .collect();
     // Hunk mode tracks the selection (a couple of context lines above
     // its header, clamped so the tail never overscrolls); scroll mode
@@ -369,7 +376,13 @@ fn draw_diff(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     frame.render_widget(Paragraph::new(lines).block(block).scroll((scroll, 0)), area);
 }
 
-fn render_diff_line(line: DiffLine, theme: &Theme, width: usize, focused: bool) -> Line<'static> {
+fn render_diff_line(
+    line: DiffLine,
+    theme: &Theme,
+    width: usize,
+    focused: bool,
+    hunk_mode: bool,
+) -> Line<'static> {
     match line {
         DiffLine::FileHeader(text) => Line::styled(text, theme.colors.dim),
         DiffLine::Placeholder(text) => Line::styled(text, theme.colors.dim),
@@ -381,12 +394,14 @@ fn render_diff_line(line: DiffLine, theme: &Theme, width: usize, focused: bool) 
             foreign,
             selected,
         } => {
-            // The selected hunk's header carries the cursor (issue #45):
-            // it persists while the panel is blurred, since the move key
-            // acts on the selection cross-panel.
+            // In hunk mode every header carries the cursor column — the
+            // selected hunk's glyph, a same-width blank elsewhere so the
+            // headers stay aligned (issue #45). The cursor persists
+            // while the panel is blurred, since the move key acts on the
+            // selection cross-panel.
             let mut spans = Vec::new();
-            if selected {
-                spans.push(cursor_span(true, theme));
+            if hunk_mode {
+                spans.push(cursor_span(selected, theme));
             }
             spans.push(Span::styled(
                 text.clone(),
@@ -403,7 +418,7 @@ fn render_diff_line(line: DiffLine, theme: &Theme, width: usize, focused: bool) 
                 );
                 // The prototype floats the tag at the header's right
                 // edge; pad to the panel width, minimum two spaces.
-                let lead = if selected { 2 } else { 0 };
+                let lead = if hunk_mode { 2 } else { 0 };
                 let pad = width
                     .saturating_sub(lead + text.chars().count() + pill.chars().count())
                     .max(2);
@@ -778,7 +793,8 @@ fn draw_overlay(frame: &mut Frame, area: Rect, app: &App, overlay: &Overlay, the
             // Modal, so always effectively focused: unconditional tint.
             if let Some(index) = selected_line {
                 let line = std::mem::take(&mut lines[index]);
-                lines[index] = select_row(line, width.saturating_sub(2) as usize, true, theme);
+                lines[index] =
+                    select_row(line, width.saturating_sub(2) as usize, true, true, theme);
             }
             let popup = centered(area, width, lines.len() as u16 + 2);
             frame.render_widget(Clear, popup);

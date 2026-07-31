@@ -581,6 +581,35 @@ fn the_selection_tint_follows_panel_focus() {
     assert_bg_span(&buffer, cy, cx, c_border, Color::Reset);
     assert_bg_span(&buffer, fy, fx, f_border, theme.colors.selection);
     assert_bg_span(&buffer, ky, kx, k_border, Color::Reset);
+
+    // Focus Diff (scroll mode): no panel shows a selection tint.
+    app.on_key(key(KeyCode::Char('0')));
+    let buffer = render_buffer(&app);
+    assert_bg_span(&buffer, cy, cx, c_border, Color::Reset);
+    assert_bg_span(&buffer, fy, fx, f_border, Color::Reset);
+    assert_bg_span(&buffer, ky, kx, k_border, Color::Reset);
+}
+
+#[test]
+fn hunk_headers_share_one_cursor_column_in_hunk_mode() {
+    let mut app = App::new("repo");
+    app.apply_snapshot(snapshot());
+
+    // Outside hunk mode there is no cursor column on headers.
+    let buffer = render_buffer(&app);
+    let (plain_x, _) = find_text(&buffer, "@@ -14");
+
+    app.on_key(key(KeyCode::Char('3')));
+    app.on_key(key(KeyCode::Enter)); // hunk mode, hunk 1 selected
+    let buffer = render_buffer(&app);
+    let (sel_x, sel_y) = find_text(&buffer, "@@ -14");
+    let (other_x, other_y) = find_text(&buffer, "@@ -63");
+    assert_eq!(sel_x, other_x, "headers stay aligned");
+    assert_eq!(sel_x, plain_x + 2, "one cursor column ahead of scroll mode");
+    assert_eq!(buffer[(sel_x - 2, sel_y)].symbol(), "❯");
+    // The unselected header keeps a blank stand-in, not a collapsed row.
+    assert_eq!(buffer[(other_x - 2, other_y)].symbol(), " ");
+    assert_eq!(buffer[(other_x - 1, other_y)].symbol(), " ");
 }
 
 #[test]
