@@ -13,6 +13,16 @@ pub struct RepoFixture {
     repo: git2::Repository,
 }
 
+/// A repo-relative path that is not valid UTF-8 — the lone `\xff` can
+/// start no sequence. Shared so every ADR 0010 test conjures the same
+/// bytes, and stated once: no filesystem gitchange supports will hold
+/// this name (macOS rejects it with `EILSEQ`), so it only ever reaches a
+/// repository through the index or a tree —
+/// [`RepoFixture::stage_blob_at_raw_path`] and
+/// [`RepoFixture::commit_adding_raw_path`].
+#[allow(dead_code)]
+pub const NON_UTF8_PATH: &[u8] = b"bad-\xff-path.txt";
+
 /// Holds the object store unwritable; restores the original mode on
 /// drop. See [`RepoFixture::unwritable_odb`].
 #[cfg(unix)]
@@ -293,7 +303,7 @@ impl RepoFixture {
 
     /// Stage a blob at a repo-relative path given as raw bytes, without
     /// touching the worktree — the only portable way to conjure a
-    /// non-UTF-8 path into a repository.
+    /// non-UTF-8 path into a repository. Pair it with [`NON_UTF8_PATH`].
     #[allow(dead_code)]
     pub fn stage_blob_at_raw_path(&self, path_bytes: &[u8], content: &str) -> &Self {
         let mut index = self.repo.index().unwrap();
@@ -314,6 +324,51 @@ impl RepoFixture {
         index.add_frombuffer(&entry, content.as_bytes()).unwrap();
         index.write().unwrap();
         self
+    }
+
+    /// A commit off to the side whose tree is HEAD's plus a blob at a
+    /// raw-bytes path, returning its id. HEAD, the index and the worktree
+    /// are all untouched — nothing references the commit but the id
+    /// returned, which is exactly how the ADR 0012 baseline is stored and
+    /// read back.
+    ///
+    /// Off to the side because a non-UTF-8 path cannot reach the
+    /// baseline↔HEAD tree diff any other way. Such a path in *HEAD's*
+    /// tree has no worktree file to match it, so it reads as a deletion
+    /// in diff(HEAD↔worktree) and fails the refresh loudly (ADR 0010)
+    /// long before the carve-out is reached — and macOS refuses to create
+    /// a file with such a name at all (`EILSEQ`), so no worktree file can
+    /// exist to match it. A baseline commit never has to have been
+    /// checked out, which leaves this the one portable route.
+    #[allow(dead_code)]
+    pub fn commit_adding_raw_path(&self, path_bytes: &[u8], content: &str) -> String {
+        let head = self.repo.head().unwrap().peel_to_commit().unwrap();
+        let mut builder = self.repo.treebuilder(Some(&head.tree().unwrap())).unwrap();
+        let blob = self.repo.blob(content.as_bytes()).unwrap();
+        builder.insert(path_bytes, blob, 0o100644).unwrap();
+        let tree = self.repo.find_tree(builder.write().unwrap()).unwrap();
+        let signature = self.repo.signature().unwrap();
+        let oid = self
+            .repo
+            // No ref to update: the commit exists only for its id.
+            .commit(
+                None,
+                &signature,
+                &signature,
+                "a baseline holding a non-UTF-8 path",
+                &tree,
+                &[&head],
+            )
+            .unwrap();
+        // The path is the whole point of the commit, and a tree that
+        // quietly lacks it would leave the diff under test with nothing
+        // non-UTF-8 in it — a vacuous pass, so panic here instead.
+        let written = self.repo.find_commit(oid).unwrap().tree().unwrap();
+        assert!(
+            written.iter().any(|entry| entry.name_bytes() == path_bytes),
+            "the raw path must land in the commit's tree"
+        );
+        oid.to_string()
     }
 
     /// The real index's content for a repo-relative path, `None` when no

@@ -13,7 +13,7 @@ mod support;
 use std::fs;
 
 use gitchange_core::{Advisory, Repo, Snapshot};
-use support::RepoFixture;
+use support::{NON_UTF8_PATH, RepoFixture};
 
 /// Lines `line 1`..=`line count`, as a vec for splicing edits into.
 fn numbered_lines(count: usize) -> Vec<String> {
@@ -415,6 +415,92 @@ fn a_head_move_touching_only_other_paths_leaves_tier_two_intact() {
     assert!(snapshot.advisories.is_empty());
     assert!(dormant_owners(&fixture).is_empty());
     assert_eq!(state_json(&fixture)["baseline_head"], fixture.head_oid());
+}
+
+#[test]
+fn a_non_utf8_path_in_the_baseline_diff_is_skipped_not_a_loud_failure() {
+    // ADR 0012's narrow carve-out from ADR 0010, and the one place the
+    // loud-failure rule is *inverted*: this diff sees all of history, not
+    // just gitchange-managed files, so a non-UTF-8 path in it is skipped
+    // and the refresh succeeds. A regression to the loud failure would
+    // read as correct ADR 0010 behaviour, which is why it is pinned here.
+    //
+    // Two paths, because "skipped" has to be distinguished from both ways
+    // the diff can fail open: a.txt keeps its membership only if the diff
+    // resolved at all (an unresolvable baseline degrades to
+    // all-paths-affected), and b.txt loses its membership only if the diff
+    // was non-empty. Between them the bad path is the only thing dropped.
+    let fixture = RepoFixture::new();
+    let head = numbered_lines(20);
+    fixture
+        .write("a.txt", &text(&head))
+        .write("b.txt", &text(&head))
+        .commit_all("init");
+    // The baseline-to-be: this HEAD's tree plus a non-UTF-8 path.
+    let baseline = fixture.commit_adding_raw_path(NON_UTF8_PATH, "junk\n");
+    let repo = repo(&fixture);
+
+    // One owned hunk in each file — line 10, so both records' old ranges
+    // are [7, 14).
+    repo.create_changelist("one").unwrap();
+    let mut a = head.clone();
+    let mut b = head.clone();
+    a[9] = "ten-v1".into();
+    b[9] = "ten-v1".into();
+    fixture.write("a.txt", &text(&a)).write("b.txt", &text(&b));
+    repo.refresh().unwrap();
+
+    repo.create_changelist("two").unwrap();
+    repo.switch("two").unwrap();
+    // An external commit touching b.txt only, in place (line 5) so
+    // nothing below it shifts: what strands b.txt's record is the guard,
+    // not arithmetic.
+    let mut committed = head.clone();
+    committed[4] = "five-committed".into();
+    b[4] = "five-committed".into();
+    fixture
+        .write("b.txt", &text(&committed))
+        .stage("b.txt")
+        .write("b.txt", &text(&b))
+        .commit_index("external: five");
+    // Point the baseline at the commit that also holds the non-UTF-8
+    // path: diff(baseline↔HEAD) now names b.txt, that path, and nothing
+    // else.
+    patch_state(&fixture, |state| {
+        state.insert("baseline_head".into(), baseline.into());
+    });
+    // Rework both hunks so neither can be rescued by a tier-1 anchor.
+    a[9] = "ten-v2".into();
+    b[9] = "ten-v2".into();
+    fixture.write("a.txt", &text(&a)).write("b.txt", &text(&b));
+
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(
+        owners(&snapshot, "a.txt"),
+        vec![Some("one".into())],
+        "the skipped path left a usable diff: a.txt is provably unmoved, \
+         so overlap inheritance still runs there"
+    );
+    assert_eq!(
+        owners(&snapshot, "b.txt"),
+        vec![Some("two".into())],
+        "and the diff was not empty either: b.txt's record is stranded"
+    );
+    assert_eq!(
+        snapshot.advisories,
+        vec![
+            Advisory::AutoCaptured {
+                path: "b.txt".into(),
+                new_start: 7,
+                changelist: "two".into(),
+            },
+            Advisory::HeadMoveDormancy {
+                path: "b.txt".into(),
+                changelists: vec!["one".into()],
+            }
+        ]
+    );
+    assert_eq!(dormant_owners(&fixture), vec!["one"]);
 }
 
 #[test]

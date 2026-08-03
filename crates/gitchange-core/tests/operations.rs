@@ -10,11 +10,15 @@
 //! Every case asserts the same three properties, plus the
 //! `RepositoryState` its fixture reached, so a builder that quietly
 //! failed to start its operation can't make the guard look guarded.
+//!
+//! The last test is the mirror image: a detached HEAD, which ADR 0007
+//! pins but deliberately does not guard. The guard's edge is only pinned
+//! from both sides.
 
 mod support;
 
 use git2::RepositoryState;
-use gitchange_core::{CommitOptions, Error, GitOperation, Repo};
+use gitchange_core::{CommitOptions, CommitOutcome, Error, GitOperation, Head, Repo};
 use support::RepoFixture;
 
 /// The clean, unconflicted file every fixture commits and every guard
@@ -220,4 +224,70 @@ fn an_am_in_progress_reports_am_and_guards_commit() {
 
     assert_eq!(fixture.git_state(), RepositoryState::ApplyMailbox);
     assert_guard_holds(&fixture, GitOperation::Am);
+}
+
+#[test]
+fn a_detached_head_is_not_an_operation_and_leaves_commit_unguarded() {
+    // The guard's one deliberate omission (ADR 0007): a detached HEAD is
+    // *pinned* in the Log panel but never guarded, because committing
+    // while detached is legitimate git — a spike off a tag, a fixup
+    // mid-bisect. The pin and the reporting are asserted elsewhere; what
+    // needs asserting here is the absence, since widening `operation()`
+    // to cover detached HEAD would otherwise break no test at all.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("a.txt", "base\n")
+        .write(BYSTANDER, "bystander base\n")
+        .commit_all("init");
+    let start = fixture.head_oid();
+    fixture.detach_head();
+    // The raw state every test above asserts too: detaching leaves git
+    // with no operation on disk, so `None` below is core reading a clean
+    // repo and not a mapping that lost one.
+    assert_eq!(fixture.git_state(), RepositoryState::Clean);
+
+    let repo = Repo::discover(fixture.path()).unwrap();
+    repo.create_changelist("one").unwrap();
+    fixture.write("a.txt", "detached edit\n").stage("a.txt");
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(
+        snapshot.operation, None,
+        "a detached HEAD is a location, not an operation in progress"
+    );
+    assert!(
+        matches!(snapshot.head, Head::Detached { .. }),
+        "the fixture must really be detached, got {:?}",
+        snapshot.head
+    );
+
+    let outcome = repo
+        .commit(
+            Some("one"),
+            "detached: a.txt",
+            &CommitOptions::default(),
+            None,
+        )
+        .expect("committing while detached is not guarded");
+    assert!(
+        matches!(outcome, CommitOutcome::Committed { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(fixture.head_message(), "detached: a.txt\n");
+    assert_eq!(
+        fixture.head_bytes("a.txt"),
+        Some(b"detached edit\n".to_vec())
+    );
+    assert_eq!(fixture.commit_count(), 2);
+
+    // Still detached afterwards, now pinned at the commit just made: the
+    // commit moved HEAD itself, not the branch it was detached from.
+    let snapshot = repo.refresh().unwrap();
+    match &snapshot.head {
+        Head::Detached { short_id } => {
+            assert!(fixture.head_oid().starts_with(short_id.as_str()));
+            assert_ne!(fixture.head_oid(), start, "HEAD advanced");
+        }
+        other => panic!("committing must not reattach HEAD, got {other:?}"),
+    }
+    assert_eq!(snapshot.operation, None);
 }

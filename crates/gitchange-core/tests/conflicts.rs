@@ -6,7 +6,7 @@
 
 mod support;
 
-use gitchange_core::{Advisory, ChangeKind, CommitOptions, Error, GitOperation, Repo, Snapshot};
+use gitchange_core::{ChangeKind, CommitOptions, Error, GitOperation, Repo, Snapshot};
 use support::RepoFixture;
 
 fn repo(fixture: &RepoFixture) -> Repo {
@@ -142,20 +142,73 @@ fn an_unmerged_path_is_quarantined_from_the_universe() {
     ));
 }
 
-#[test]
-fn quarantine_freezes_records_and_resolution_relands_them() {
-    let fixture = RepoFixture::new();
-    fixture
-        .write("a.txt", "line 1\nline 2\nline 3\n")
-        .commit_all("init");
-    let repo = repo(&fixture);
-    repo.create_changelist("fixes").unwrap();
+/// How many lines the conflicted fixture's `a.txt` holds at HEAD. Named
+/// so the resolution below can rebuild HEAD's content from the same
+/// number the builder committed.
+const CONFLICTED_FILE_LINES: usize = 20;
 
-    // An owned live record for the worktree edit.
-    fixture.write("a.txt", "line 1\nline 2 edited\nline 3\n");
+/// Lines `line 1`..=`line count`, as a vec for splicing edits into.
+fn numbered_lines(count: usize) -> Vec<String> {
+    (1..=count).map(|n| format!("line {n}")).collect()
+}
+
+fn text(lines: &[String]) -> String {
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
+/// `a.txt`, twenty lines, with two live records far enough apart to be
+/// separate hunks and owned by *different* changelists — "fixes" at line
+/// 3, "other" at line 15 — the path then made unmerged (stash-pop style:
+/// no operation in progress) and its records frozen by a refresh. Returns
+/// the repo handle and the record set as it stood before the conflict,
+/// which is what "frozen" is measured against; HEAD's content is not
+/// returned because `numbered_lines(CONFLICTED_FILE_LINES)` rebuilds it
+/// exactly.
+///
+/// Two changelists rather than one because that is what makes overlap
+/// *positional* below: were overlap to claim regardless of range, each
+/// hunk would see both records, and two candidate changelists is an
+/// `AmbiguousOverlap` capture to active, not an inheritance. A third
+/// changelist ("spare") holds the active marker so no re-land can be
+/// confused with a capture either.
+///
+/// Shared by both re-entry tests so the *resolution content* is
+/// structurally the only difference between them: tier-1's exact re-land
+/// is only evidence about exact matching if the tier-2 case re-enters
+/// from the same freeze. The integrity checks — a genuinely conflicted,
+/// hunk-less path — sit here rather than in the tests, so a fixture that
+/// failed to conflict can't make either re-land look like a re-land.
+fn frozen_records_on_a_conflicted_path(fixture: &RepoFixture) -> (Repo, serde_json::Value) {
+    let head = numbered_lines(CONFLICTED_FILE_LINES);
+    fixture.write("a.txt", &text(&head)).commit_all("init");
+    let repo = repo(fixture);
+
+    // "fixes" owns line 3's edit. Record old range: [1, 7).
+    repo.create_changelist("fixes").unwrap();
+    let mut worktree = head.clone();
+    worktree[2] = "three-fixes".into();
+    fixture.write("a.txt", &text(&worktree));
+    repo.refresh().unwrap();
+
+    // "other" owns line 15's edit. Record old range: [12, 19).
+    repo.create_changelist("other").unwrap();
+    repo.switch("other").unwrap();
+    worktree[14] = "fifteen-other".into();
+    fixture.write("a.txt", &text(&worktree));
     let snapshot = repo.refresh().unwrap();
-    assert_eq!(owners(&snapshot, "a.txt"), vec![Some("fixes".into())]);
-    let records_before = state_json(&fixture)["records"].clone();
+    assert_eq!(
+        owners(&snapshot, "a.txt"),
+        vec![Some("fixes".into()), Some("other".into())]
+    );
+    let records_before = state_json(fixture)["records"].clone();
+
+    // The active marker moves to a changelist that owns nothing, so a
+    // re-land can never be confused with a capture: the tiers answer
+    // "fixes" and "other", active capture answers "spare".
+    repo.create_changelist("spare").unwrap();
+    repo.switch("spare").unwrap();
 
     // The path becomes unmerged (stash-pop style: no operation state).
     fixture.add_index_conflict("a.txt");
@@ -169,8 +222,16 @@ fn quarantine_freezes_records_and_resolution_relands_them() {
     assert_eq!(file.kind, ChangeKind::Conflicted);
     assert!(file.hunks.is_empty());
 
-    // Frozen: the record survives verbatim — live, no dormancy clock —
-    // even though its path presents no hunks this refresh.
+    (repo, records_before)
+}
+
+#[test]
+fn quarantine_freezes_records_and_resolution_relands_them() {
+    let fixture = RepoFixture::new();
+    let (repo, records_before) = frozen_records_on_a_conflicted_path(&fixture);
+
+    // Frozen: the records survive verbatim — live, no dormancy clock —
+    // even though their path presents no hunks this refresh.
     assert_eq!(
         state_json(&fixture)["records"],
         records_before,
@@ -182,19 +243,85 @@ fn quarantine_freezes_records_and_resolution_relands_them() {
     assert_eq!(state_json(&fixture)["records"], records_before);
 
     // Resolution (worktree content unchanged, conflict staged away)
-    // re-enters normal matching: the exact anchor re-lands the record.
+    // re-enters normal matching: the exact anchors re-land both records.
     fixture.stage("a.txt");
     let snapshot = repo.refresh().unwrap();
     assert_eq!(
         owners(&snapshot, "a.txt"),
-        vec![Some("fixes".into())],
-        "resolution re-lands the frozen record"
+        vec![Some("fixes".into()), Some("other".into())],
+        "resolution re-lands the frozen records"
     );
-    assert!(
-        !snapshot
-            .advisories
-            .iter()
-            .any(|notice| matches!(notice, Advisory::DormantRevival { .. })),
-        "the record was frozen live, never dormant — no revival fires"
+    assert_eq!(
+        snapshot.advisories,
+        vec![],
+        "nothing was captured or revived: the records were frozen live, so \
+         neither an AutoCaptured to 'spare' nor a DormantRevival can fire"
+    );
+}
+
+#[test]
+fn a_shifted_resolution_relands_frozen_records_by_overlap() {
+    // Re-entry is into *normal* matching (ADR 0007), which means both
+    // tiers — and tier 2 is the one a real merge needs. Resolution
+    // content that matches the pre-merge hunks line for line is the lucky
+    // case; the ordinary one shifts them, and then only overlap on the
+    // HEAD-side range can carry the membership across.
+    let fixture = RepoFixture::new();
+    let (repo, records_before) = frozen_records_on_a_conflicted_path(&fixture);
+    assert_eq!(
+        state_json(&fixture)["records"],
+        records_before,
+        "the records froze live — tier 2 claims live records only"
+    );
+
+    // The resolution keeps both edits but neither its content nor its
+    // position: the merge's own line lands above them, so every anchor
+    // line the records stored has moved or changed. HEAD-side ranges are
+    // untouched by an insertion below them, so both records still address
+    // the hunk that grew out of them — [1, 7) and [12, 19), each
+    // overlapping one hunk and clear of the other.
+    let mut resolved = numbered_lines(CONFLICTED_FILE_LINES);
+    resolved[2] = "three-resolved".into();
+    resolved[14] = "fifteen-resolved".into();
+    resolved.insert(1, "inserted by the merge".into());
+    fixture.write("a.txt", &text(&resolved)).stage("a.txt");
+    let snapshot = repo.refresh().unwrap();
+
+    assert_eq!(
+        owners(&snapshot, "a.txt"),
+        vec![Some("fixes".into()), Some("other".into())],
+        "a shifted resolution re-lands each frozen record by overlap — and \
+         each to its own changelist, which only a positional claim can do"
+    );
+    assert_eq!(
+        snapshot.advisories,
+        vec![],
+        "inheritance: no capture to 'spare', no revival, and no ambiguity \
+         (an overlap claim indifferent to range would see both records \
+         from both hunks and report AmbiguousOverlap)"
+    );
+
+    // Which tier did it: tier 1 matches only when the stored anchor equals
+    // the fresh hunk's, and a re-landed record stores that fresh anchor —
+    // so a changed anchor is proof the exact tier could not have matched.
+    let records = state_json(&fixture)["records"].clone();
+    for (index, name) in ["fixes", "other"].iter().enumerate() {
+        assert_ne!(
+            records[index]["anchor"], records_before[index]["anchor"],
+            "the resolved hunk's anchor differs, which is exactly what \
+             tier 1 cannot match through"
+        );
+        assert_eq!(records[index]["changelist"], *name);
+        assert_eq!(
+            records[index].get("dormant_since"),
+            Some(&serde_json::Value::Null),
+            "and it re-lands live: {records}"
+        );
+    }
+    assert_eq!(
+        records.as_array().map(Vec::len),
+        Some(2),
+        "two records for the two resolved hunks — the frozen pair, not \
+         fresh captures beside dormant leftovers"
     );
 }
