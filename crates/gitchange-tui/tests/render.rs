@@ -71,7 +71,7 @@ fn snapshot() -> Snapshot {
             },
         ],
         active: Some("fixes".into()),
-        notices: Vec::new(),
+        advisories: Vec::new(),
         head: Head::Branch {
             name: "feat/print-page".into(),
         },

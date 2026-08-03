@@ -48,8 +48,8 @@ fn main() -> ExitCode {
 fn status() -> anyhow::Result<()> {
     let repo = open_repo()?;
     let snapshot = repo.refresh()?;
-    for notice in &snapshot.notices {
-        eprintln!("gitchange: notice: {}", notice.message());
+    for advisory in &snapshot.advisories {
+        eprintln!("gitchange: notice: {}", advisory.message());
     }
     for group in snapshot.groups() {
         match &group.kind {

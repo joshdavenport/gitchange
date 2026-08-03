@@ -156,7 +156,7 @@ fn event_loop(
 
 /// Execute one sync op. Successful index surgery echoes at `·` — the
 /// lazygit-style transparency that earns trust (ADR 0007) — fail-soft
-/// notices land at `!`, and hard failures take the error-modal contract.
+/// advisories land at `!`, and hard failures take the error-modal contract.
 fn run_op(repo: &Repo, app: &mut App, op: Op) {
     let done = |app: &mut App,
                 title: &str,
@@ -223,9 +223,9 @@ fn run_op(repo: &Repo, app: &mut App, op: Op) {
                 return;
             }
             match repo.assign_hunks(&path, &hunks, Some(&target)) {
-                Ok(notices) => {
+                Ok(advisories) => {
                     // Stale hunks failed soft; the rest were assigned.
-                    let assigned = hunks.len().saturating_sub(notices.len());
+                    let assigned = hunks.len().saturating_sub(advisories.len());
                     if assigned > 0 {
                         app.push_log(
                             Severity::Info,
@@ -236,7 +236,7 @@ fn run_op(repo: &Repo, app: &mut App, op: Op) {
                             ),
                         );
                     }
-                    app.push_notices(&notices);
+                    app.push_advisories(&advisories);
                 }
                 Err(error) => app.show_error("Assign failed", error.to_string()),
             }
@@ -245,16 +245,16 @@ fn run_op(repo: &Repo, app: &mut App, op: Op) {
 }
 
 /// A fail-soft hunk op's outcome: the echo when it fully applied, `!`
-/// notices when it applied partially or not at all, the modal otherwise.
+/// advisories when it applied partially or not at all, the modal otherwise.
 fn hunk_op(
     app: &mut App,
     title: &str,
     echo: String,
-    result: Result<Vec<gitchange_core::Notice>, gitchange_core::Error>,
+    result: Result<Vec<gitchange_core::Advisory>, gitchange_core::Error>,
 ) {
     match result {
         Ok(notices) if notices.is_empty() => app.push_log(Severity::Info, echo),
-        Ok(notices) => app.push_notices(&notices),
+        Ok(advisories) => app.push_advisories(&advisories),
         Err(error) => app.show_error(title, error.to_string()),
     }
 }
@@ -277,7 +277,7 @@ fn run_commit_step(repo: &Repo, app: &mut App, step: CommitStep) {
                             format!("staged {} — '{label}'", count_noun(outcome.staged, "hunk")),
                         );
                     }
-                    app.push_notices(&outcome.notices);
+                    app.push_advisories(&outcome.advisories);
                     open_commit_dialog(repo, app, changelist);
                 }
                 Err(error) => app.show_error(COMMIT_FAILED, error.to_string()),
@@ -290,12 +290,12 @@ fn run_commit_step(repo: &Repo, app: &mut App, step: CommitStep) {
             // the payload is re-derived so the drift guard compares the
             // aligned content, not the stale confirmation.
             match repo.align(draft.changelist.as_deref()) {
-                Ok(notices) => {
+                Ok(advisories) => {
                     app.push_log(
                         Severity::Info,
                         format!("aligned index to worktree — '{}'", draft.changelist_label()),
                     );
-                    app.push_notices(&notices);
+                    app.push_advisories(&advisories);
                 }
                 Err(error) => {
                     app.show_error(COMMIT_FAILED, error.to_string());

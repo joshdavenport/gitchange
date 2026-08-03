@@ -5,7 +5,7 @@ use crate::commit::{self, CommitOptions, CommitOutcome, CommitPayload};
 use crate::diff::{ChangeKind, FileDiff};
 use crate::error::Error;
 use crate::git2_backend::Git2Backend;
-use crate::matcher::{self, Notice};
+use crate::matcher::{self, Advisory};
 use crate::snapshot::Snapshot;
 use crate::state::State;
 use crate::state_file;
@@ -16,11 +16,11 @@ use crate::universe::{self, ChangedFile, Hunk, HunkStage};
 const RECENT_COMMITS_LIMIT: usize = 300;
 
 /// What [`Repo::stage_all`] did: how many hunks it staged, plus the
-/// fail-soft notices for the ones it couldn't.
+/// fail-soft advisories for the ones it couldn't.
 #[derive(Debug)]
 pub struct StageAllOutcome {
     pub staged: usize,
-    pub notices: Vec<Notice>,
+    pub advisories: Vec<Advisory>,
 }
 
 /// A handle on one git repository, holding the backend behind the
@@ -121,7 +121,7 @@ impl Repo {
                 files,
                 changelists: state.changelists,
                 active: state.active,
-                notices: outcome.notices,
+                advisories: outcome.advisories,
                 head: head_info,
                 recent_commits,
                 operation,
@@ -156,13 +156,13 @@ impl Repo {
     /// apply-to-index (ADR 0003) — which on a staged-stale `◑` hunk means
     /// re-staging the edited version, and on an index-only one discarding
     /// it. Validates at apply against the live tree (ADR 0005): a hunk
-    /// whose content is gone fails soft with a `Notice::StaleHunk` and
+    /// whose content is gone fails soft with a `Advisory::StaleHunk` and
     /// nothing applied. Membership records are untouched — the caller's
     /// follow-up refresh re-derives staging.
-    pub fn stage_hunk(&self, path: &str, hunk: &Hunk) -> Result<Vec<Notice>, Error> {
+    pub fn stage_hunk(&self, path: &str, hunk: &Hunk) -> Result<Vec<Advisory>, Error> {
         let files = universe::build(self.backend.diffs()?);
         let Some((file, fresh)) = find_fresh(&files, path, hunk) else {
-            return Ok(vec![stale_notice(path, hunk)]);
+            return Ok(vec![stale_advisory(path, hunk)]);
         };
         match fresh.stage {
             // Index already matches the worktree here.
@@ -183,10 +183,10 @@ impl Repo {
     /// Unstage one hunk: set index := HEAD for its region, a
     /// reverse-apply on the live index. Same validate-at-apply and
     /// fail-soft contract as [`Repo::stage_hunk`].
-    pub fn unstage_hunk(&self, path: &str, hunk: &Hunk) -> Result<Vec<Notice>, Error> {
+    pub fn unstage_hunk(&self, path: &str, hunk: &Hunk) -> Result<Vec<Advisory>, Error> {
         let files = universe::build(self.backend.diffs()?);
         let Some((file, fresh)) = find_fresh(&files, path, hunk) else {
-            return Ok(vec![stale_notice(path, hunk)]);
+            return Ok(vec![stale_advisory(path, hunk)]);
         };
         match fresh.stage {
             // Nothing of this hunk is in the index.
@@ -303,51 +303,51 @@ impl Repo {
     /// the changelist's staged-stale hunks — re-staging edited `◑`
     /// hunks, discarding index-only ones — so a follow-up commit carries
     /// what the worktree shows. Fail-soft per hunk like
-    /// [`Repo::stage_hunk`]; returns any stale-hunk notices.
-    pub fn align(&self, changelist: Option<&str>) -> Result<Vec<Notice>, Error> {
+    /// [`Repo::stage_hunk`]; returns any stale-hunk advisories.
+    pub fn align(&self, changelist: Option<&str>) -> Result<Vec<Advisory>, Error> {
         let snapshot = self.refresh()?;
         validate_changelist(&snapshot, changelist)?;
-        let mut notices = Vec::new();
+        let mut advisories = Vec::new();
         for file in &snapshot.files {
             for hunk in &file.hunks {
                 if hunk.changelist.as_deref() == changelist && hunk.stage == HunkStage::StagedStale
                 {
-                    notices.extend(self.stage_hunk(&file.path, hunk)?);
+                    advisories.extend(self.stage_hunk(&file.path, hunk)?);
                 }
             }
         }
-        Ok(notices)
+        Ok(advisories)
     }
 
     /// The bulk stage op: set index := worktree for each of the
     /// changelist's unstaged hunks — what the commit flow's stage-all
     /// offer runs before opening the dialog. Fail-soft per hunk like
     /// [`Repo::stage_hunk`]; returns how many hunks were staged plus
-    /// any stale-hunk notices.
+    /// any stale-hunk advisories.
     pub fn stage_all(&self, changelist: Option<&str>) -> Result<StageAllOutcome, Error> {
         let snapshot = self.refresh()?;
         validate_changelist(&snapshot, changelist)?;
         let mut staged = 0;
-        let mut notices = Vec::new();
+        let mut advisories = Vec::new();
         for file in &snapshot.files {
             for hunk in &file.hunks {
                 if hunk.changelist.as_deref() == changelist && hunk.stage == HunkStage::Unstaged {
-                    let hunk_notices = self.stage_hunk(&file.path, hunk)?;
-                    if hunk_notices.is_empty() {
+                    let hunk_advisories = self.stage_hunk(&file.path, hunk)?;
+                    if hunk_advisories.is_empty() {
                         staged += 1;
                     }
-                    notices.extend(hunk_notices);
+                    advisories.extend(hunk_advisories);
                 }
             }
         }
-        Ok(StageAllOutcome { staged, notices })
+        Ok(StageAllOutcome { staged, advisories })
     }
 
     /// Assign snapshot hunks of `path` to `target` (`None` =
     /// unassigned): an explicit membership op, one locked
     /// load-mutate-save cycle (ADR 0002). Validates at apply like
     /// staging (ADR 0005): each hunk is content-matched against the live
-    /// tree; a vanished hunk fails soft with a `Notice::StaleHunk` while
+    /// tree; a vanished hunk fails soft with a `Advisory::StaleHunk` while
     /// the rest are still assigned. The caller's follow-up refresh
     /// re-derives membership from the written records.
     pub fn assign_hunks(
@@ -355,20 +355,20 @@ impl Repo {
         path: &str,
         hunks: &[Hunk],
         target: Option<&str>,
-    ) -> Result<Vec<Notice>, Error> {
+    ) -> Result<Vec<Advisory>, Error> {
         let files = universe::build(self.backend.diffs()?);
-        let mut notices = Vec::new();
+        let mut advisories = Vec::new();
         let mut fresh = Vec::new();
         for hunk in hunks {
             match find_fresh(&files, path, hunk) {
                 Some((_, found)) => fresh.push(found),
-                None => notices.push(stale_notice(path, hunk)),
+                None => advisories.push(stale_advisory(path, hunk)),
             }
         }
         if !fresh.is_empty() {
             self.update_state(|state| state.assign_records(path, &fresh, target))?;
         }
-        Ok(notices)
+        Ok(advisories)
     }
 
     /// Create a changelist. The first one created becomes active.
@@ -451,8 +451,8 @@ fn hunk_ops_are_file_ops(file: &ChangedFile) -> bool {
         ) && file.total_hunks() == 1)
 }
 
-fn stale_notice(path: &str, hunk: &Hunk) -> Notice {
-    Notice::StaleHunk {
+fn stale_advisory(path: &str, hunk: &Hunk) -> Advisory {
+    Advisory::StaleHunk {
         path: path.into(),
         new_start: hunk.new_start,
     }

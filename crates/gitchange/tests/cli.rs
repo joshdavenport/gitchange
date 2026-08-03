@@ -188,7 +188,7 @@ fn status_groups_files_by_changelist_with_unassigned_last() {
 }
 
 #[test]
-fn status_prints_ambiguous_overlap_notices_on_stderr() {
+fn status_prints_ambiguous_overlap_advisories_on_stderr() {
     // Records from two changelists overlap the fresh hunk without an
     // exact anchor match: active captures it, with a notice (ADR 0001).
     let repo = dirty_repo();
@@ -219,7 +219,7 @@ fn status_prints_ambiguous_overlap_notices_on_stderr() {
         stderr,
         // The untracked file's hunk is genuinely new, so its capture
         // notices too (ticket #34: auto-capture is never silent).
-        // Phrasing is core's canonical `Notice::message` (ADR 0006).
+        // Phrasing is core's canonical `Advisory::message` (ADR 0006).
         "gitchange: notice: auto-captured hunk at tracked.txt:1 → 'feature' \
          (ambiguous overlap: 'bugfix', 'feature')\n\
          gitchange: notice: auto-captured hunk at untracked.txt:1 → 'feature'\n"

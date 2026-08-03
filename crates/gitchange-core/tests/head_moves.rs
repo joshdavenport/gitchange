@@ -12,7 +12,7 @@ mod support;
 
 use std::fs;
 
-use gitchange_core::{Notice, Repo, Snapshot};
+use gitchange_core::{Advisory, Repo, Snapshot};
 use support::RepoFixture;
 
 /// Lines `line 1`..=`line count`, as a vec for splicing edits into.
@@ -117,7 +117,7 @@ fn an_untouched_neighbour_survives_an_external_partial_commit() {
         vec![Some("one".into())],
         "an exact anchor match keeps membership regardless of position"
     );
-    assert!(snapshot.notices.is_empty());
+    assert!(snapshot.advisories.is_empty());
     // The committed hunk's record is not consumed — an external commit
     // leaves it dormant (gitchange's own commit would remove it, ADR 0004).
     assert_eq!(dormant_owners(&fixture), vec!["two"]);
@@ -183,14 +183,14 @@ fn a_shifted_neighbour_goes_dormant_loudly_instead_of_misfiling() {
         "the guarded tier captures to active, never a stranded record's list"
     );
     assert_eq!(
-        snapshot.notices,
+        snapshot.advisories,
         vec![
-            Notice::AutoCaptured {
+            Advisory::AutoCaptured {
                 path: "a.txt".into(),
                 new_start: 26,
                 changelist: "three".into(),
             },
-            Notice::HeadMoveDormancy {
+            Advisory::HeadMoveDormancy {
                 path: "a.txt".into(),
                 changelists: vec!["one".into(), "two".into()],
             }
@@ -246,14 +246,14 @@ fn a_shifted_neighbour_clear_of_stranded_records_captures_to_active() {
         "clear of every stranded record the hunk still reads as brand new"
     );
     assert_eq!(
-        snapshot.notices,
+        snapshot.advisories,
         vec![
-            Notice::AutoCaptured {
+            Advisory::AutoCaptured {
                 path: "a.txt".into(),
                 new_start: 46,
                 changelist: "three".into(),
             },
-            Notice::HeadMoveDormancy {
+            Advisory::HeadMoveDormancy {
                 path: "a.txt".into(),
                 changelists: vec!["one".into(), "two".into()],
             }
@@ -301,14 +301,14 @@ fn a_residual_staged_stale_hunk_goes_dormant_across_an_external_commit() {
         "the guard never trusts stale coordinates, however plausible"
     );
     assert_eq!(
-        snapshot.notices,
+        snapshot.advisories,
         vec![
-            Notice::AutoCaptured {
+            Advisory::AutoCaptured {
                 path: "a.txt".into(),
                 new_start: 7,
                 changelist: "two".into(),
             },
-            Notice::HeadMoveDormancy {
+            Advisory::HeadMoveDormancy {
                 path: "a.txt".into(),
                 changelists: vec!["one".into()],
             }
@@ -359,14 +359,14 @@ fn a_residual_staged_stale_hunk_sheds_membership_when_the_commit_shifts_it() {
         "an external move sheds the shifted residual to active"
     );
     assert_eq!(
-        snapshot.notices,
+        snapshot.advisories,
         vec![
-            Notice::AutoCaptured {
+            Advisory::AutoCaptured {
                 path: "a.txt".into(),
                 new_start: 26,
                 changelist: "two".into(),
             },
-            Notice::HeadMoveDormancy {
+            Advisory::HeadMoveDormancy {
                 path: "a.txt".into(),
                 changelists: vec!["one".into()],
             }
@@ -412,7 +412,7 @@ fn a_head_move_touching_only_other_paths_leaves_tier_two_intact() {
         vec![Some("one".into())],
         "a.txt's coordinates still address the moved-to HEAD"
     );
-    assert!(snapshot.notices.is_empty());
+    assert!(snapshot.advisories.is_empty());
     assert!(dormant_owners(&fixture).is_empty());
     assert_eq!(state_json(&fixture)["baseline_head"], fixture.head_oid());
 }
@@ -457,7 +457,7 @@ fn a_pre_baseline_state_file_adopts_the_head_move_silently() {
         vec![Some("one".into())],
         "with no baseline to distrust, overlap inheritance runs as before"
     );
-    assert!(snapshot.notices.is_empty());
+    assert!(snapshot.advisories.is_empty());
     assert!(dormant_owners(&fixture).is_empty());
     assert_eq!(state_json(&fixture)["baseline_head"], fixture.head_oid());
 }
@@ -495,14 +495,14 @@ fn an_unresolvable_baseline_degrades_to_all_paths_affected() {
     let snapshot = repo.refresh().unwrap();
     assert_eq!(owners(&snapshot, "a.txt"), vec![Some("two".into())]);
     assert_eq!(
-        snapshot.notices,
+        snapshot.advisories,
         vec![
-            Notice::AutoCaptured {
+            Advisory::AutoCaptured {
                 path: "a.txt".into(),
                 new_start: 7,
                 changelist: "two".into(),
             },
-            Notice::HeadMoveDormancy {
+            Advisory::HeadMoveDormancy {
                 path: "a.txt".into(),
                 changelists: vec!["one".into()],
             }

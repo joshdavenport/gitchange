@@ -118,8 +118,8 @@ _Avoid_: dirty-staged, out-of-date
 **Stale action**:
 A stage/assign op whose target hunk no longer exists verbatim in the live
 tree — the snapshot aged between glance and keypress (ADR 0005's
-stale-action race). Validate-at-apply fails it soft: a `StaleHunk` notice
-("changed since the last refresh"), nothing applied, membership records
+stale-action race). Validate-at-apply fails it soft: a `StaleHunk`
+advisory ("changed since the last refresh"), nothing applied, membership records
 untouched, immediate refresh. Distinct from staged-stale `◑` (a per-hunk
 staging state) and dormant records (a matching outcome); bare "stale"
 outside these three sanctioned senses is ambiguous — say which one.
@@ -188,6 +188,17 @@ scrolls away. Carries a severity: `·` info (routine, dim), `!` notice
 `✗` error (also modalled). Three levels, fixed; severity glyphs are their
 own tokens, never the staging set.
 _Avoid_: message, alert, log level (for severity)
+
+**Advisory**:
+Core's record of an automatic decision or fail-soft outcome worth
+spot-checking (`Advisory` in `matcher.rs`): auto-capture, ambiguous
+overlap, dormant revival, stale hunk, HEAD-move dormancy. Carried as data
+on snapshots and op results with one canonical message
+(`Advisory::message`, ADR 0006); frontends add channel dressing and
+assign the severity — today every advisory logs at `!` notice, but the
+severity is the presentation layer's, which is why the type is not named
+after one. "Notice" is the severity level only.
+_Avoid_: notice (the type — that's a severity), warning
 
 **Condition**:
 A state that currently holds (watcher degraded, git operation in

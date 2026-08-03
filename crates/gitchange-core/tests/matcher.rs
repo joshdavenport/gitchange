@@ -8,7 +8,7 @@ mod support;
 
 use std::fs;
 
-use gitchange_core::{Notice, Repo, Snapshot};
+use gitchange_core::{Advisory, Repo, Snapshot};
 use support::RepoFixture;
 
 /// `count` numbered lines, with `edits` as (1-based line, replacement).
@@ -72,13 +72,13 @@ fn a_moved_hunk_keeps_membership_via_exact_anchor_match() {
         "top insertion captures to active; the moved hunk keeps its owner"
     );
     assert_eq!(
-        snapshot.notices,
-        vec![Notice::AutoCaptured {
+        snapshot.advisories,
+        vec![Advisory::AutoCaptured {
             path: "a.txt".into(),
             new_start: 1,
             changelist: "two".into(),
         }],
-        "only the capture notices; the exact-match survivor is quiet"
+        "only the capture advisories; the exact-match survivor is quiet"
     );
 }
 
@@ -102,7 +102,7 @@ fn editing_your_own_hunk_keeps_membership_via_overlap() {
 
     let snapshot = repo.refresh().unwrap();
     assert_eq!(owners(&snapshot, "a.txt"), vec![Some("one".into())]);
-    assert!(snapshot.notices.is_empty());
+    assert!(snapshot.advisories.is_empty());
 }
 
 #[test]
@@ -136,7 +136,7 @@ fn a_split_hunk_inherits_the_parents_changelist() {
         vec![Some("one".into()), Some("one".into())],
         "both fragments inherit the parent record's changelist"
     );
-    assert!(snapshot.notices.is_empty());
+    assert!(snapshot.advisories.is_empty());
 }
 
 #[test]
@@ -164,8 +164,8 @@ fn a_hunk_overlapping_two_changelists_captures_to_active_with_a_notice() {
     let snapshot = repo.refresh().unwrap();
     assert_eq!(owners(&snapshot, "a.txt"), vec![Some("two".into())]);
     assert_eq!(
-        snapshot.notices,
-        vec![Notice::AmbiguousOverlap {
+        snapshot.advisories,
+        vec![Advisory::AmbiguousOverlap {
             path: "a.txt".into(),
             new_start: 7,
             candidates: vec!["one".into(), "two".into()],
@@ -175,7 +175,7 @@ fn a_hunk_overlapping_two_changelists_captures_to_active_with_a_notice() {
 
     // The decision became a record: the next refresh is quiet.
     let snapshot = repo.refresh().unwrap();
-    assert!(snapshot.notices.is_empty());
+    assert!(snapshot.advisories.is_empty());
 }
 
 #[test]
@@ -455,8 +455,8 @@ fn a_routine_auto_capture_notices_once() {
     fixture.write("a.txt", &numbered(20, &[(10, "ten!")]));
     let snapshot = repo.refresh().unwrap();
     assert_eq!(
-        snapshot.notices,
-        vec![Notice::AutoCaptured {
+        snapshot.advisories,
+        vec![Advisory::AutoCaptured {
             path: "a.txt".into(),
             new_start: 7,
             changelist: "one".into(),
@@ -466,7 +466,7 @@ fn a_routine_auto_capture_notices_once() {
 
     // The decision became a record: the next refresh is quiet.
     let snapshot = repo.refresh().unwrap();
-    assert!(snapshot.notices.is_empty());
+    assert!(snapshot.advisories.is_empty());
 }
 
 #[test]
@@ -481,7 +481,7 @@ fn with_no_active_changelist_nothing_notices() {
     let snapshot = repo.refresh().unwrap();
     assert_eq!(owners(&snapshot, "a.txt"), vec![None]);
     assert!(
-        snapshot.notices.is_empty(),
+        snapshot.advisories.is_empty(),
         "unassigned fall-through decides nothing worth spot-checking"
     );
 }
@@ -509,8 +509,8 @@ fn dormant_revival_notices_with_a_per_changelist_count() {
         vec![Some("one".into()), Some("one".into())]
     );
     assert_eq!(
-        snapshot.notices,
-        vec![Notice::DormantRevival {
+        snapshot.advisories,
+        vec![Advisory::DormantRevival {
             path: "a.txt".into(),
             changelist: Some("one".into()),
             hunks: 2,
@@ -534,8 +534,8 @@ fn a_reexported_binary_keeps_its_changelist_via_path_continuity() {
     fixture.write_bytes("logo.png", &[0u8, 9, 9]);
     let snapshot = repo.refresh().unwrap();
     assert_eq!(
-        snapshot.notices,
-        vec![Notice::AutoCaptured {
+        snapshot.advisories,
+        vec![Advisory::AutoCaptured {
             path: "logo.png".into(),
             new_start: 0,
             changelist: "art".into(),
@@ -582,7 +582,7 @@ fn an_unchanged_binary_matches_exactly_after_a_move() {
     let snapshot = repo.refresh().unwrap();
     assert_eq!(owners(&snapshot, "logo.png"), vec![Some("art".into())]);
     assert!(
-        snapshot.notices.is_empty(),
+        snapshot.advisories.is_empty(),
         "an exact match is not a capture"
     );
 }
@@ -638,10 +638,10 @@ fn a_binary_whole_file_hunk_is_assignable_like_any_other() {
     assert_eq!(owners(&snapshot, "logo.png"), vec![Some("art".into())]);
 
     let hunk = snapshot.files[0].hunks[0].clone();
-    let notices = repo
+    let advisories = repo
         .assign_hunks("logo.png", &[hunk], Some("other"))
         .unwrap();
-    assert!(notices.is_empty());
+    assert!(advisories.is_empty());
 
     let snapshot = repo.refresh().unwrap();
     assert_eq!(owners(&snapshot, "logo.png"), vec![Some("other".into())]);

@@ -5,7 +5,7 @@
 
 mod support;
 
-use gitchange_core::{Error, Notice, Repo, Snapshot};
+use gitchange_core::{Error, Advisory, Repo, Snapshot};
 use support::RepoFixture;
 
 /// `count` numbered lines, with `edits` as (1-based line, replacement).
@@ -63,8 +63,8 @@ fn assigning_a_hunk_to_another_changelist_updates_membership_on_refresh() {
     let (_fixture, repo, snapshot) = two_hunk_fixture();
     let hunk = snapshot.files[0].hunks[1].clone();
 
-    let notices = repo.assign_hunks("a.txt", &[hunk], Some("chores")).unwrap();
-    assert!(notices.is_empty());
+    let advisories = repo.assign_hunks("a.txt", &[hunk], Some("chores")).unwrap();
+    assert!(advisories.is_empty());
 
     let after = repo.refresh().unwrap();
     assert_eq!(
@@ -75,7 +75,7 @@ fn assigning_a_hunk_to_another_changelist_updates_membership_on_refresh() {
     // both changelists.
     assert_eq!(after.files_in(Some("fixes")).len(), 1);
     assert_eq!(after.files_in(Some("chores")).len(), 1);
-    assert!(after.notices.is_empty(), "a clean assign raises no notices");
+    assert!(after.advisories.is_empty(), "a clean assign raises no advisories");
 }
 
 #[test]
@@ -83,8 +83,8 @@ fn assigning_every_hunk_empties_the_source_changelist() {
     let (_fixture, repo, snapshot) = two_hunk_fixture();
     let hunks = snapshot.files[0].hunks.clone();
 
-    let notices = repo.assign_hunks("a.txt", &hunks, Some("chores")).unwrap();
-    assert!(notices.is_empty());
+    let advisories = repo.assign_hunks("a.txt", &hunks, Some("chores")).unwrap();
+    assert!(advisories.is_empty());
 
     let after = repo.refresh().unwrap();
     assert_eq!(
@@ -125,10 +125,10 @@ fn a_stale_hunk_fails_soft_and_the_fresh_one_is_still_assigned() {
         &numbered(30, &[(5, "five, changed!"), (25, "twentyfive!")]),
     );
 
-    let notices = repo.assign_hunks("a.txt", &hunks, Some("chores")).unwrap();
+    let advisories = repo.assign_hunks("a.txt", &hunks, Some("chores")).unwrap();
     assert_eq!(
-        notices,
-        vec![Notice::StaleHunk {
+        advisories,
+        vec![Advisory::StaleHunk {
             path: "a.txt".into(),
             new_start: stale_start,
         }],

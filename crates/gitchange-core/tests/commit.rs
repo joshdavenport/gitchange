@@ -9,7 +9,7 @@ mod support;
 
 use std::fs;
 
-use gitchange_core::{CommitOptions, CommitOutcome, Error, HunkStage, Notice, Repo, Snapshot};
+use gitchange_core::{CommitOptions, CommitOutcome, Error, HunkStage, Advisory, Repo, Snapshot};
 use support::RepoFixture;
 
 /// Lines `line 1`..=`line count`, as a vec for splicing edits into.
@@ -120,7 +120,7 @@ fn commit_writes_only_the_changelists_staged_hunks() {
         vec![HunkStage::Staged],
         "changelist B's staged hunk stays staged post-commit"
     );
-    assert!(snapshot.notices.is_empty());
+    assert!(snapshot.advisories.is_empty());
     // "one"'s record was fully consumed and removed, not left dormant.
     assert!(dormant_owners(&fixture).is_empty());
     // The emptied changelist is kept until explicitly deleted.
@@ -254,7 +254,7 @@ fn committing_one_changelist_commutes_same_file_records() {
         "the commuted record keeps the shifted hunk in its changelist"
     );
     assert!(
-        snapshot.notices.is_empty(),
+        snapshot.advisories.is_empty(),
         "no dormancy notice on an own commit"
     );
     assert!(dormant_owners(&fixture).is_empty());
@@ -298,7 +298,7 @@ fn a_residual_stale_hunk_reattaches_after_an_own_commit() {
         vec![Some("one".into())],
         "the rewritten record re-attaches the residual to its changelist"
     );
-    assert!(snapshot.notices.is_empty());
+    assert!(snapshot.advisories.is_empty());
     assert!(dormant_owners(&fixture).is_empty());
 }
 
@@ -343,7 +343,7 @@ fn a_residual_stale_hunk_reattaches_when_the_payload_shifts_it() {
         vec![Some("one".into())],
         "the shifted residual still re-attaches to its changelist"
     );
-    assert!(snapshot.notices.is_empty());
+    assert!(snapshot.advisories.is_empty());
     // The consumed record is removed; the retained one stays live.
     assert!(dormant_owners(&fixture).is_empty());
 }
@@ -424,7 +424,7 @@ fn amend_reuses_the_temp_index_path() {
     );
 
     let snapshot = repo.refresh().unwrap();
-    assert!(snapshot.notices.is_empty());
+    assert!(snapshot.advisories.is_empty());
     assert_eq!(owners(&snapshot, "a.txt"), vec![Some("three".into())]);
     assert_eq!(stages(&snapshot, "a.txt"), vec![HunkStage::Staged]);
 }
@@ -469,7 +469,7 @@ fn unborn_branch_initial_commit_works() {
     assert_eq!(fixture.head_bytes("a.txt"), Some(b"alpha\nbeta\n".to_vec()));
     assert_eq!(state_json(&fixture)["baseline_head"], fixture.head_oid());
     let snapshot = repo.refresh().unwrap();
-    assert!(snapshot.notices.is_empty());
+    assert!(snapshot.advisories.is_empty());
 }
 
 #[test]
@@ -602,8 +602,8 @@ fn align_sets_index_to_worktree_for_the_changelists_stale_hunks() {
         .stage("b.txt")
         .write("b.txt", &text(&head));
 
-    let notices = repo.align(Some("one")).unwrap();
-    assert_eq!(notices, Vec::<Notice>::new());
+    let advisories = repo.align(Some("one")).unwrap();
+    assert_eq!(advisories, Vec::<Advisory>::new());
 
     assert_eq!(fixture.index_content("a.txt"), Some(text(&worktree_a)));
     assert_eq!(fixture.index_content("b.txt"), Some(text(&head)));
@@ -647,7 +647,7 @@ fn stage_all_stages_only_the_changelists_unstaged_hunks() {
 
     let outcome = repo.stage_all(Some("one")).unwrap();
     assert_eq!(outcome.staged, 1);
-    assert_eq!(outcome.notices, Vec::<Notice>::new());
+    assert_eq!(outcome.advisories, Vec::<Advisory>::new());
 
     assert_eq!(fixture.index_content("a.txt"), Some(text(&worktree_a)));
     assert_eq!(

@@ -7,8 +7,8 @@
 use std::time::{Duration, Instant};
 
 use gitchange_core::{
-    CONFLICTS, ChangeKind, ChangedFile, CommitPayload, FileStage, GroupKind, Hunk, HunkStage,
-    Notice, Snapshot, UNASSIGNED, count_noun,
+    Advisory, CONFLICTS, ChangeKind, ChangedFile, CommitPayload, FileStage, GroupKind, Hunk,
+    HunkStage, Snapshot, UNASSIGNED, count_noun,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -31,7 +31,7 @@ const WATCHER_UNAVAILABLE: &str = "watcher unavailable";
 
 /// A log event's severity (ADR 0007): three levels, fixed — new event
 /// classes map onto these rather than growing the scale. Assigned here
-/// in the presentation layer; core's [`Notice`] carries none.
+/// in the presentation layer; core's [`Advisory`] carries none.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
     /// `·` — routine: command echo, refresh ticks, soft no-ops.
@@ -651,7 +651,7 @@ impl App {
 
         // This refresh's automatic membership decisions, each exactly
         // once (a decision becomes a record; there is no replay).
-        self.push_notices(&snapshot.notices);
+        self.push_advisories(&snapshot.advisories);
 
         let old_scope = self.scope();
         let old_entries = self.file_entries();
@@ -1768,11 +1768,11 @@ impl App {
         }
     }
 
-    /// Append core notices in the Log vocabulary — the path every
+    /// Append core advisories in the Log vocabulary — the path every
     /// fail-soft op outcome takes.
-    pub fn push_notices<'a>(&mut self, notices: impl IntoIterator<Item = &'a Notice>) {
-        for notice in notices {
-            let entry = notice_entry(notice);
+    pub fn push_advisories<'a>(&mut self, advisories: impl IntoIterator<Item = &'a Advisory>) {
+        for advisory in advisories {
+            let entry = advisory_entry(advisory);
             self.push_log(entry.severity, entry.text);
         }
     }
@@ -1869,10 +1869,10 @@ impl App {
 /// phrasing (ADR 0006); severity is assigned here — the spec renders
 /// automatic membership decisions at `!`, fail-soft stale-hunk outcomes
 /// included; core keeps severity out (ADR 0007).
-pub fn notice_entry(notice: &Notice) -> LogEntry {
+pub fn advisory_entry(advisory: &Advisory) -> LogEntry {
     LogEntry {
         severity: Severity::Notice,
-        text: notice.message(),
+        text: advisory.message(),
     }
 }
 
@@ -2027,7 +2027,7 @@ mod tests {
                 },
             ],
             active: Some("fixes".into()),
-            notices: Vec::new(),
+            advisories: Vec::new(),
             head: Head::Branch {
                 name: "main".into(),
             },
@@ -2440,10 +2440,10 @@ mod tests {
     }
 
     #[test]
-    fn notices_land_in_the_log_at_notice_severity() {
+    fn advisories_land_in_the_log_at_notice_severity() {
         let mut app = app();
         let mut next = snapshot();
-        next.notices = vec![gitchange_core::Notice::AutoCaptured {
+        next.advisories = vec![gitchange_core::Advisory::AutoCaptured {
             path: "src/print.css".into(),
             new_start: 41,
             changelist: "fixes".into(),

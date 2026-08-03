@@ -6,7 +6,7 @@
 
 mod support;
 
-use gitchange_core::{ChangeKind, CommitOptions, Error, GitOperation, Notice, Repo, Snapshot};
+use gitchange_core::{ChangeKind, CommitOptions, Error, GitOperation, Advisory, Repo, Snapshot};
 use support::RepoFixture;
 
 fn repo(fixture: &RepoFixture) -> Repo {
@@ -192,9 +192,9 @@ fn quarantine_freezes_records_and_resolution_relands_them() {
     );
     assert!(
         !snapshot
-            .notices
+            .advisories
             .iter()
-            .any(|notice| matches!(notice, Notice::DormantRevival { .. })),
+            .any(|notice| matches!(notice, Advisory::DormantRevival { .. })),
         "the record was frozen live, never dormant — no revival fires"
     );
 }

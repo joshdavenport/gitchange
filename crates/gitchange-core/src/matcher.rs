@@ -24,7 +24,7 @@ type Owner = Option<String>;
 /// data on the snapshot (rendered by the CLI as stderr lines, by the TUI
 /// Log panel later).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Notice {
+pub enum Advisory {
     /// A new hunk overlapped records from two or more changelists; it was
     /// captured by the active changelist (IntelliJ's rule, ADR 0001).
     AmbiguousOverlap {
@@ -57,7 +57,7 @@ pub enum Notice {
         changelist: String,
     },
     /// Dormant records revived by exact anchor match this refresh
-    /// (ADR 0002) — "restored 3 hunks to api-refactor". One notice per
+    /// (ADR 0002) — "restored 3 hunks to api-refactor". One advisory per
     /// (path, changelist); `None` is unassigned.
     DormantRevival {
         path: String,
@@ -78,21 +78,21 @@ pub enum Notice {
     },
 }
 
-impl Notice {
-    /// The canonical one-line message for this notice (ADR 0006: one
+impl Advisory {
+    /// The canonical one-line message for this advisory (ADR 0006: one
     /// phrasing, sunk into core, so frontends can't drift). Frontends add
     /// only channel dressing — the CLI a `notice:` prefix, the TUI its
     /// severity glyph; severity itself stays theirs to assign (ADR 0007).
     pub fn message(&self) -> String {
         match self {
-            Notice::AutoCaptured {
+            Advisory::AutoCaptured {
                 path,
                 new_start,
                 changelist,
             } => {
                 format!("auto-captured hunk at {path}:{new_start} {ARROW} '{changelist}'")
             }
-            Notice::AmbiguousOverlap {
+            Advisory::AmbiguousOverlap {
                 path,
                 new_start,
                 candidates,
@@ -108,7 +108,7 @@ impl Notice {
                     ),
                 }
             }
-            Notice::DormantRevival {
+            Advisory::DormantRevival {
                 path,
                 changelist,
                 hunks,
@@ -122,12 +122,12 @@ impl Notice {
                     count_noun(*hunks, "hunk")
                 )
             }
-            Notice::StaleHunk { path, new_start } => {
+            Advisory::StaleHunk { path, new_start } => {
                 format!(
                     "hunk at {path}:{new_start} changed since the last refresh; nothing applied"
                 )
             }
-            Notice::HeadMoveDormancy { path, changelists } => {
+            Advisory::HeadMoveDormancy { path, changelists } => {
                 let list = quoted_list(changelists);
                 format!(
                     "external HEAD move changed {path} — records in {list} went dormant; affected hunks captured to active"
@@ -176,7 +176,7 @@ pub(crate) struct MatchOutcome {
     /// The full post-refresh record set to persist: updated live records
     /// in universe order, then surviving dormant records.
     pub records: Vec<MembershipRecord>,
-    pub notices: Vec<Notice>,
+    pub advisories: Vec<Advisory>,
 }
 
 /// Match stored records against the fresh hunk universe, writing each
@@ -200,7 +200,7 @@ pub(crate) fn run(
 
     let mut out = MatchOutcome {
         records: Vec::new(),
-        notices: Vec::new(),
+        advisories: Vec::new(),
     };
 
     for file in files.iter_mut() {
@@ -264,7 +264,7 @@ fn match_file(
     // Tier 1: exact content-anchor match — live records first, then
     // dormant (revival). Position-independent: catches moved hunks.
     // Revivals are automatic membership decisions (ADR 0007): counted
-    // per reviving changelist and noticed below.
+    // per reviving changelist and advised below.
     let mut revived: BTreeMap<Option<String>, usize> = BTreeMap::new();
     for pass_dormant in [false, true] {
         for (i, hunk) in file.hunks.iter().enumerate() {
@@ -288,7 +288,7 @@ fn match_file(
         }
     }
     for (changelist, hunks) in revived {
-        out.notices.push(Notice::DormantRevival {
+        out.advisories.push(Advisory::DormantRevival {
             path: file.path.clone(),
             changelist,
             hunks,
@@ -314,10 +314,10 @@ fn match_file(
             let owner = active.map(String::from);
             owners[i] = Some(owner.clone());
             if let Some(name) = &owner {
-                // A capture is a capture (ADR 0007): guarded ones notice
-                // like routine ones, on top of the per-path dormancy
-                // notice below when the guard cost something.
-                out.notices.push(Notice::AutoCaptured {
+                // A capture is a capture (ADR 0007): guarded ones get the
+                // same advisory as routine ones, on top of the per-path
+                // dormancy advisory when the guard cost something.
+                out.advisories.push(Advisory::AutoCaptured {
                     path: file.path.clone(),
                     new_start: hunk.new_start,
                     changelist: name.clone(),
@@ -349,10 +349,10 @@ fn match_file(
             // Genuinely new: active changelist, or unassigned when no
             // changelists exist. No record for a hunk nobody claims —
             // a changelist-less repo must not grow a state file. The
-            // capture is noticed (ADR 0007): automatic membership
+            // capture is advised (ADR 0007): automatic membership
             // decisions are visible, never silent.
             if let Some(name) = active {
-                out.notices.push(Notice::AutoCaptured {
+                out.advisories.push(Advisory::AutoCaptured {
                     path: file.path.clone(),
                     new_start: hunk.new_start,
                     changelist: name.into(),
@@ -360,9 +360,9 @@ fn match_file(
             }
             active.map(String::from)
         } else if candidates.len() >= 2 {
-            // Two or more changelists could claim it: active + notice —
+            // Two or more changelists could claim it: active + advisory —
             // visible, never a silent misfile.
-            out.notices.push(Notice::AmbiguousOverlap {
+            out.advisories.push(Advisory::AmbiguousOverlap {
                 path: file.path.clone(),
                 new_start: hunk.new_start,
                 candidates: candidates.iter().map(|&name| name.into()).collect(),
@@ -388,7 +388,7 @@ fn match_file(
     }
     out.records.extend(fresh.into_iter().flatten());
 
-    // One notice per path where the guard actually changed an outcome: a
+    // One advisory per path where the guard actually changed an outcome: a
     // hunk captured under the disabled tier while records went dormant.
     // Dormancy alone (a committed hunk's record) or a capture alone (a
     // genuinely new hunk) reads the same with the guard off — quiet.
@@ -400,7 +400,7 @@ fn match_file(
             .filter_map(|(_, record)| record.changelist.as_ref())
             .collect();
         if !newly_dormant.is_empty() {
-            out.notices.push(Notice::HeadMoveDormancy {
+            out.advisories.push(Advisory::HeadMoveDormancy {
                 path: file.path.clone(),
                 changelists: newly_dormant.into_iter().cloned().collect(),
             });

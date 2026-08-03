@@ -5,7 +5,7 @@
 
 mod support;
 
-use gitchange_core::{FileStage, HunkStage, Notice, Repo};
+use gitchange_core::{FileStage, HunkStage, Advisory, Repo};
 use support::RepoFixture;
 
 /// Twenty numbered lines, with `edits` as (1-based line, replacement).
@@ -42,9 +42,9 @@ fn staging_one_hunk_of_a_multi_hunk_file_leaves_the_other_unstaged() {
     let snapshot = repo.refresh().unwrap();
     let hunk = snapshot.files[0].hunks[0].clone();
 
-    let notices = repo.stage_hunk("a.txt", &hunk).unwrap();
+    let advisories = repo.stage_hunk("a.txt", &hunk).unwrap();
 
-    assert_eq!(notices, vec![]);
+    assert_eq!(advisories, vec![]);
     // Ground truth: the real index holds only the first edit.
     assert_eq!(
         fixture.index_content("a.txt").as_deref(),
@@ -66,9 +66,9 @@ fn unstaging_one_hunk_leaves_the_sibling_staged() {
     let snapshot = repo.refresh().unwrap();
     let hunk = snapshot.files[0].hunks[0].clone();
 
-    let notices = repo.unstage_hunk("a.txt", &hunk).unwrap();
+    let advisories = repo.unstage_hunk("a.txt", &hunk).unwrap();
 
-    assert_eq!(notices, vec![]);
+    assert_eq!(advisories, vec![]);
     assert_eq!(
         fixture.index_content("a.txt").as_deref(),
         Some(numbered(&[(18, "edit near bottom")]).as_str())
@@ -96,11 +96,11 @@ fn a_stale_hunk_fails_soft_with_a_notice_and_no_index_write() {
         &numbered(&[(2, "a different edit"), (18, "edit near bottom")]),
     );
 
-    let notices = repo.stage_hunk("a.txt", &hunk).unwrap();
+    let advisories = repo.stage_hunk("a.txt", &hunk).unwrap();
 
     assert_eq!(
-        notices,
-        vec![Notice::StaleHunk {
+        advisories,
+        vec![Advisory::StaleHunk {
             path: "a.txt".into(),
             new_start: hunk.new_start,
         }]
@@ -135,11 +135,11 @@ fn a_stale_hunk_fails_soft_on_unstage_too() {
         &numbered(&[(2, "a third edit"), (18, "edit near bottom")]),
     );
 
-    let notices = repo.unstage_hunk("a.txt", &hunk).unwrap();
+    let advisories = repo.unstage_hunk("a.txt", &hunk).unwrap();
 
     assert_eq!(
-        notices,
-        vec![Notice::StaleHunk {
+        advisories,
+        vec![Advisory::StaleHunk {
             path: "a.txt".into(),
             new_start: hunk.new_start,
         }]
@@ -240,9 +240,9 @@ fn a_moved_hunk_still_stages_at_its_fresh_position() {
     let shifted = format!("inserted line\n{}", numbered(&[(18, "edit near bottom")]));
     fixture.write("a.txt", &shifted);
 
-    let notices = repo.stage_hunk("a.txt", &hunk).unwrap();
+    let advisories = repo.stage_hunk("a.txt", &hunk).unwrap();
 
-    assert_eq!(notices, vec![]);
+    assert_eq!(advisories, vec![]);
     assert_eq!(
         fixture.index_content("a.txt").as_deref(),
         Some(numbered(&[(18, "edit near bottom")]).as_str())
@@ -257,9 +257,9 @@ fn staging_a_staged_hunk_is_a_no_op() {
     let snapshot = repo.refresh().unwrap();
     let hunk = snapshot.files[0].hunks[0].clone();
 
-    let notices = repo.stage_hunk("a.txt", &hunk).unwrap();
+    let advisories = repo.stage_hunk("a.txt", &hunk).unwrap();
 
-    assert_eq!(notices, vec![]);
+    assert_eq!(advisories, vec![]);
     assert_eq!(
         fixture.index_content("a.txt").as_deref(),
         Some(numbered(&[(2, "edit near top"), (18, "edit near bottom")]).as_str())
@@ -273,9 +273,9 @@ fn unstaging_an_unstaged_hunk_is_a_no_op() {
     let snapshot = repo.refresh().unwrap();
     let hunk = snapshot.files[0].hunks[0].clone();
 
-    let notices = repo.unstage_hunk("a.txt", &hunk).unwrap();
+    let advisories = repo.unstage_hunk("a.txt", &hunk).unwrap();
 
-    assert_eq!(notices, vec![]);
+    assert_eq!(advisories, vec![]);
     assert_eq!(
         fixture.index_content("a.txt").as_deref(),
         Some(numbered(&[]).as_str())
@@ -349,9 +349,9 @@ fn stage_hunk_stages_an_untracked_file_whole() {
     let snapshot = repo.refresh().unwrap();
     let hunk = snapshot.files[0].hunks[0].clone();
 
-    let notices = repo.stage_hunk("new.txt", &hunk).unwrap();
+    let advisories = repo.stage_hunk("new.txt", &hunk).unwrap();
 
-    assert_eq!(notices, vec![]);
+    assert_eq!(advisories, vec![]);
     assert_eq!(
         fixture.index_content("new.txt").as_deref(),
         Some("alpha\nbeta\n")
@@ -370,9 +370,9 @@ fn unstage_hunk_removes_a_staged_new_file_from_the_index() {
     let snapshot = repo.refresh().unwrap();
     let hunk = snapshot.files[0].hunks[0].clone();
 
-    let notices = repo.unstage_hunk("new.txt", &hunk).unwrap();
+    let advisories = repo.unstage_hunk("new.txt", &hunk).unwrap();
 
-    assert_eq!(notices, vec![]);
+    assert_eq!(advisories, vec![]);
     assert_eq!(fixture.index_content("new.txt"), None);
     let snapshot = repo.refresh().unwrap();
     assert_eq!(snapshot.files[0].stage(), FileStage::Unstaged);
@@ -421,9 +421,9 @@ fn stage_hunk_stages_a_deletion_whole() {
     let snapshot = repo.refresh().unwrap();
     let hunk = snapshot.files[0].hunks[0].clone();
 
-    let notices = repo.stage_hunk("doomed.txt", &hunk).unwrap();
+    let advisories = repo.stage_hunk("doomed.txt", &hunk).unwrap();
 
-    assert_eq!(notices, vec![]);
+    assert_eq!(advisories, vec![]);
     assert_eq!(fixture.index_content("doomed.txt"), None);
 }
 
@@ -452,9 +452,9 @@ fn staging_a_hunk_of_a_non_utf8_text_file_keeps_the_bytes_verbatim() {
     let snapshot = repo.refresh().unwrap();
     let hunk = snapshot.files[0].hunks[0].clone();
 
-    let notices = repo.stage_hunk("latin1.txt", &hunk).unwrap();
+    let advisories = repo.stage_hunk("latin1.txt", &hunk).unwrap();
 
-    assert_eq!(notices, vec![]);
+    assert_eq!(advisories, vec![]);
     assert_eq!(
         fixture.index_bytes("latin1.txt").as_deref(),
         Some(content("edited").as_slice())
@@ -483,9 +483,9 @@ fn identical_hunks_stage_the_one_at_the_requested_position() {
     assert_eq!(hunks.len(), 2);
     assert_eq!(hunks[0].lines, hunks[1].lines);
 
-    let notices = repo.stage_hunk("a.txt", &hunks[1]).unwrap();
+    let advisories = repo.stage_hunk("a.txt", &hunks[1]).unwrap();
 
-    assert_eq!(notices, vec![]);
+    assert_eq!(advisories, vec![]);
     assert_eq!(
         fixture.index_content("a.txt").as_deref(),
         Some(file("delta", "EDIT").as_str())
@@ -505,8 +505,8 @@ fn staging_a_binary_whole_file_hunk_is_a_whole_file_index_write() {
 
     let snapshot = repo.refresh().unwrap();
     let hunk = snapshot.files[0].hunks[0].clone();
-    let notices = repo.stage_hunk("blob.bin", &hunk).unwrap();
-    assert!(notices.is_empty());
+    let advisories = repo.stage_hunk("blob.bin", &hunk).unwrap();
+    assert!(advisories.is_empty());
     assert_eq!(fixture.index_bytes("blob.bin").unwrap(), vec![0u8, 9, 9]);
     assert_eq!(
         repo.refresh().unwrap().files[0].stage(),

@@ -1,5 +1,5 @@
 use crate::diff::ChangeKind;
-use crate::matcher::Notice;
+use crate::matcher::Advisory;
 use crate::state::Changelist;
 use crate::universe::ChangedFile;
 use crate::vocabulary::{CONFLICTS, UNASSIGNED};
@@ -66,7 +66,7 @@ pub struct CommitInfo {
 
 /// The immutable result of one refresh — the only data structure frontends
 /// read. Hunks carry their owning changelist (written by the matcher);
-/// notices record this refresh's automatic membership decisions.
+/// advisories record this refresh's automatic membership decisions.
 #[derive(Debug, Clone)]
 pub struct Snapshot {
     /// The hunk universe (ADR 0003), sorted by path.
@@ -79,7 +79,7 @@ pub struct Snapshot {
     /// Automatic membership decisions worth spot-checking, in file
     /// order. Not persisted: a decision becomes a record, so it surfaces
     /// exactly once.
-    pub notices: Vec<Notice>,
+    pub advisories: Vec<Advisory>,
     /// Where HEAD points, for the Status panel.
     pub head: Head,
     /// Recent commits reachable from HEAD, newest first, for the Commits

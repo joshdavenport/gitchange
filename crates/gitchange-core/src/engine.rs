@@ -427,7 +427,7 @@ mod tests {
             files: Vec::new(),
             changelists: Vec::new(),
             active: None,
-            notices: Vec::new(),
+            advisories: Vec::new(),
             head: crate::snapshot::Head::Unborn {
                 name: "main".into(),
             },

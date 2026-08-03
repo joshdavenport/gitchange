@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use gitchange_core::{CommitOptions, CommitOutcome, Hunk, Notice, Repo, Snapshot};
+use gitchange_core::{CommitOptions, CommitOutcome, Hunk, Advisory, Repo, Snapshot};
 use support::RepoFixture;
 
 /// Repo-relative paths with file bytes — one tree state.
@@ -50,7 +50,7 @@ struct Case {
     /// Expected HEAD blob per path after the op; `None` = absent from
     /// the committed tree — commit cases only.
     head: Vec<(&'static str, Option<Vec<u8>>)>,
-    /// Paths expected in `StaleHunk` notices; empty = clean apply.
+    /// Paths expected in `StaleHunk` advisories; empty = clean apply.
     stale: Vec<&'static str>,
 }
 
@@ -128,7 +128,7 @@ fn run(case: Case) {
     }
     let worktree_before = worktree_state(fixture.path());
 
-    let notices = match &case.op {
+    let advisories = match &case.op {
         Op::StageHunk { path, hunk } => repo
             .stage_hunk(path, &hunk_at(&snapshot, path, *hunk))
             .unwrap(),
@@ -157,14 +157,14 @@ fn run(case: Case) {
         }
     };
 
-    let stale: Vec<&str> = notices
+    let stale: Vec<&str> = advisories
         .iter()
         .map(|notice| match notice {
-            Notice::StaleHunk { path, .. } => path.as_str(),
+            Advisory::StaleHunk { path, .. } => path.as_str(),
             other => panic!("unexpected notice from apply op: {other:?}"),
         })
         .collect();
-    assert_eq!(stale, case.stale, "stale notices");
+    assert_eq!(stale, case.stale, "stale advisories");
     for (path, expected) in &case.index {
         assert_eq!(
             fixture.index_bytes(path),

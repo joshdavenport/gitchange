@@ -7,7 +7,7 @@
 //! on, including `UNASSIGNED`/`ALL` below, which several enums' arms
 //! (and `state`'s non-enum `RESERVED_NAMES`) all point back to.
 
-/// The from→to / repo→branch separator shared by notices, log echoes and
+/// The from→to / repo→branch separator shared by advisories, log echoes and
 /// the Status line.
 pub const ARROW: char = '→';
 

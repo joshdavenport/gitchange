@@ -20,7 +20,7 @@ pub use commit::{
 pub use diff::{BinarySides, BlobInfo, ChangeKind, DiffHunk, FileDiff, HunkLine, RepoDiffs};
 pub use engine::{Condition, Engine, EngineEvent};
 pub use error::Error;
-pub use matcher::Notice;
+pub use matcher::Advisory;
 pub use repo::{Repo, StageAllOutcome};
 pub use snapshot::{CommitInfo, FileGroup, GitOperation, GroupKind, Head, Snapshot};
 pub use state::{Changelist, MembershipRecord, OidAnchor, RESERVED_NAMES};
