@@ -93,6 +93,19 @@ pub enum HunkStage {
     StagedStale,
 }
 
+impl HunkStage {
+    /// The canonical staging glyph (ADR 0006: shared presentation
+    /// vocabulary lives in core). The TUI theme's defaults; frontends
+    /// without theming use it directly.
+    pub fn glyph(&self) -> char {
+        match self {
+            HunkStage::Unstaged => '○',
+            HunkStage::Staged => '●',
+            HunkStage::StagedStale => '◑',
+        }
+    }
+}
+
 /// Per-file staging marker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileStage {
@@ -102,6 +115,17 @@ pub enum FileStage {
     PartiallyStaged,
     /// `●`
     Staged,
+}
+
+impl FileStage {
+    /// The canonical staging glyph (ADR 0006), as [`HunkStage::glyph`].
+    pub fn glyph(&self) -> char {
+        match self {
+            FileStage::Unstaged => '○',
+            FileStage::PartiallyStaged => '◐',
+            FileStage::Staged => '●',
+        }
+    }
 }
 
 /// Build the hunk universe from the two diffs, sorted by path.

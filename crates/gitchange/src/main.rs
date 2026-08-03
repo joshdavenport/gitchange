@@ -2,7 +2,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-use gitchange_core::{ChangedFile, FileStage, GroupKind, Repo};
+use gitchange_core::{ChangedFile, GroupKind, Repo};
 
 #[derive(Parser)]
 #[command(
@@ -79,7 +79,7 @@ fn print_files(files: &[&ChangedFile]) {
     for file in files {
         println!(
             "    {} {} {} {}/{}",
-            stage_mark(file.stage()),
+            file.stage().glyph(),
             file.kind.sigil(),
             file.path,
             file.staged_hunks(),
@@ -98,12 +98,4 @@ fn switch(name: &str) -> anyhow::Result<()> {
 fn open_repo() -> anyhow::Result<Repo> {
     let cwd = std::env::current_dir()?;
     Ok(Repo::discover(&cwd)?)
-}
-
-fn stage_mark(stage: FileStage) -> char {
-    match stage {
-        FileStage::Staged => '●',
-        FileStage::PartiallyStaged => '◐',
-        FileStage::Unstaged => '○',
-    }
 }

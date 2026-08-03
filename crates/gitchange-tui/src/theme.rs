@@ -2,6 +2,7 @@
 //! theme). Defaults stick to the terminal's own ANSI palette; swapping a
 //! theme means swapping this struct, never touching the renderer.
 
+use gitchange_core::{FileStage, HunkStage};
 use ratatui::style::Color;
 
 pub struct Theme {
@@ -87,10 +88,12 @@ impl Default for Theme {
                 cursor: Color::Cyan,
             },
             glyphs: Glyphs {
-                staged: '●',
-                partially_staged: '◐',
-                unstaged: '○',
-                staged_stale: '◑',
+                // Staging defaults come from core (ADR 0006) so the CLI
+                // and TUI can't drift; a theme may still override.
+                staged: FileStage::Staged.glyph(),
+                partially_staged: FileStage::PartiallyStaged.glyph(),
+                unstaged: FileStage::Unstaged.glyph(),
+                staged_stale: HunkStage::StagedStale.glyph(),
                 active: '*',
                 all: '≡',
                 unassigned: '!',
