@@ -7,7 +7,7 @@
 use std::time::{Duration, Instant};
 
 use gitchange_core::{
-    ChangeKind, ChangedFile, CommitPayload, FileStage, Hunk, HunkStage, Notice, Snapshot,
+    ChangeKind, ChangedFile, CommitPayload, FileStage, GroupKind, Hunk, HunkStage, Notice, Snapshot,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -1438,46 +1438,34 @@ impl App {
         let mut rows = Vec::new();
         match self.scope() {
             Scope::All => {
-                // The Conflicts group renders first (ADR 0007): live,
-                // shrinking in real time as files are resolved.
-                let conflicted = snapshot.conflicted_files();
-                if !conflicted.is_empty() {
+                // Group order and membership are core's (ADR 0006):
+                // Conflicts first (ADR 0007), changelists in user order,
+                // unassigned last when non-empty.
+                for group in snapshot.groups() {
+                    let (label, group_scope, unassigned, conflicted, active) = match &group.kind {
+                        GroupKind::Conflicts => {
+                            ("conflicts".into(), Scope::Conflicts, false, true, false)
+                        }
+                        GroupKind::Changelist { name, active } => (
+                            name.clone(),
+                            Scope::Changelist(name.clone()),
+                            false,
+                            false,
+                            *active,
+                        ),
+                        GroupKind::Unassigned => {
+                            ("unassigned".into(), Scope::Unassigned, true, false, false)
+                        }
+                    };
                     rows.push(FilesRow::Header {
-                        label: "conflicts".into(),
-                        count: conflicted.len(),
-                        unassigned: false,
-                        conflicted: true,
-                        active: false,
+                        label,
+                        count: group.files.len(),
+                        unassigned,
+                        conflicted,
+                        active,
                     });
-                    for file in conflicted {
-                        rows.push(file_row(file, Scope::Conflicts, true));
-                    }
-                }
-                for changelist in &snapshot.changelists {
-                    let files = snapshot.files_in(Some(&changelist.name));
-                    rows.push(FilesRow::Header {
-                        label: changelist.name.clone(),
-                        count: files.len(),
-                        unassigned: false,
-                        conflicted: false,
-                        active: snapshot.active.as_deref() == Some(changelist.name.as_str()),
-                    });
-                    let group = Scope::Changelist(changelist.name.clone());
-                    for file in files {
-                        rows.push(file_row(file, group.clone(), true));
-                    }
-                }
-                let unassigned = snapshot.files_in(None);
-                if !unassigned.is_empty() {
-                    rows.push(FilesRow::Header {
-                        label: "unassigned".into(),
-                        count: unassigned.len(),
-                        unassigned: true,
-                        conflicted: false,
-                        active: false,
-                    });
-                    for file in unassigned {
-                        rows.push(file_row(file, Scope::Unassigned, true));
+                    for file in group.files {
+                        rows.push(file_row(file, group_scope.clone(), true));
                     }
                 }
             }
@@ -1860,76 +1848,15 @@ impl App {
     }
 }
 
-/// A core notice in the Log vocabulary. Severity is assigned here — the
-/// spec renders automatic membership decisions at `!`, fail-soft
-/// stale-hunk outcomes included; core keeps severity out (ADR 0007).
+/// A core notice in the Log vocabulary. Text is core's canonical
+/// phrasing (ADR 0006); severity is assigned here — the spec renders
+/// automatic membership decisions at `!`, fail-soft stale-hunk outcomes
+/// included; core keeps severity out (ADR 0007).
 pub fn notice_entry(notice: &Notice) -> LogEntry {
-    let (severity, text) = match notice {
-        Notice::AutoCaptured {
-            path,
-            new_start,
-            changelist,
-        } => (
-            Severity::Notice,
-            format!("auto-captured hunk at {path}:{new_start} → '{changelist}'"),
-        ),
-        Notice::AmbiguousOverlap {
-            path,
-            new_start,
-            candidates,
-            assigned_to,
-        } => {
-            let overlap = candidates
-                .iter()
-                .map(|name| format!("'{name}'"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let text = match assigned_to {
-                Some(name) => format!(
-                    "auto-captured hunk at {path}:{new_start} → '{name}' (ambiguous overlap: {overlap})"
-                ),
-                None => format!(
-                    "hunk at {path}:{new_start} left unassigned (ambiguous overlap: {overlap})"
-                ),
-            };
-            (Severity::Notice, text)
-        }
-        Notice::DormantRevival {
-            path,
-            changelist,
-            hunks,
-        } => {
-            let destination = match changelist {
-                Some(name) => format!("'{name}'"),
-                None => "unassigned".into(),
-            };
-            (
-                Severity::Notice,
-                format!(
-                    "restored {} to {destination} — {path}",
-                    count_noun(*hunks, "hunk")
-                ),
-            )
-        }
-        Notice::StaleHunk { path, new_start } => (
-            Severity::Notice,
-            format!("hunk at {path}:{new_start} changed since the last refresh; nothing applied"),
-        ),
-        Notice::HeadMoveDormancy { path, changelists } => {
-            let list = changelists
-                .iter()
-                .map(|name| format!("'{name}'"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            (
-                Severity::Notice,
-                format!(
-                    "external HEAD move changed {path} — records in {list} went dormant; affected hunks captured to active"
-                ),
-            )
-        }
-    };
-    LogEntry { severity, text }
+    LogEntry {
+        severity: Severity::Notice,
+        text: notice.message(),
+    }
 }
 
 fn file_row(file: &ChangedFile, group: Scope, indent: bool) -> FilesRow {
@@ -1960,18 +1887,6 @@ fn owned_hunks(file: &ChangedFile, owner: Option<&str>) -> Vec<Hunk> {
         .filter(|hunk| owns(hunk, owner))
         .cloned()
         .collect()
-}
-
-/// The one-letter change-kind sigil the Files rows carry.
-pub fn kind_sigil(kind: ChangeKind) -> char {
-    match kind {
-        ChangeKind::Added => 'A',
-        ChangeKind::Modified => 'M',
-        ChangeKind::Deleted => 'D',
-        ChangeKind::TypeChanged => 'T',
-        ChangeKind::Untracked => '?',
-        ChangeKind::Conflicted => 'U',
-    }
 }
 
 /// The Diff panel's one-line binary placeholder (ADR 0009):

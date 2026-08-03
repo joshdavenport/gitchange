@@ -77,6 +77,72 @@ pub enum Notice {
     },
 }
 
+impl Notice {
+    /// The canonical one-line message for this notice (ADR 0006: one
+    /// phrasing, sunk into core, so frontends can't drift). Frontends add
+    /// only channel dressing — the CLI a `notice:` prefix, the TUI its
+    /// severity glyph; severity itself stays theirs to assign (ADR 0007).
+    pub fn message(&self) -> String {
+        match self {
+            Notice::AutoCaptured {
+                path,
+                new_start,
+                changelist,
+            } => {
+                format!("auto-captured hunk at {path}:{new_start} → '{changelist}'")
+            }
+            Notice::AmbiguousOverlap {
+                path,
+                new_start,
+                candidates,
+                assigned_to,
+            } => {
+                let overlap = quoted_list(candidates);
+                match assigned_to {
+                    Some(name) => format!(
+                        "auto-captured hunk at {path}:{new_start} → '{name}' (ambiguous overlap: {overlap})"
+                    ),
+                    None => format!(
+                        "hunk at {path}:{new_start} left unassigned (ambiguous overlap: {overlap})"
+                    ),
+                }
+            }
+            Notice::DormantRevival {
+                path,
+                changelist,
+                hunks,
+            } => {
+                let destination = match changelist {
+                    Some(name) => format!("'{name}'"),
+                    None => "unassigned".into(),
+                };
+                let plural = if *hunks == 1 { "" } else { "s" };
+                format!("restored {hunks} hunk{plural} to {destination} — {path}")
+            }
+            Notice::StaleHunk { path, new_start } => {
+                format!(
+                    "hunk at {path}:{new_start} changed since the last refresh; nothing applied"
+                )
+            }
+            Notice::HeadMoveDormancy { path, changelists } => {
+                let list = quoted_list(changelists);
+                format!(
+                    "external HEAD move changed {path} — records in {list} went dormant; affected hunks captured to active"
+                )
+            }
+        }
+    }
+}
+
+/// `'a', 'b', 'c'` — changelist names as quoted prose.
+fn quoted_list(names: &[String]) -> String {
+    names
+        .iter()
+        .map(|name| format!("'{name}'"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// The paths a HEAD move changed between the stored baseline and the
 /// current HEAD (ADR 0012) — computed by `refresh()`, entering the
 /// matcher as an explicit input like `active` and `now`. Tier-2 overlap

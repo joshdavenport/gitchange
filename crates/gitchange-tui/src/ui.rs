@@ -1139,10 +1139,7 @@ fn kind_span(kind: ChangeKind, theme: &Theme) -> Span<'static> {
         ChangeKind::Untracked => theme.colors.dim,
         ChangeKind::Conflicted => theme.colors.conflicted,
     };
-    Span::styled(
-        crate::app::kind_sigil(kind).to_string(),
-        Style::new().fg(color),
-    )
+    Span::styled(kind.sigil().to_string(), Style::new().fg(color))
 }
 
 /// Two-letter author initials for the Commits panel.

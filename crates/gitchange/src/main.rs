@@ -2,7 +2,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-use gitchange_core::{ChangeKind, ChangedFile, FileStage, Notice, Repo};
+use gitchange_core::{ChangedFile, FileStage, GroupKind, Repo};
 
 #[derive(Parser)]
 #[command(
@@ -43,36 +43,34 @@ fn main() -> ExitCode {
     }
 }
 
-/// The All view as text: every changelist in user order with its files,
-/// the active one marked `*`, the unassigned group last.
+/// The All view as text — core's grouping (`Snapshot::groups`, ADR 0006)
+/// rendered line by line.
 fn status() -> anyhow::Result<()> {
     let repo = open_repo()?;
     let snapshot = repo.refresh()?;
     for notice in &snapshot.notices {
-        eprintln!("gitchange: {}", notice_line(notice));
+        eprintln!("gitchange: notice: {}", notice.message());
     }
-    // Quarantined unmerged paths first (ADR 0007) — outside gitchange's
-    // remit until resolved, so no stage mark or hunk counts.
-    let conflicted = snapshot.conflicted_files();
-    if !conflicted.is_empty() {
-        println!("  conflicts");
-        for file in conflicted {
-            println!("      U {} (resolve outside gitchange)", file.path);
+    for group in snapshot.groups() {
+        match &group.kind {
+            // Quarantined unmerged paths (ADR 0007) — outside gitchange's
+            // remit until resolved, so no stage mark or hunk counts.
+            GroupKind::Conflicts => {
+                println!("  conflicts");
+                for file in &group.files {
+                    println!("      U {} (resolve outside gitchange)", file.path);
+                }
+            }
+            GroupKind::Changelist { name, active } => {
+                let marker = if *active { '*' } else { ' ' };
+                println!("{marker} {name}");
+                print_files(&group.files);
+            }
+            GroupKind::Unassigned => {
+                println!("  unassigned");
+                print_files(&group.files);
+            }
         }
-    }
-    for changelist in &snapshot.changelists {
-        let marker = if snapshot.active.as_deref() == Some(changelist.name.as_str()) {
-            '*'
-        } else {
-            ' '
-        };
-        println!("{marker} {}", changelist.name);
-        print_files(&snapshot.files_in(Some(&changelist.name)));
-    }
-    let unassigned = snapshot.files_in(None);
-    if !unassigned.is_empty() {
-        println!("  unassigned");
-        print_files(&unassigned);
     }
     Ok(())
 }
@@ -82,71 +80,11 @@ fn print_files(files: &[&ChangedFile]) {
         println!(
             "    {} {} {} {}/{}",
             stage_mark(file.stage()),
-            sigil(file.kind),
+            file.kind.sigil(),
             file.path,
             file.staged_hunks(),
             file.total_hunks(),
         );
-    }
-}
-
-fn notice_line(notice: &Notice) -> String {
-    match notice {
-        Notice::AmbiguousOverlap {
-            path,
-            new_start,
-            candidates,
-            assigned_to,
-        } => {
-            let destination = match assigned_to {
-                Some(name) => format!("assigned to active changelist '{name}'"),
-                None => "left unassigned".into(),
-            };
-            format!(
-                "notice: hunk at {path}:{new_start} overlaps changelists {}; {destination}",
-                candidates
-                    .iter()
-                    .map(|name| format!("'{name}'"))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            )
-        }
-        Notice::AutoCaptured {
-            path,
-            new_start,
-            changelist,
-        } => {
-            format!(
-                "notice: auto-captured hunk at {path}:{new_start} → active changelist '{changelist}'"
-            )
-        }
-        Notice::DormantRevival {
-            path,
-            changelist,
-            hunks,
-        } => {
-            let destination = match changelist {
-                Some(name) => format!("'{name}'"),
-                None => "unassigned".into(),
-            };
-            let plural = if *hunks == 1 { "" } else { "s" };
-            format!("notice: restored {hunks} hunk{plural} to {destination} ({path})")
-        }
-        Notice::StaleHunk { path, new_start } => {
-            format!(
-                "notice: hunk at {path}:{new_start} changed since the last refresh; nothing applied"
-            )
-        }
-        Notice::HeadMoveDormancy { path, changelists } => {
-            format!(
-                "notice: an external HEAD move changed {path}; records in changelists {} went dormant and affected hunks were captured by the active changelist",
-                changelists
-                    .iter()
-                    .map(|name| format!("'{name}'"))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            )
-        }
     }
 }
 
@@ -167,16 +105,5 @@ fn stage_mark(stage: FileStage) -> char {
         FileStage::Staged => '●',
         FileStage::PartiallyStaged => '◐',
         FileStage::Unstaged => '○',
-    }
-}
-
-fn sigil(kind: ChangeKind) -> char {
-    match kind {
-        ChangeKind::Added => 'A',
-        ChangeKind::Modified => 'M',
-        ChangeKind::Deleted => 'D',
-        ChangeKind::TypeChanged => 'T',
-        ChangeKind::Untracked => '?',
-        ChangeKind::Conflicted => 'U',
     }
 }

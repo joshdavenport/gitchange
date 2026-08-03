@@ -109,4 +109,56 @@ impl Snapshot {
             .filter(|file| file.kind == ChangeKind::Conflicted)
             .collect()
     }
+
+    /// The All view's groups, in render order — the one place its
+    /// grouping rules live (ADR 0006): Conflicts first when any path is
+    /// unmerged (ADR 0007), changelists in user order (empty ones
+    /// included, the active one flagged), unassigned last only when
+    /// non-empty. Frontends render these; they don't re-derive them.
+    pub fn groups(&self) -> Vec<FileGroup<'_>> {
+        let mut groups = Vec::new();
+        let conflicted = self.conflicted_files();
+        if !conflicted.is_empty() {
+            groups.push(FileGroup {
+                kind: GroupKind::Conflicts,
+                files: conflicted,
+            });
+        }
+        for changelist in &self.changelists {
+            groups.push(FileGroup {
+                kind: GroupKind::Changelist {
+                    name: changelist.name.clone(),
+                    active: self.active.as_deref() == Some(changelist.name.as_str()),
+                },
+                files: self.files_in(Some(&changelist.name)),
+            });
+        }
+        let unassigned = self.files_in(None);
+        if !unassigned.is_empty() {
+            groups.push(FileGroup {
+                kind: GroupKind::Unassigned,
+                files: unassigned,
+            });
+        }
+        groups
+    }
+}
+
+/// One group of [`Snapshot::groups`]'s All-view ordering.
+#[derive(Debug, Clone)]
+pub struct FileGroup<'a> {
+    pub kind: GroupKind,
+    /// The group's files, in path order.
+    pub files: Vec<&'a ChangedFile>,
+}
+
+/// What a [`FileGroup`] is — the label vocabulary frontends render from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GroupKind {
+    /// Quarantined unmerged paths (ADR 0007).
+    Conflicts,
+    /// A user changelist; `active` is the `*` marker.
+    Changelist { name: String, active: bool },
+    /// Hunks owned by no changelist.
+    Unassigned,
 }

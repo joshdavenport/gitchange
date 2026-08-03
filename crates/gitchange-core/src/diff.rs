@@ -90,3 +90,19 @@ pub enum ChangeKind {
     Untracked,
     Conflicted,
 }
+
+impl ChangeKind {
+    /// The one-letter sigil every frontend's file rows carry (ADR 0006:
+    /// shared presentation vocabulary lives in core, like
+    /// `GitOperation::label`).
+    pub fn sigil(&self) -> char {
+        match self {
+            ChangeKind::Added => 'A',
+            ChangeKind::Modified => 'M',
+            ChangeKind::Deleted => 'D',
+            ChangeKind::TypeChanged => 'T',
+            ChangeKind::Untracked => '?',
+            ChangeKind::Conflicted => 'U',
+        }
+    }
+}
