@@ -454,6 +454,12 @@ fn conditions_pin_and_self_clear() {
     );
     app.on_watcher_recovered();
     assert!(app.pins().is_empty(), "pins self-clear, never dismissed");
+    assert!(
+        app.log
+            .iter()
+            .any(|entry| entry.severity == Severity::Info && entry.text == "watcher recovered"),
+        "and the moment it ended is logged too, like its onset"
+    );
 
     // Operation + detached HEAD pins derive from the snapshot.
     let mut busy = snapshot();

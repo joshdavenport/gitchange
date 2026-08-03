@@ -87,6 +87,14 @@ that fallback is not needed.
 - **One real-fs smoke test** (touch a file, expect `RefreshComplete`
   within a generous timeout) proves the wiring, on every CI OS — watcher
   backends differ per platform and are exactly what it checks.
+  - *Amended (issue #62): a second, for the git dir.* The worktree half
+    and the git-dir half are different wiring — ADR 0005 watches `.git`
+    on purpose so external git operations are absorbed, and a backend or
+    a filter change could carry file events while dropping index and HEAD
+    ones. Filtering `.git` out of the watcher fails the second test and
+    leaves the first passing, which is the case for its existence. Two is
+    the ceiling this ADR intends by "one": a real-fs test earns its place
+    only by covering wiring no other real-fs test reaches.
 - **No test asserts on real debounce timing.** Timing assertions are the
   flake source, and the constant isn't the interesting logic. What a
   refresh *produces* is carried by the sync-op suite.

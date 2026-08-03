@@ -6,8 +6,8 @@
 use std::time::{Duration, Instant};
 
 use gitchange_core::{
-    BinarySides, BlobInfo, ChangeKind, ChangedFile, Changelist, CommitInfo, GitOperation, Head,
-    Hunk, HunkIdentity, HunkLine, HunkStage, Snapshot,
+    Advisory, BinarySides, BlobInfo, ChangeKind, ChangedFile, Changelist, CommitInfo, GitOperation,
+    Head, Hunk, HunkIdentity, HunkLine, HunkStage, Snapshot,
 };
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -314,6 +314,37 @@ fn log_entries_render_with_their_severity_glyphs() {
     assert!(text.contains("· staged hunk — src/print.css @@ -41,6"));
     assert!(text.contains("! auto-captured 1 hunk → 'fixes'"));
     assert!(text.contains("✗ Commit failed — pre-commit hook exited 1"));
+}
+
+#[test]
+fn the_head_move_dormancy_advisory_reaches_the_log_panel() {
+    // ADR 0012's advisory renders like any other (ADR 0007): pushed with
+    // the snapshot that carried it, in core's phrasing, at `!`. Driven
+    // through `apply_snapshot` rather than `push_log` so the mapping from
+    // a real `Advisory` is part of what's asserted. (A repo scenario
+    // producing one can't reach the TUI until the run loop has a seam —
+    // #59; core's own coverage of that scenario is `head_moves.rs`.)
+    let advisory = Advisory::HeadMoveDormancy {
+        path: "src/print.css".into(),
+        changelists: vec!["chores".into()],
+    };
+    let mut app = App::new("repo");
+    let mut moved = snapshot();
+    moved.advisories = vec![advisory.clone()];
+    app.apply_snapshot(moved);
+
+    // Taken from the advisory rather than spelled out, so a reworded
+    // message can't drift past this test (ADR 0006: core owns phrasing,
+    // the frontend adds the severity glyph and nothing else) — and cut to
+    // what the panel shows at this width, since it truncates the tail.
+    let line: String = format!("! {}", advisory.message())
+        .chars()
+        .take(60)
+        .collect();
+    assert!(
+        render(&app).contains(&line),
+        "expected {line:?} in the Log panel"
+    );
 }
 
 #[test]

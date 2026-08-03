@@ -13,16 +13,23 @@ fn gitchange(dir: &Path, args: &[&str]) -> Output {
         .expect("run gitchange")
 }
 
-fn git(dir: &Path, args: &[&str]) {
-    let status = Command::new("git")
+fn git(dir: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
         .current_dir(dir)
         .args(args)
-        .status()
+        .output()
         .expect("run git");
-    assert!(status.success(), "git {args:?} failed");
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
-fn dirty_repo() -> tempfile::TempDir {
+/// An initialised repo with a committing identity and one committed
+/// file, worktree clean — the stem both fixtures below grow from.
+fn committed_repo() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     git(dir.path(), &["init", "-q"]);
     git(dir.path(), &["config", "user.name", "gitchange-tests"]);
@@ -33,6 +40,11 @@ fn dirty_repo() -> tempfile::TempDir {
     std::fs::write(dir.path().join("tracked.txt"), "one\n").unwrap();
     git(dir.path(), &["add", "."]);
     git(dir.path(), &["commit", "-q", "--no-verify", "-m", "init"]);
+    dir
+}
+
+fn dirty_repo() -> tempfile::TempDir {
+    let dir = committed_repo();
     std::fs::write(dir.path().join("tracked.txt"), "two\n").unwrap();
     std::fs::write(dir.path().join("untracked.txt"), "hello\n").unwrap();
     dir
@@ -228,6 +240,64 @@ fn status_prints_ambiguous_overlap_advisories_on_stderr() {
     assert!(
         stdout.contains("* feature\n    ○ M tracked.txt 0/1"),
         "the hunk lands in the active changelist: {stdout}"
+    );
+}
+
+#[test]
+fn status_prints_the_head_move_dormancy_advisory_on_stderr() {
+    // ADR 0012's advisory reaches stderr through the same loop as the
+    // overlap one above — same `notice:` dressing, same core phrasing.
+    // The fixture is the guard's minimal shape: a stored baseline behind
+    // HEAD, the moved path carrying a live record whose anchor can't
+    // match, and a hunk on it to capture. Grown from `committed_repo`
+    // rather than `dirty_repo` so that, without the untracked file, the
+    // two advisories on stderr are exactly the guard's own.
+    let dir = committed_repo();
+    let repo = dir.path();
+    // The baseline the state file will claim the records address.
+    let baseline = git(repo, &["rev-parse", "HEAD"]);
+    // The external HEAD move: a commit touching tracked.txt, so
+    // diff(baseline↔HEAD) names it and tier 2 is disabled there.
+    std::fs::write(repo.join("tracked.txt"), "two\n").unwrap();
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-q", "--no-verify", "-m", "external"]);
+    // A worktree hunk whose anchor matches no record: tier 1 can't
+    // rescue 'bugfix', so its record is stranded and the hunk captures.
+    std::fs::write(repo.join("tracked.txt"), "three\n").unwrap();
+    seed_state_raw(
+        repo,
+        &format!(
+            r#"{{
+  "version": 1, "active": "feature",
+  "baseline_head": "{baseline}",
+  "changelists": [{{ "name": "feature" }}, {{ "name": "bugfix" }}],
+  "records": [
+    {{
+      "path": "tracked.txt", "old_start": 1, "old_lines": 1,
+      "new_start": 1, "new_lines": 1, "changelist": "bugfix",
+      "anchor": ["-stale\n"], "dormant_since": null
+    }}
+  ]
+}}"#
+        ),
+    );
+
+    let output = gitchange(repo, &["status"]);
+    assert_eq!(output.status.code(), Some(0));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(
+        stderr,
+        // Phrasing is core's canonical `Advisory::message` (ADR 0006);
+        // the CLI adds only the prefix. The guarded capture notices
+        // alongside the dormancy — both are the guard's doing.
+        "gitchange: notice: auto-captured hunk at tracked.txt:1 → 'feature'\n\
+         gitchange: notice: external HEAD move changed tracked.txt — records \
+         in 'bugfix' went dormant; affected hunks captured to active\n"
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("* feature\n    ○ M tracked.txt 0/1"),
+        "the stranded record's hunk lands in the active changelist: {stdout}"
     );
 }
 
