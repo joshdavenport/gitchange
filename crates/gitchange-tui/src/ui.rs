@@ -1009,7 +1009,7 @@ fn draw_stale_warn(frame: &mut Frame, area: Rect, draft: &CommitDraft, theme: &T
             Span::styled("◑ ", theme.colors.warn),
             Span::raw(file.path.clone()),
             Span::styled(
-                format!(" ({})", count_noun(file.stale_hunks, "stale hunk")),
+                format!(" ({})", count_noun(file.stale_hunks, "staged-stale hunk")),
                 theme.colors.dim,
             ),
         ]));

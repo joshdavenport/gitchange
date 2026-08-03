@@ -115,6 +115,16 @@ committing now would commit content that isn't what you see. `space` on a
 staged-stale hunk sets index := worktree.
 _Avoid_: dirty-staged, out-of-date
 
+**Stale action**:
+A stage/assign op whose target hunk no longer exists verbatim in the live
+tree — the snapshot aged between glance and keypress (ADR 0005's
+stale-action race). Validate-at-apply fails it soft: a `StaleHunk` notice
+("changed since the last refresh"), nothing applied, membership records
+untouched, immediate refresh. Distinct from staged-stale `◑` (a per-hunk
+staging state) and dormant records (a matching outcome); bare "stale"
+outside these three sanctioned senses is ambiguous — say which one.
+_Avoid_: race error, conflict, stale (for the other two senses)
+
 **Change core**:
 The unpadded range a diff hunk's actual `+`/`-` lines span on the diff's
 new side, context skirts excluded; a pure-deletion run has no width and

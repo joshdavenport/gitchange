@@ -2,7 +2,7 @@
 //! HEAD-side old ranges, valid only while HEAD is unchanged. ADR 0012's
 //! baseline HEAD guard (issue 39) covers the external-move half: when
 //! refresh finds HEAD away from the stored baseline, tier-2 is disabled
-//! for the paths the move changed — stale live records go dormant, and
+//! for the paths the move changed — stranded live records go dormant, and
 //! anchor-broken hunks capture to active with a per-path notice. The
 //! own-commit half (commutation, issue 28) lives in `Repo::commit`'s
 //! record aftermath; `tests/commit.rs` pins the re-attachment these
@@ -130,7 +130,7 @@ fn a_shifted_neighbour_goes_dormant_loudly_instead_of_misfiling() {
     // down into the committed record's stale region, and a worktree edit
     // breaks the neighbour's anchor — but tier-2 is disabled for the
     // moved path, so the hunk captures to active instead of inheriting
-    // from the wrong record, both stale records go dormant, and a notice
+    // from the wrong record, both stranded records go dormant, and a notice
     // names the loss. (Restoring "one" itself is #38's re-baselining.)
     let fixture = RepoFixture::new();
     let head = numbered_lines(60);
@@ -180,7 +180,7 @@ fn a_shifted_neighbour_goes_dormant_loudly_instead_of_misfiling() {
     assert_eq!(
         owners(&snapshot, "a.txt"),
         vec![Some("three".into())],
-        "the guarded tier captures to active, never a stale record's list"
+        "the guarded tier captures to active, never a stranded record's list"
     );
     assert_eq!(
         snapshot.notices,
@@ -200,9 +200,9 @@ fn a_shifted_neighbour_goes_dormant_loudly_instead_of_misfiling() {
 }
 
 #[test]
-fn a_shifted_neighbour_clear_of_stale_records_captures_to_active() {
+fn a_shifted_neighbour_clear_of_stranded_records_captures_to_active() {
     // Issue 37's "miss" flavour: same shift, but the hunk lands clear of
-    // every stale record, so it reads as brand new and captures to the
+    // every stranded record, so it reads as brand new and captures to the
     // active changelist — the same destination the guard picks. What the
     // guard adds is the notice: the membership loss is no longer silent.
     let fixture = RepoFixture::new();
@@ -218,7 +218,7 @@ fn a_shifted_neighbour_clear_of_stale_records_captures_to_active() {
     repo.refresh().unwrap();
 
     // Changelist "one": edit original line 60, far enough down that the
-    // -11 shift clears both stale records. Record old range: [57, 64).
+    // -11 shift clears both stranded records. Record old range: [57, 64).
     repo.create_changelist("one").unwrap();
     repo.switch("one").unwrap();
     worktree[48] = "sixty-v1".into();
@@ -243,7 +243,7 @@ fn a_shifted_neighbour_clear_of_stale_records_captures_to_active() {
     assert_eq!(
         owners(&snapshot, "a.txt"),
         vec![Some("three".into())],
-        "clear of every stale record the hunk still reads as brand new"
+        "clear of every stranded record the hunk still reads as brand new"
     );
     assert_eq!(
         snapshot.notices,

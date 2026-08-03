@@ -65,7 +65,7 @@ pub enum Notice {
     },
     /// An external HEAD move stranded this path's record coordinates
     /// (ADR 0012): with tier-2 disabled its anchor-broken hunks captured
-    /// to active and its stale live records went dormant. Fired only when
+    /// to active and its stranded live records went dormant. Fired only when
     /// that actually cost something — a guarded capture happened while
     /// records went dormant; a move tier-1 rescues entirely stays quiet.
     HeadMoveDormancy {
@@ -306,7 +306,7 @@ fn match_file(
             // The ADR 0012 guard: this path's record coordinates address
             // the old baseline, not the HEAD these hunks diff against, so
             // overlap proves nothing. Capture to active; the untouched
-            // stale records go dormant below.
+            // stranded records go dormant below.
             guarded_capture = true;
             let owner = active.map(String::from);
             owners[i] = Some(owner.clone());
