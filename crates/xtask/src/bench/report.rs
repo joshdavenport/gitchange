@@ -100,8 +100,29 @@ fn fmt_mb(bytes: u64) -> String {
     format!("{:.1}", bytes as f64 / (1024.0 * 1024.0))
 }
 
+/// No value could be derived from the numbers in hand: no previous point
+/// to ratio against, or too few usable points to fit. The measurement
+/// happened; the derivation had nothing to work from.
+const NOT_COMPUTABLE: &str = "—";
+
+/// The measurement was never taken. Only peak RSS reaches this: the
+/// probe is Unix-only (`memory.rs`), absent rather than wrong elsewhere.
+const NOT_MEASURED: &str = "n/a";
+
 fn fmt_opt_exp(exp: Option<f64>) -> String {
-    exp.map_or_else(|| "—".into(), |e| format!("{e:.2}"))
+    exp.map_or_else(|| NOT_COMPUTABLE.into(), |e| format!("{e:.2}"))
+}
+
+/// A whole markdown table, header and rows the same width by
+/// construction: the separator is derived from the header's column
+/// count, and a row of the wrong width doesn't compile. Both used to be
+/// hand-counted against each other.
+fn table<const N: usize>(out: &mut String, header: [&str; N], rows: &[[String; N]]) {
+    let _ = writeln!(out, "| {} |", header.join(" | "));
+    let _ = writeln!(out, "|{}", "---|".repeat(N));
+    for row in rows {
+        let _ = writeln!(out, "| {} |", row.join(" | "));
+    }
 }
 
 /// Dimensions in first-seen order.
@@ -149,7 +170,30 @@ fn fmt_rss(result: &CaseResult) -> String {
             let before = result.peak_rss_before.unwrap_or(0);
             format!("{} → {}", fmt_mb(before), fmt_mb(after))
         })
-        .unwrap_or_else(|| "n/a".into())
+        .unwrap_or_else(|| NOT_MEASURED.into())
+}
+
+/// A contrast case's median against the baseline it names, as the ratio
+/// the tables print.
+fn vs_baseline(result: &CaseResult, all: &[CaseResult]) -> String {
+    result
+        .spec
+        .contrast_of
+        .as_deref()
+        .and_then(|name| all.iter().find(|r| r.spec.name == name))
+        .map(|base| {
+            let base_med = median(&base.times_ms);
+            if base_med > 0.0 {
+                format!(
+                    "{:.2}× of {}",
+                    median(&result.times_ms) / base_med,
+                    base.spec.name
+                )
+            } else {
+                NOT_COMPUTABLE.into()
+            }
+        })
+        .unwrap_or_else(|| NOT_COMPUTABLE.into())
 }
 
 /// The full markdown report: one table per dimension, an overall shape
@@ -175,21 +219,8 @@ pub fn render_markdown(results: &[CaseResult], meta: &Meta) -> String {
 
         let _ = writeln!(out, "\n## {dimension} — {}\n", blurb(&dimension));
         let sized = sized_dimension(&dimension);
-        if let Some(scale_label) = sized {
-            let _ = writeln!(
-                out,
-                "| case | {scale_label} | content MB | median ms | min | max | ×prev | step exp | peak RSS MB |"
-            );
-            let _ = writeln!(out, "|---|---|---|---|---|---|---|---|---|");
-        } else {
-            let _ = writeln!(
-                out,
-                "| case | scale | hunks | records | median ms | min | max | ×prev | step exp |"
-            );
-            let _ = writeln!(out, "|---|---|---|---|---|---|---|---|---|");
-        }
-
         let mut prev: Option<(f64, f64)> = None;
+        let mut rows: Vec<[String; 9]> = Vec::with_capacity(base.len());
         for result in &base {
             let med = median(&result.times_ms);
             let point = (result.spec.scale as f64, med);
@@ -198,40 +229,67 @@ pub fn render_markdown(results: &[CaseResult], meta: &Meta) -> String {
                     format!("{:.1}×", med / t1),
                     fmt_opt_exp(prev.and_then(|p| exponent(p, point))),
                 ),
-                _ => ("—".into(), "—".into()),
+                _ => (NOT_COMPUTABLE.into(), NOT_COMPUTABLE.into()),
             };
             let (min, max) = spread(&result.times_ms);
-            if sized.is_some() {
-                let rss = fmt_rss(result);
-                let _ = writeln!(
-                    out,
-                    "| {} | {} | {} | {} | {} | {} | {} | {} | {} |",
-                    result.spec.name,
-                    result.spec.scale,
+            rows.push(if sized.is_some() {
+                [
+                    result.spec.name.clone(),
+                    result.spec.scale.to_string(),
                     fmt_mb(result.content_bytes),
                     fmt_ms(med),
                     fmt_ms(min),
                     fmt_ms(max),
                     ratio,
                     step,
-                    rss
-                );
+                    fmt_rss(result),
+                ]
             } else {
-                let _ = writeln!(
-                    out,
-                    "| {} | {} | {} | {} | {} | {} | {} | {} | {} |",
-                    result.spec.name,
-                    result.spec.scale,
-                    result.hunks_total,
-                    result.live_records + result.dormant_records,
+                [
+                    result.spec.name.clone(),
+                    result.spec.scale.to_string(),
+                    result.hunks_total.to_string(),
+                    (result.live_records + result.dormant_records).to_string(),
                     fmt_ms(med),
                     fmt_ms(min),
                     fmt_ms(max),
                     ratio,
-                    step
-                );
-            }
+                    step,
+                ]
+            });
             prev = Some(point);
+        }
+        match sized {
+            Some(scale_label) => table(
+                &mut out,
+                [
+                    "case",
+                    scale_label,
+                    "content MB",
+                    "median ms",
+                    "min",
+                    "max",
+                    "×prev",
+                    "step exp",
+                    "peak RSS MB",
+                ],
+                &rows,
+            ),
+            None => table(
+                &mut out,
+                [
+                    "case",
+                    "scale",
+                    "hunks",
+                    "records",
+                    "median ms",
+                    "min",
+                    "max",
+                    "×prev",
+                    "step exp",
+                ],
+                &rows,
+            ),
         }
 
         let fit: Vec<(f64, f64)> = base
@@ -257,40 +315,34 @@ pub fn render_markdown(results: &[CaseResult], meta: &Meta) -> String {
         if !contrast.is_empty() {
             let _ = writeln!(out, "\nContrasts:\n");
             if sized.is_some() {
-                let _ = writeln!(out, "| case | median ms | vs baseline | peak RSS MB |");
-                let _ = writeln!(out, "|---|---|---|---|");
-            } else {
-                let _ = writeln!(out, "| case | median ms | vs baseline |");
-                let _ = writeln!(out, "|---|---|---|");
-            }
-            for result in &contrast {
-                let med = median(&result.times_ms);
-                let vs = result
-                    .spec
-                    .contrast_of
-                    .as_deref()
-                    .and_then(|name| results.iter().find(|r| r.spec.name == name))
-                    .map(|b| {
-                        let base_med = median(&b.times_ms);
-                        if base_med > 0.0 {
-                            format!("{:.2}× of {}", med / base_med, b.spec.name)
-                        } else {
-                            "—".into()
-                        }
+                let rows: Vec<[String; 4]> = contrast
+                    .iter()
+                    .map(|result| {
+                        [
+                            result.spec.name.clone(),
+                            fmt_ms(median(&result.times_ms)),
+                            vs_baseline(result, results),
+                            fmt_rss(result),
+                        ]
                     })
-                    .unwrap_or_else(|| "—".into());
-                if sized.is_some() {
-                    let _ = writeln!(
-                        out,
-                        "| {} | {} | {} | {} |",
-                        result.spec.name,
-                        fmt_ms(med),
-                        vs,
-                        fmt_rss(result)
-                    );
-                } else {
-                    let _ = writeln!(out, "| {} | {} | {} |", result.spec.name, fmt_ms(med), vs);
-                }
+                    .collect();
+                table(
+                    &mut out,
+                    ["case", "median ms", "vs baseline", "peak RSS MB"],
+                    &rows,
+                );
+            } else {
+                let rows: Vec<[String; 3]> = contrast
+                    .iter()
+                    .map(|result| {
+                        [
+                            result.spec.name.clone(),
+                            fmt_ms(median(&result.times_ms)),
+                            vs_baseline(result, results),
+                        ]
+                    })
+                    .collect();
+                table(&mut out, ["case", "median ms", "vs baseline"], &rows);
             }
         }
     }
@@ -307,7 +359,11 @@ pub fn render_markdown(results: &[CaseResult], meta: &Meta) -> String {
          - Unassigned contrasts run with no changelists at all: the matcher\n\
          \x20 does no record work, isolating diff cost from matching cost.\n\
          - Absolute numbers are dev-machine optimistic (issue #16); the\n\
-         \x20 exponents are the decision inputs."
+         \x20 exponents are the decision inputs.\n\
+         - Cells read `—` where a value could not be derived (no previous\n\
+         \x20 point to compare, too few points to fit) and `n/a` where the\n\
+         \x20 measurement was never taken — only peak RSS, whose probe is\n\
+         \x20 Unix-only."
     );
     out
 }

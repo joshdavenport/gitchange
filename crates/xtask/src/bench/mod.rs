@@ -22,6 +22,12 @@ use clap::Args as ClapArgs;
 
 use case::{CaseResult, CaseSpec, DORMANT_HUNKS_PER_FILE};
 
+/// Every dimension `matrix` generates. The one list `--dimension`
+/// validates against and prints in `--help`, so an unknown name fails at
+/// parse time rather than as an empty run. A test below ties it to what
+/// `matrix` actually produces, in both directions.
+const DIMENSIONS: [&str; 5] = ["files", "hunks", "records", "huge-file", "binaries"];
+
 #[derive(ClapArgs)]
 pub struct Args {
     /// Truncated scales and iterations: a fast validation pass, not a
@@ -34,9 +40,8 @@ pub struct Args {
     /// Untimed warmup refreshes per case
     #[arg(long, default_value_t = 2)]
     pub warmup: usize,
-    /// Run one dimension only: files | hunks | records | huge-file |
-    /// binaries
-    #[arg(long)]
+    /// Run one dimension only
+    #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(DIMENSIONS))]
     pub dimension: Option<String>,
     /// Also write report.md and results.csv into this directory
     #[arg(long)]
@@ -209,9 +214,12 @@ pub fn run(args: &Args) -> Result<()> {
                 .is_none_or(|dim| spec.dimension == dim)
         })
         .collect();
+    // Unknown names never reach here — clap rejects them against
+    // DIMENSIONS. This catches a known dimension the current flags leave
+    // with no cases.
     if specs.is_empty() {
         bail!(
-            "no cases match dimension `{}` (files | hunks | records | huge-file | binaries)",
+            "no cases match dimension `{}` under these flags",
             args.dimension.as_deref().unwrap_or_default()
         );
     }
@@ -308,5 +316,46 @@ fn host_description() -> String {
         (Some(cpu), None) => cpu,
         (None, Some(uname)) => uname,
         (None, None) => "unknown".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn default_args() -> Args {
+        Args {
+            quick: false,
+            iterations: None,
+            warmup: 2,
+            dimension: None,
+            out: None,
+            allow_debug: true,
+        }
+    }
+
+    /// `DIMENSIONS` is what `--dimension` validates against, so it has to
+    /// track `matrix` exactly: a dimension the matrix generates but the
+    /// list omits can't be selected at all, and a name the list carries
+    /// but the matrix never generates advertises a run that ends in the
+    /// empty-case bail.
+    #[test]
+    fn dimensions_matches_what_the_matrix_generates() {
+        let generated: Vec<String> = matrix(&default_args())
+            .into_iter()
+            .map(|spec| spec.dimension)
+            .collect();
+        for dimension in DIMENSIONS {
+            assert!(
+                generated.iter().any(|g| g == dimension),
+                "DIMENSIONS lists `{dimension}`, which the matrix never generates"
+            );
+        }
+        for dimension in &generated {
+            assert!(
+                DIMENSIONS.contains(&dimension.as_str()),
+                "the matrix generates `{dimension}`, absent from DIMENSIONS"
+            );
+        }
     }
 }
