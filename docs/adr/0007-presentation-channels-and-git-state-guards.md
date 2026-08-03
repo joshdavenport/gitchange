@@ -138,6 +138,18 @@ merges, guards its own state, and points the user elsewhere**:
 - The engine's event vocabulary gains condition-started/condition-ended
   alongside one-shot events (ADR 0006's degradation events generalise to
   conditions); the TUI renders the live condition set as pins.
+- **Pins have two sources, split by what the condition is about.** A
+  condition observable **in the repository** rides the snapshot — the
+  operation-in-progress and detached-HEAD pins read `snapshot.operation`
+  and `snapshot.head`. A condition about the **engine's own health**
+  rides the event channel, because no RefreshJob can observe it; watcher
+  degraded is the only such condition today. Not every pin is
+  event-backed, deliberately: duplicating a snapshot field into a
+  condition event would let the two race, and ADR 0005 exists to stop
+  partial arrival painting a transiently wrong panel — a
+  `ConditionStarted(Rebase)` overtaking the `RefreshComplete` carrying
+  the conflicted files is exactly that failure. New conditions pick a
+  side by this rule rather than by convenience.
 - Severity is fixed at three levels; new event classes must map onto
   info/notice/error rather than grow the scale.
 - The commit dialog must be restorable after a failed commit (message

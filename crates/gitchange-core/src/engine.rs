@@ -2,12 +2,15 @@
 //! worktree root including `.git`, ~500ms debounce, self-loop filter,
 //! last-request-wins RefreshJob slot, immediate refresh requests
 //! (mutations, terminal focus, manual key), a crossbeam event channel,
-//! and a ~5s polling fallback when the watcher fails or dies.
+//! and a ~5s polling fallback when the watcher fails or dies — which
+//! re-subscribes on every tick, so degraded mode is a state the Engine
+//! climbs out of rather than a one-way door.
 //!
-//! The watcher sits behind an injectable event source (a plain crossbeam
-//! channel of [`SourceEvent`]s), so the decision logic below is
-//! unit-tested deterministically with synthetic events (ADR 0008); one
-//! real-fs smoke test per CI OS proves the notify wiring.
+//! The watcher sits behind an injectable subscription (a factory
+//! yielding a plain crossbeam channel of [`SourceEvent`]s), so the
+//! decision logic below is unit-tested deterministically with synthetic
+//! events (ADR 0008); one real-fs smoke test per CI OS proves the notify
+//! wiring.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -25,7 +28,8 @@ use crate::snapshot::Snapshot;
 #[non_exhaustive]
 pub enum Condition {
     /// The filesystem watcher failed to initialise or died; the Engine
-    /// is refreshing on a polling tick instead (ADR 0005).
+    /// is refreshing on a polling tick instead (ADR 0005). Ends when a
+    /// re-subscription on one of those ticks succeeds.
     WatcherDegraded,
 }
 
@@ -118,7 +122,9 @@ impl Engine {
     /// worker triggers an initial refresh immediately, so the first
     /// `RefreshComplete` arrives without a request. If the watcher can't
     /// be set up the Engine still runs, degraded to polling, and says so
-    /// with `ConditionStarted(WatcherDegraded)`.
+    /// with `ConditionStarted(WatcherDegraded)`; the control loop keeps
+    /// re-subscribing while degraded and reports recovery with
+    /// `ConditionEnded(WatcherDegraded)`.
     pub fn spawn(path: &Path) -> Result<Self, Error> {
         let repo = Repo::discover(path)?;
         let workdir = repo
@@ -127,17 +133,20 @@ impl Engine {
         let state_dir = repo.state_dir();
         let filter = SelfLoopFilter::new(state_dir.clone());
 
-        let (source_tx, source_rx) = unbounded();
-        let watcher = start_watcher(&workdir, &state_dir, source_tx);
-        let degraded = watcher.is_none();
+        // Owned by the factory, not the refresh closure: `repo` moves
+        // into the latter, and re-subscription needs these paths for the
+        // whole life of the Engine.
+        let subscribe = Box::new(move || {
+            let (source_tx, source_rx) = unbounded();
+            let watcher = start_watcher(&workdir, &state_dir, source_tx)?;
+            Some((source_rx, Box::new(watcher) as Box<dyn Send>))
+        });
 
         Ok(spawn_loops(
-            source_rx,
+            subscribe,
             filter,
             Box::new(move || repo.refresh()),
             Config::default(),
-            degraded,
-            watcher.map(|w| Box::new(w) as Box<dyn Send>),
         ))
     }
 
@@ -199,18 +208,24 @@ enum RunOutcome {
     Contended,
 }
 
+/// Subscribes to filesystem events: builds a watcher and the source it
+/// feeds, `None` when the subscription fails. Called once at startup and
+/// again on each poll tick while degraded, so the healthy path can be
+/// re-entered without restarting the Engine.
+///
+/// The `Box<dyn Send>` is the watcher itself. The control loop holds it
+/// for exactly as long as the source is live — dropping it unsubscribes,
+/// so replacing it is how a dead watcher is reaped.
+type Subscribe = Box<dyn FnMut() -> Option<(Receiver<SourceEvent>, Box<dyn Send>)> + Send>;
+
 /// Wire up the control and worker threads. Separated from
-/// [`Engine::spawn`] so unit tests inject a synthetic event source and
+/// [`Engine::spawn`] so unit tests inject a synthetic subscription and
 /// refresh function (ADR 0008).
 fn spawn_loops(
-    source: Receiver<SourceEvent>,
+    subscribe: Subscribe,
     filter: SelfLoopFilter,
     refresh: Box<dyn FnMut() -> Result<Snapshot, Error> + Send>,
     config: Config,
-    initially_degraded: bool,
-    // Dropped when the control loop exits — for the real Engine, the
-    // notify watcher whose lifetime must track the loop's.
-    watcher_keep_alive: Option<Box<dyn Send>>,
 ) -> Engine {
     let (requests_tx, requests_rx) = unbounded();
     let (events_tx, events_rx) = unbounded();
@@ -224,15 +239,13 @@ fn spawn_loops(
     std::thread::spawn(move || {
         control_loop(
             requests_rx,
-            source,
+            subscribe,
             run_tx,
             done_rx,
             events_tx,
             filter,
             config,
-            initially_degraded,
         );
-        drop(watcher_keep_alive);
     });
 
     Engine {
@@ -273,18 +286,21 @@ fn worker_loop(
 /// The Engine's decision logic — the part ADR 0006 calls domain rules,
 /// tested with synthetic events. Owns the debounce and poll deadlines
 /// and the last-request-wins slot state.
-#[allow(clippy::too_many_arguments)]
 fn control_loop(
     requests: Receiver<()>,
-    source: Receiver<SourceEvent>,
+    subscribe: Subscribe,
     run_tx: Sender<()>,
     done_rx: Receiver<RunOutcome>,
     events: Sender<EngineEvent>,
     filter: SelfLoopFilter,
     config: Config,
-    initially_degraded: bool,
 ) {
-    let mut source = source;
+    let mut subscribe = subscribe;
+    // The live subscription. `never()` while degraded, so a dead source
+    // doesn't busy-loop the select; the watcher box lives exactly as
+    // long as the source it feeds.
+    let mut source: Receiver<SourceEvent> = never();
+    let mut watcher: Option<Box<dyn Send>> = None;
     // Last-request-wins slot: one job in flight, at most one pending.
     // Refresh takes no parameters and the matcher is pure, so collapsing
     // any burst to "run once more after this one" loses nothing.
@@ -311,6 +327,20 @@ fn control_loop(
                 *job_running = true;
             }
         };
+    // Take a fresh subscription, replacing any current one — dropping
+    // the old watcher box is what unsubscribes it. On Linux a recursive
+    // watch adds one inotify watch per directory, so this can stall the
+    // loop briefly on a large tree; it is the same cost already paid at
+    // startup, and off the healthy path otherwise.
+    let mut resubscribe = |source: &mut Receiver<SourceEvent>,
+                           watcher: &mut Option<Box<dyn Send>>| {
+        let Some((fresh, keep_alive)) = subscribe() else {
+            return false;
+        };
+        *source = fresh;
+        *watcher = Some(keep_alive);
+        true
+    };
     // Notify once, poll from here on (ADR 0005) — entered at spawn when
     // the watcher never came up, or later when it dies.
     let enter_degraded = |degraded: &mut bool, poll_deadline: &mut Option<Instant>| {
@@ -321,8 +351,18 @@ fn control_loop(
         *poll_deadline = Some(Instant::now() + config.poll_interval);
         let _ = events.send(EngineEvent::ConditionStarted(Condition::WatcherDegraded));
     };
+    // Back on the watcher: stand the poll down and let the frontend's
+    // pin self-clear (ADR 0007).
+    let leave_degraded = |degraded: &mut bool, poll_deadline: &mut Option<Instant>| {
+        if !*degraded {
+            return;
+        }
+        *degraded = false;
+        *poll_deadline = None;
+        let _ = events.send(EngineEvent::ConditionEnded(Condition::WatcherDegraded));
+    };
 
-    if initially_degraded {
+    if !resubscribe(&mut source, &mut watcher) {
         enter_degraded(&mut degraded, &mut poll_deadline);
     }
     // Initial refresh: the frontend gets its first snapshot unasked.
@@ -355,9 +395,11 @@ fn control_loop(
                     debounce_deadline = Some(Instant::now() + config.debounce);
                 }
                 // Watcher died. Swap in a never-channel so a dead
-                // source doesn't busy-loop the select.
+                // source doesn't busy-loop the select, and drop the
+                // defunct watcher — the poll tick re-subscribes.
                 Err(_) => {
                     source = never();
+                    watcher = None;
                     enter_degraded(&mut degraded, &mut poll_deadline);
                 }
             },
@@ -396,7 +438,15 @@ fn control_loop(
                     trigger(&mut job_running, &mut pending, &mut debounce_deadline);
                 }
                 if poll_deadline.is_some_and(|deadline| deadline <= now) {
-                    poll_deadline = Some(now + config.poll_interval);
+                    // Re-subscribe before the tick's refresh, never
+                    // after: that refresh then covers the window the
+                    // dead watcher missed, and anything landing later
+                    // arrives on the live source.
+                    if resubscribe(&mut source, &mut watcher) {
+                        leave_degraded(&mut degraded, &mut poll_deadline);
+                    } else {
+                        poll_deadline = Some(now + config.poll_interval);
+                    }
                     trigger(&mut job_running, &mut pending, &mut debounce_deadline);
                 }
             },
@@ -406,8 +456,8 @@ fn control_loop(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
 
     use super::*;
 
@@ -435,9 +485,80 @@ mod tests {
         }
     }
 
+    /// The synthetic watcher standing in for notify: subscriptions the
+    /// control loop has taken (newest last, so a test can feed the live
+    /// source), a count of attempts, and a switch for whether the
+    /// environment currently supports a watcher at all.
+    #[derive(Clone)]
+    struct Subscriptions {
+        senders: Arc<Mutex<Vec<Sender<SourceEvent>>>>,
+        attempts: Arc<AtomicUsize>,
+        broken: Arc<AtomicBool>,
+    }
+
+    impl Subscriptions {
+        fn healthy() -> Self {
+            Self::new(false)
+        }
+
+        /// A watcher that cannot come up — every subscription fails
+        /// until [`Subscriptions::repair`].
+        fn broken() -> Self {
+            Self::new(true)
+        }
+
+        fn new(broken: bool) -> Self {
+            Self {
+                senders: Arc::new(Mutex::new(Vec::new())),
+                attempts: Arc::new(AtomicUsize::new(0)),
+                broken: Arc::new(AtomicBool::new(broken)),
+            }
+        }
+
+        fn subscribe(&self) -> Option<(Receiver<SourceEvent>, Box<dyn Send>)> {
+            self.attempts.fetch_add(1, Ordering::SeqCst);
+            if self.broken.load(Ordering::SeqCst) {
+                return None;
+            }
+            let (tx, rx) = unbounded();
+            self.senders.lock().unwrap().push(tx);
+            // The real keep-alive is the notify watcher; here its only
+            // job is to be dropped when the loop replaces it.
+            Some((rx, Box::new(())))
+        }
+
+        /// The most recent subscription's sender — where a live watcher
+        /// would be delivering.
+        fn live(&self) -> Sender<SourceEvent> {
+            self.senders
+                .lock()
+                .unwrap()
+                .last()
+                .expect("a successful subscription")
+                .clone()
+        }
+
+        /// Kill the watcher the way notify does — drop its forwarder,
+        /// disconnecting the source — and keep it down, so the loop's
+        /// re-subscription attempts fail until repaired.
+        fn kill(&self) {
+            self.broken.store(true, Ordering::SeqCst);
+            self.senders.lock().unwrap().clear();
+        }
+
+        /// The environment recovers: the next attempt succeeds.
+        fn repair(&self) {
+            self.broken.store(false, Ordering::SeqCst);
+        }
+
+        fn attempts(&self) -> usize {
+            self.attempts.load(Ordering::SeqCst)
+        }
+    }
+
     struct TestEngine {
         engine: Engine,
-        source: Option<Sender<SourceEvent>>,
+        watcher: Subscriptions,
         refreshes: Arc<AtomicUsize>,
     }
 
@@ -451,30 +572,35 @@ mod tests {
         fn spawn_with(
             refresh: impl FnMut(usize) -> Result<Snapshot, Error> + Send + 'static,
         ) -> Self {
-            let (source_tx, source_rx) = unbounded();
+            Self::spawn_with_watcher(Subscriptions::healthy(), refresh)
+        }
+
+        fn spawn_with_watcher(
+            watcher: Subscriptions,
+            refresh: impl FnMut(usize) -> Result<Snapshot, Error> + Send + 'static,
+        ) -> Self {
             let refreshes = Arc::new(AtomicUsize::new(0));
             let counter = refreshes.clone();
             let mut refresh = refresh;
+            let subscriptions = watcher.clone();
             let engine = spawn_loops(
-                source_rx,
+                Box::new(move || subscriptions.subscribe()),
                 SelfLoopFilter::new(PathBuf::from("/repo/.git/gitchange")),
                 Box::new(move || {
                     let run = counter.fetch_add(1, Ordering::SeqCst) + 1;
                     refresh(run)
                 }),
                 TEST_CONFIG,
-                false,
-                None,
             );
             Self {
                 engine,
-                source: Some(source_tx),
+                watcher,
                 refreshes,
             }
         }
 
         fn send(&self, event: SourceEvent) {
-            self.source.as_ref().unwrap().send(event).unwrap();
+            self.watcher.live().send(event).unwrap();
         }
 
         fn recv(&self) -> EngineEvent {
@@ -495,6 +621,33 @@ mod tests {
                     other => panic!("expected RefreshComplete, got {other:?}"),
                 }
             }
+        }
+
+        /// The next condition transition, skipping the refresh traffic a
+        /// degraded engine generates around it.
+        fn recv_condition(&self) -> EngineEvent {
+            loop {
+                match self.recv() {
+                    event @ (EngineEvent::ConditionStarted(_) | EngineEvent::ConditionEnded(_)) => {
+                        return event;
+                    }
+                    EngineEvent::RefreshStarted | EngineEvent::RefreshComplete(_) => {}
+                    other => panic!("expected a condition event, got {other:?}"),
+                }
+            }
+        }
+
+        /// Assert nothing more arrives for a window well past the
+        /// synthetic poll interval — quiescence, never a timing claim
+        /// about the real constants (ADR 0008).
+        fn assert_quiet(&self) {
+            assert!(
+                self.engine
+                    .events()
+                    .recv_timeout(TEST_CONFIG.poll_interval * 8)
+                    .is_err(),
+                "expected no further engine events"
+            );
         }
     }
 
@@ -611,19 +764,63 @@ mod tests {
 
     #[test]
     fn watcher_death_degrades_and_polling_keeps_refreshing() {
-        let mut engine = TestEngine::spawn();
+        let engine = TestEngine::spawn();
         engine.recv_complete(); // initial
 
         // Kill the watcher: dropping the source sender is exactly what
-        // a dying notify watcher does to its forwarder.
-        drop(engine.source.take());
+        // a dying notify watcher does to its forwarder. It stays down,
+        // so the loop's re-subscription attempts keep failing.
+        engine.watcher.kill();
 
-        match engine.recv() {
+        match engine.recv_condition() {
             EngineEvent::ConditionStarted(Condition::WatcherDegraded) => {}
             other => panic!("expected WatcherDegraded, got {other:?}"),
         }
         // Polling refreshes keep arriving with no events or requests.
         engine.recv_complete();
+        engine.recv_complete();
+        // And each tick re-tries the watcher rather than settling.
+        assert!(engine.watcher.attempts() >= 2);
+    }
+
+    #[test]
+    fn a_watcher_that_never_comes_up_degrades_at_spawn() {
+        let engine =
+            TestEngine::spawn_with_watcher(Subscriptions::broken(), |_| Ok(empty_snapshot()));
+
+        match engine.recv_condition() {
+            EngineEvent::ConditionStarted(Condition::WatcherDegraded) => {}
+            other => panic!("expected WatcherDegraded, got {other:?}"),
+        }
+        engine.recv_complete();
+    }
+
+    #[test]
+    fn a_recovered_watcher_ends_the_condition_and_feeds_events_again() {
+        let engine = TestEngine::spawn();
+        engine.recv_complete(); // initial
+
+        engine.watcher.kill();
+        match engine.recv_condition() {
+            EngineEvent::ConditionStarted(Condition::WatcherDegraded) => {}
+            other => panic!("expected WatcherDegraded, got {other:?}"),
+        }
+
+        // The environment recovers; the next poll tick re-subscribes.
+        engine.watcher.repair();
+        match engine.recv_condition() {
+            EngineEvent::ConditionEnded(Condition::WatcherDegraded) => {}
+            other => panic!("expected the condition to end, got {other:?}"),
+        }
+
+        // Polling stood down with the condition — the engine is idle
+        // again rather than ticking.
+        engine.recv_complete(); // the recovering tick's own refresh
+        engine.assert_quiet();
+
+        // The new subscription is real, not just announced: an event on
+        // it still drives a refresh.
+        engine.send(paths(&["/repo/src/main.rs"]));
         engine.recv_complete();
     }
 

@@ -31,7 +31,13 @@ paint.
   spinner and the indicator threshold.
 - **Degraded mode**: if the watcher fails to initialise or dies, notify
   once ("watcher unavailable — falling back to polling") and refresh on a
-  ~5s tick. Focus/key/own-mutation refresh are unaffected.
+  ~5s tick. Focus/key/own-mutation refresh are unaffected. **The mode is
+  not terminal**: each tick re-attempts the subscription before running
+  its refresh, so a transient cause (watch-limit exhaustion, an atomic
+  save replacing the watched root) self-heals within one interval and
+  ends the condition. The re-attempt rides the tick rather than a timer
+  of its own, and is not backed off — a failing `watch()` is the cheap
+  half of a tick that already pays for a full recompute.
 
 ## Pipeline & threading
 
