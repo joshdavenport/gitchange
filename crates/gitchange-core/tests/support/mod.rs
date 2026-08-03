@@ -3,7 +3,8 @@
 //! tickets.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
 
 use tempfile::TempDir;
 
@@ -20,9 +21,15 @@ impl RepoFixture {
     /// host's global config can't reach the repo. Add a knob here and add
     /// it there too; a knob pinned on only one side leaves the other
     /// silently inheriting the host. The two builders are otherwise
-    /// deliberately separate: this one drives libgit2 in-process and
-    /// panics, the sandbox shells out (mirroring ADR 0004) and returns
-    /// `anyhow` errors.
+    /// deliberately separate: this one builds through libgit2 in-process
+    /// and panics, the sandbox shells out throughout (mirroring ADR 0004)
+    /// and returns `anyhow` errors.
+    ///
+    /// The exception is `git_output` below, which shells out for the
+    /// in-progress operation states libgit2 can't produce and cuts the
+    /// host's config out by environment instead. That cut-out is
+    /// deliberately not mirrored in the sandbox: a sandbox repo is meant
+    /// to behave like the user's own, config and all.
     pub fn new() -> Self {
         let dir = tempfile::tempdir().expect("create temp dir");
         // Pin the initial branch: plain `init` takes it from the host's
@@ -311,6 +318,163 @@ impl RepoFixture {
         assert!(
             self.repo.index().unwrap().has_conflicts(),
             "fixture merge must conflict"
+        );
+        self
+    }
+
+    /// What libgit2 makes of the repository's on-disk operation state —
+    /// the raw input to core's `GitOperation` mapping (ADR 0007). Tests
+    /// assert this alongside the mapped operation so a fixture that
+    /// reaches the wrong state (or none) is caught before the guard
+    /// assertion passes vacuously.
+    #[allow(dead_code)]
+    pub fn git_state(&self) -> git2::RepositoryState {
+        self.repo.state()
+    }
+
+    /// Real git in the fixture repo, with the host's global and system
+    /// config cut out (a nonexistent path reads as empty config) and
+    /// both editors pinned to the shell no-op so an interactive rebase
+    /// never blocks on one. Everything the operations below need is in
+    /// the repo's own config, pinned by `new()`.
+    ///
+    /// The in-progress-operation builders drive real git rather than
+    /// libgit2 because it is real git's on-disk leftovers the guard
+    /// reads — `.git/rebase-apply` vs `.git/rebase-merge`, the
+    /// sequencer's todo, `CHERRY_PICK_HEAD` — and libgit2 has no `git
+    /// am` at all. ADR 0008's fixture rule is amended for exactly this.
+    fn git_output(&self, args: &[&str]) -> Output {
+        let absent = self.repo.path().join("absent-config");
+        Command::new("git")
+            .arg("-C")
+            .arg(self.dir.path())
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", &absent)
+            .env("GIT_CONFIG_SYSTEM", &absent)
+            .env("GIT_EDITOR", ":")
+            .env("GIT_SEQUENCE_EDITOR", ":")
+            .output()
+            .expect("spawn git")
+    }
+
+    /// Run git, panicking with its stderr on a non-zero exit.
+    fn git(&self, args: &[&str]) -> String {
+        let output = self.git_output(args);
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    /// Run git expecting it to *stop* part-way — a replay that conflicts,
+    /// a patch that won't apply. A clean exit means the operation ran to
+    /// completion and the repo is no longer mid-operation, so the fixture
+    /// never reached the state it promises: fail here rather than leave a
+    /// guard assertion passing over a clean repo.
+    fn git_must_stop(&self, args: &[&str]) {
+        let output = self.git_output(args);
+        assert!(
+            !output.status.success(),
+            "git {args:?} must stop mid-operation, but exited 0:\n{}",
+            String::from_utf8_lossy(&output.stdout).trim()
+        );
+    }
+
+    /// `git rebase <backend> <onto>` that must conflict, leaving a rebase
+    /// in progress. `backend` is the flag choosing git's backend —
+    /// `--apply`, `--merge` or `--interactive` — which is what decides
+    /// the underlying `RepositoryState`: the apply backend writes
+    /// `.git/rebase-apply/rebasing`, the other two `.git/rebase-merge`.
+    /// ADR 0007 collapses all of them to one `GitOperation::Rebase`,
+    /// which is only worth asserting if the fixtures genuinely differ.
+    ///
+    /// The check below is fixture integrity — *a* rebase is in progress.
+    /// Which arm each backend reaches is the caller's assertion, since
+    /// that is the thing under test.
+    #[allow(dead_code)]
+    pub fn rebase_conflicting(&self, backend: &str, onto: &str) -> &Self {
+        self.git_must_stop(&["rebase", backend, onto]);
+        assert!(
+            matches!(
+                self.repo.state(),
+                git2::RepositoryState::Rebase
+                    | git2::RepositoryState::RebaseInteractive
+                    | git2::RepositoryState::RebaseMerge
+            ),
+            "fixture rebase {backend} must leave a rebase in progress, got {:?}",
+            self.repo.state()
+        );
+        self
+    }
+
+    /// `git cherry-pick <revs…>` that must conflict on the first rev.
+    /// One rev leaves `CHERRY_PICK_HEAD` alone; several leave the
+    /// sequencer's todo beside it, which is a different
+    /// `RepositoryState` arm — hence the slice rather than a single rev.
+    #[allow(dead_code)]
+    pub fn cherry_pick_conflicting(&self, revs: &[&str]) -> &Self {
+        let mut args = vec!["cherry-pick"];
+        args.extend_from_slice(revs);
+        self.git_must_stop(&args);
+        assert!(
+            matches!(
+                self.repo.state(),
+                git2::RepositoryState::CherryPick | git2::RepositoryState::CherryPickSequence
+            ),
+            "fixture cherry-pick must leave one in progress, got {:?}",
+            self.repo.state()
+        );
+        self
+    }
+
+    /// `git revert <revs…>` that must conflict on the first rev. As with
+    /// cherry-pick, several revs reach the sequence state and one does
+    /// not. `--no-edit` keeps git from wanting a message editor.
+    #[allow(dead_code)]
+    pub fn revert_conflicting(&self, revs: &[&str]) -> &Self {
+        let mut args = vec!["revert", "--no-edit"];
+        args.extend_from_slice(revs);
+        self.git_must_stop(&args);
+        assert!(
+            matches!(
+                self.repo.state(),
+                git2::RepositoryState::Revert | git2::RepositoryState::RevertSequence
+            ),
+            "fixture revert must leave one in progress, got {:?}",
+            self.repo.state()
+        );
+        self
+    }
+
+    /// `git format-patch -1 <rev>` as a mailbox file, returned by path —
+    /// the mailbox `am_conflicting` needs. It lands inside `.git`, where
+    /// neither git nor the hunk universe will see it as an untracked
+    /// worktree file.
+    fn format_patch(&self, rev: &str) -> PathBuf {
+        let mailbox = self.git(&["format-patch", "-1", "--stdout", rev]);
+        assert!(!mailbox.is_empty(), "format-patch produced no mailbox");
+        let path = self.repo.path().join("test-mailbox.patch");
+        fs::write(&path, mailbox).unwrap();
+        path
+    }
+
+    /// `git am` of `rev`'s patch, which must fail to apply: git stops
+    /// with `.git/rebase-apply/applying` left behind — the `git am`
+    /// state, distinct from the same directory's rebase form.
+    #[allow(dead_code)]
+    pub fn am_conflicting(&self, rev: &str) -> &Self {
+        let mailbox = self.format_patch(rev);
+        let mailbox = mailbox.to_str().expect("temp dir path is UTF-8");
+        self.git_must_stop(&["am", mailbox]);
+        assert!(
+            matches!(
+                self.repo.state(),
+                git2::RepositoryState::ApplyMailbox | git2::RepositoryState::ApplyMailboxOrRebase
+            ),
+            "fixture am must leave one in progress, got {:?}",
+            self.repo.state()
         );
         self
     }

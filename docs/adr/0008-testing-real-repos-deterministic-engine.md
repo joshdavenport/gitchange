@@ -25,6 +25,28 @@ free.
   they read well; they are an assertion style, not a fixture source, and
   no snapshot corpus is mandated.
 
+### In-progress operation states shell out to real git
+
+Amends the fixture rule above (issue #57). The repository states ADR
+0007's commit guard reads cannot all be reached through libgit2: it has
+no `git am` at all, and what the guard reads is real git's on-disk
+leftovers — `.git/rebase-apply/rebasing` versus `.git/rebase-merge`, the
+sequencer's todo beside `CHERRY_PICK_HEAD`. The builders that leave a
+rebase, cherry-pick, revert or `am` in progress therefore drive system
+git, with the host's global and system config cut out so the fixture
+stays as hermetic as the libgit2-built ones (which pin the same knobs in
+the repo's own config instead).
+
+This qualifies **No git version matrix** below: system git is no longer
+only in the ADR 0004 commit shell-out, and the exact `RepositoryState`
+these fixtures reach is version-sensitive — git 2.49 writes an
+`interactive` marker for `--merge`, so libgit2 names that state
+`RebaseInteractive` rather than `RebaseMerge`. The decision still holds,
+because the tests assert the *operation the guard sees* and pin the
+underlying state only to the on-disk shape git has used for a decade. A
+builder whose operation fails to start panics where it is built rather
+than leaving a guard assertion to pass over a clean repo.
+
 ## Apply-correctness corpus — a v0.1 exit criterion
 
 Data-driven cases in `gitchange-core`'s tests: each case is data (base
