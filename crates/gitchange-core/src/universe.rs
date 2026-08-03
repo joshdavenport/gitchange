@@ -340,7 +340,14 @@ fn content_equal(a: &DiffHunk, b: &DiffHunk) -> bool {
 /// Overlap on old ranges, widening empty ranges (pure insertions) to one
 /// line so two insertions at the same spot pair up.
 fn old_ranges_overlap(a: &DiffHunk, b: &DiffHunk) -> bool {
-    let span = |hunk: &DiffHunk| (hunk.old_start, hunk.old_start + hunk.old_lines.max(1));
+    ranges_overlap((a.old_start, a.old_lines), (b.old_start, b.old_lines))
+}
+
+/// Overlap on (start, lines) ranges, widening empty ranges (pure
+/// insertions/removals) to one line — the rule the hunk universe pairs
+/// hunks with, and commit/backend matching reuse.
+pub(crate) fn ranges_overlap(a: (u32, u32), b: (u32, u32)) -> bool {
+    let span = |(start, lines): (u32, u32)| (start, start + lines.max(1));
     let (a_start, a_end) = span(a);
     let (b_start, b_end) = span(b);
     a_start < b_end && b_start < a_end

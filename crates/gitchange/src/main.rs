@@ -2,7 +2,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-use gitchange_core::{ChangedFile, GroupKind, Repo};
+use gitchange_core::{ACTIVE_MARKER, ChangedFile, GroupKind, Repo};
 
 #[derive(Parser)]
 #[command(
@@ -58,11 +58,15 @@ fn status() -> anyhow::Result<()> {
             GroupKind::Conflicts => {
                 println!("  conflicts");
                 for file in &group.files {
-                    println!("      U {} (resolve outside gitchange)", file.path);
+                    println!(
+                        "      {} {} (resolve outside gitchange)",
+                        file.kind.sigil(),
+                        file.path
+                    );
                 }
             }
             GroupKind::Changelist { name, active } => {
-                let marker = if *active { '*' } else { ' ' };
+                let marker = if *active { ACTIVE_MARKER } else { ' ' };
                 println!("{marker} {name}");
                 print_files(&group.files);
             }

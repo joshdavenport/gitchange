@@ -4,7 +4,7 @@
 
 use std::time::Instant;
 
-use gitchange_core::{ChangeKind, FileStage, Head, HunkStage};
+use gitchange_core::{ChangeKind, FileStage, Head, HunkStage, count_noun};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
@@ -13,7 +13,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 use crate::app::{
     App, AssignRow, CommitDraft, DiffLine, ErrorModal, FilesRow, InputKind, LogEntry, Overlay,
-    Panel, Scope, Severity, count_noun, payload_counts,
+    Panel, Scope, Severity, payload_counts,
 };
 use crate::theme::Theme;
 
@@ -639,7 +639,10 @@ fn key_hints_line(pairs: &[(&str, &str)], theme: &Theme) -> Line<'static> {
     let mut spans = Vec::new();
     for (index, (key, label)) in pairs.iter().enumerate() {
         if index > 0 {
-            spans.push(Span::styled(" · ", theme.colors.dim));
+            spans.push(Span::styled(
+                format!(" {} ", theme.glyphs.separator),
+                theme.colors.dim,
+            ));
         }
         spans.push(Span::styled((*key).to_owned(), theme.colors.warn));
         spans.push(Span::styled(format!(" {label}"), theme.colors.dim));
@@ -657,10 +660,7 @@ fn draw_overlay(frame: &mut Frame, area: Rect, app: &App, overlay: &Overlay, the
                 InputKind::Rename { .. } => "Rename changelist",
             };
             let popup = centered(area, 44, 3);
-            let line = Line::from(vec![
-                Span::raw(value.clone()),
-                Span::styled(" ", Style::new().add_modifier(Modifier::REVERSED)),
-            ]);
+            let line = Line::from(vec![Span::raw(value.clone()), cursor()]);
             frame.render_widget(Clear, popup);
             frame.render_widget(Paragraph::new(line).block(modal_block(title, theme)), popup);
         }
@@ -722,7 +722,7 @@ fn draw_overlay(frame: &mut Frame, area: Rect, app: &App, overlay: &Overlay, the
         Overlay::CommitDrift { draft, previous } => {
             let was = payload_counts(previous);
             let mut now_spans = vec![Span::styled(
-                format!("was: {was} → now: "),
+                format!("was: {was} {} now: ", theme.glyphs.arrow),
                 theme.colors.dim,
             )];
             now_spans.extend(payload_spans(&draft.payload, theme.colors.text, theme));
@@ -830,11 +830,7 @@ fn cursor() -> Span<'static> {
 /// A changelist name's colour: the changelist tint for named ones, the
 /// warning tint for unassigned — the cascade the commit modals share.
 fn changelist_color(named: bool, theme: &Theme) -> ratatui::style::Color {
-    if named {
-        theme.colors.changelist
-    } else {
-        theme.colors.warn
-    }
+    tag_color(!named, false, theme)
 }
 
 /// The payload counts with the ◑ tail coloured — "5 staged hunks in
@@ -851,7 +847,13 @@ fn payload_spans(
     )];
     let stale = payload.stale_hunks();
     if stale > 0 {
-        spans.push(Span::styled(format!(" · {stale} ◑"), theme.colors.warn));
+        spans.push(Span::styled(
+            format!(
+                " {} {stale} {}",
+                theme.glyphs.separator, theme.glyphs.staged_stale
+            ),
+            theme.colors.warn,
+        ));
     }
     spans
 }
@@ -994,8 +996,9 @@ fn draw_stale_warn(frame: &mut Frame, area: Rect, draft: &CommitDraft, theme: &T
     let total = draft.payload.staged_hunks() + stale;
     let mut lines = vec![
         Line::raw(format!(
-            "{stale} of {total} payload hunks {} ◑ — the index holds a",
+            "{stale} of {total} payload hunks {} {} — the index holds a",
             if stale == 1 { "is" } else { "are" },
+            theme.glyphs.staged_stale,
         )),
         Line::raw("different version than the worktree. Committing as-is"),
         Line::raw("commits content that isn't what you see."),
@@ -1006,7 +1009,7 @@ fn draw_stale_warn(frame: &mut Frame, area: Rect, draft: &CommitDraft, theme: &T
             continue;
         }
         lines.push(Line::from(vec![
-            Span::styled("◑ ", theme.colors.warn),
+            Span::styled(format!("{} ", theme.glyphs.staged_stale), theme.colors.warn),
             Span::raw(file.path.clone()),
             Span::styled(
                 format!(" ({})", count_noun(file.stale_hunks, "staged-stale hunk")),
@@ -1027,7 +1030,13 @@ fn draw_stale_warn(frame: &mut Frame, area: Rect, draft: &CommitDraft, theme: &T
     let popup = centered(area, width, lines.len() as u16 + 2);
     frame.render_widget(Clear, popup);
     frame.render_widget(
-        Paragraph::new(lines).block(warn_block("◑ staged-stale hunks in payload", theme)),
+        Paragraph::new(lines).block(warn_block(
+            &format!(
+                "{} staged-stale hunks in payload",
+                theme.glyphs.staged_stale
+            ),
+            theme,
+        )),
         popup,
     );
 }
@@ -1036,7 +1045,7 @@ fn draw_keybar(frame: &mut Frame, area: Rect, app: &App, theme: &Theme, now: Ins
     let mut spans = Vec::new();
     for (index, (key, label)) in app.key_hints().into_iter().enumerate() {
         if index > 0 {
-            spans.push(Span::raw("  "));
+            spans.push(Span::raw(theme.glyphs.keybar_gap));
         }
         spans.push(Span::styled(key, theme.colors.warn));
         spans.push(Span::styled(format!(" {label}"), theme.colors.dim));
@@ -1098,16 +1107,11 @@ fn draw_help(frame: &mut Frame, area: Rect, theme: &Theme) {
             ])
         })
         .collect();
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(theme.colors.border_focus))
-        .title(Line::styled(
-            "Keybindings",
-            Style::new().fg(theme.colors.border_focus),
-        ));
     frame.render_widget(Clear, popup);
-    frame.render_widget(Paragraph::new(lines).block(block), popup);
+    frame.render_widget(
+        Paragraph::new(lines).block(modal_block("Keybindings", theme)),
+        popup,
+    );
 }
 
 /// The staging glyph. On the selected row it doubles as the Files

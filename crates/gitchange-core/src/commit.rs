@@ -10,7 +10,7 @@ use crate::backend::HunkHeader;
 use crate::diff::{DiffHunk, FileDiff};
 use crate::matcher::anchor_lines;
 use crate::state::{MembershipRecord, OidAnchor, State};
-use crate::universe::{ChangedFile, Hunk, HunkStage};
+use crate::universe::{ChangedFile, Hunk, HunkStage, ranges_overlap};
 
 /// Flags for [`crate::Repo::commit`], both forwarded to the underlying
 /// `git commit` (ADR 0004).
@@ -427,13 +427,4 @@ fn header(hunk: &DiffHunk) -> HunkHeader {
         hunk.new_start,
         hunk.new_lines,
     )
-}
-
-/// Overlap on (start, lines) ranges, widening empty ranges to one line —
-/// the same rule the universe pairs hunks with.
-fn ranges_overlap(a: (u32, u32), b: (u32, u32)) -> bool {
-    let span = |(start, lines): (u32, u32)| (start, start + lines.max(1));
-    let (a_start, a_end) = span(a);
-    let (b_start, b_end) = span(b);
-    a_start < b_end && b_start < a_end
 }

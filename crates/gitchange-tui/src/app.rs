@@ -7,7 +7,8 @@
 use std::time::{Duration, Instant};
 
 use gitchange_core::{
-    ChangeKind, ChangedFile, CommitPayload, FileStage, GroupKind, Hunk, HunkStage, Notice, Snapshot,
+    ChangeKind, ChangedFile, CommitPayload, FileStage, GroupKind, Hunk, HunkStage, Notice,
+    Snapshot, count_noun,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -61,6 +62,15 @@ pub enum Panel {
 }
 
 impl Panel {
+    const ALL: [Panel; 6] = [
+        Panel::Status,
+        Panel::Changelists,
+        Panel::Files,
+        Panel::Commits,
+        Panel::Diff,
+        Panel::Log,
+    ];
+
     pub fn number(self) -> char {
         match self {
             Panel::Status => '1',
@@ -70,6 +80,13 @@ impl Panel {
             Panel::Diff => '0',
             Panel::Log => '5',
         }
+    }
+
+    /// The inverse of [`Panel::number`]: which panel a digit key focuses,
+    /// if any. Derived from `number`, so the border prefix and the
+    /// keybinding cannot disagree.
+    pub fn from_number(c: char) -> Option<Panel> {
+        Self::ALL.into_iter().find(|panel| panel.number() == c)
     }
 }
 
@@ -318,13 +335,6 @@ pub fn payload_counts(payload: &CommitPayload) -> String {
         ),
         count_noun(payload.file_count(), "file"),
     )
-}
-
-/// "1 hunk" / "2 hunks" — the count-plus-noun shape the commit modals
-/// keep needing.
-pub fn count_noun(count: usize, noun: &str) -> String {
-    let plural = if count == 1 { "" } else { "s" };
-    format!("{count} {noun}{plural}")
 }
 
 /// A modal above the panel stack. At most one is open; it swallows every
@@ -585,8 +595,10 @@ impl App {
         {
             let conflicted = snapshot.conflicted_files().len();
             let tail = if conflicted > 0 {
-                let plural = if conflicted == 1 { "" } else { "s" };
-                format!("{conflicted} file{plural} conflicted, commit disabled")
+                format!(
+                    "{} conflicted, commit disabled",
+                    count_noun(conflicted, "file")
+                )
             } else {
                 "commit disabled".to_owned()
             };
@@ -603,7 +615,11 @@ impl App {
         let counts = (snapshot.files.len(), hunks, conflicted);
         if self.last_refresh_echo != Some(counts) {
             self.last_refresh_echo = Some(counts);
-            let mut echo = format!("refresh — {} files · {hunks} hunks", snapshot.files.len());
+            let mut echo = format!(
+                "refresh — {} files {} {hunks} hunks",
+                snapshot.files.len(),
+                gitchange_core::SEPARATOR
+            );
             if conflicted > 0 {
                 echo.push_str(&format!(" ({conflicted} conflicted)"));
             }
@@ -742,14 +758,14 @@ impl App {
             KeyCode::Char('q') => return Some(Action::Quit),
             KeyCode::Char('R') => return Some(Action::Refresh),
             KeyCode::Char('?') => self.help_open = true,
-            KeyCode::Char('1') => self.set_focus(Panel::Status),
-            KeyCode::Char('2') => self.set_focus(Panel::Changelists),
-            KeyCode::Char('3') => self.focus_files(),
-            KeyCode::Char('4') => self.set_focus(Panel::Commits),
-            KeyCode::Char('5') => self.set_focus(Panel::Log),
-            // Explicit Diff focus is scroll mode; hunk mode only enters
-            // through `enter` on a file.
-            KeyCode::Char('0') => self.set_focus(Panel::Diff),
+            KeyCode::Char(c) if Panel::from_number(c).is_some() => {
+                // Explicit Diff focus is scroll mode; hunk mode only
+                // enters through `enter` on a file.
+                match Panel::from_number(c).expect("guard checked") {
+                    Panel::Files => self.focus_files(),
+                    panel => self.set_focus(panel),
+                }
+            }
             KeyCode::Char('j') | KeyCode::Down => self.move_selection(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_selection(-1),
             KeyCode::Char('n') => {
@@ -1551,8 +1567,11 @@ impl App {
                 let elsewhere = file.total_hunks() - own.len();
                 let mut title = format!("{name} ({staged_own}/{} staged", own.len());
                 if elsewhere > 0 {
-                    let plural = if elsewhere == 1 { "hunk" } else { "hunks" };
-                    title.push_str(&format!(" · {elsewhere} {plural} elsewhere"));
+                    title.push_str(&format!(
+                        " {} {} elsewhere",
+                        gitchange_core::SEPARATOR,
+                        count_noun(elsewhere, "hunk")
+                    ));
                 }
                 title.push(')');
                 title
@@ -1900,8 +1919,9 @@ fn binary_placeholder(file: &ChangedFile) -> String {
     let changed = sides.and_then(|sides| sides.changed.as_ref());
     match (head, changed) {
         (Some(head), Some(changed)) => format!(
-            "Binary file changed ({} → {})",
+            "Binary file changed ({} {} {})",
             human_size(head.size),
+            gitchange_core::ARROW,
             human_size(changed.size)
         ),
         (None, Some(changed)) => format!("Binary file added ({})", human_size(changed.size)),
@@ -2385,10 +2405,8 @@ mod tests {
         app.on_watcher_degraded();
         assert_eq!(app.pins(), vec!["watcher unavailable — polling"]);
         assert!(
-            app.log
-                .iter()
-                .any(|entry| entry.severity == Severity::Info
-                    && entry.text.contains("falling back to polling")),
+            app.log.iter().any(|entry| entry.severity == Severity::Info
+                && entry.text.contains("falling back to polling")),
             "the event marks the moment the condition began"
         );
         app.on_watcher_recovered();

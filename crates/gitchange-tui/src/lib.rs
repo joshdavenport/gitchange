@@ -10,11 +10,13 @@ pub mod ui;
 use std::time::Instant;
 
 use crossbeam_channel::{at, never, select, unbounded};
-use gitchange_core::{CommitOptions, CommitOutcome, Condition, Engine, EngineEvent, Repo};
+use gitchange_core::{
+    CommitOptions, CommitOutcome, Condition, Engine, EngineEvent, Repo, count_noun,
+};
 use ratatui::crossterm::event::{DisableFocusChange, EnableFocusChange, Event, KeyEventKind};
 use ratatui::crossterm::execute;
 
-use app::{Action, App, CommitDraft, CommitStep, Op, Severity, count_noun};
+use app::{Action, App, CommitDraft, CommitStep, Op, Severity};
 use theme::Theme;
 
 #[derive(Debug, thiserror::Error)]
@@ -213,8 +215,9 @@ fn run_op(repo: &Repo, app: &mut App, op: Op) {
                         app.push_log(
                             Severity::Info,
                             format!(
-                                "assigned {} — {path} → '{target}'",
-                                count_noun(assigned, "hunk")
+                                "assigned {} — {path} {} '{target}'",
+                                count_noun(assigned, "hunk"),
+                                gitchange_core::ARROW,
                             ),
                         );
                     }

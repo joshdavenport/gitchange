@@ -7,6 +7,7 @@ use crate::commit::CommitOptions;
 use crate::diff::{BinarySides, BlobInfo, ChangeKind, DiffHunk, FileDiff, HunkLine, RepoDiffs};
 use crate::error::Error;
 use crate::snapshot::{CommitInfo, GitOperation, Head};
+use crate::universe::ranges_overlap;
 
 pub(crate) struct Git2Backend {
     repo: git2::Repository,
@@ -604,16 +605,6 @@ fn hunk_change_cores(diff: &git2::Diff) -> Result<Vec<HunkCore>, Error> {
         }
     }
     Ok(cores)
-}
-
-/// Overlap on (start, lines) ranges, widening empty ranges (pure
-/// insertions/removals) to one line — the same rule the hunk universe
-/// pairs hunks with.
-fn ranges_overlap(a: (u32, u32), b: (u32, u32)) -> bool {
-    let span = |(start, lines): (u32, u32)| (start, start + lines.max(1));
-    let (a_start, a_end) = span(a);
-    let (b_start, b_end) = span(b);
-    a_start < b_end && b_start < a_end
 }
 
 /// Which content a diff's new side addresses — decides where a binary

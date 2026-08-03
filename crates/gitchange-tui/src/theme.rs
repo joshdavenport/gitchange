@@ -2,7 +2,7 @@
 //! theme). Defaults stick to the terminal's own ANSI palette; swapping a
 //! theme means swapping this struct, never touching the renderer.
 
-use gitchange_core::{FileStage, HunkStage};
+use gitchange_core::{ACTIVE_MARKER, ARROW, FileStage, HunkStage, SEPARATOR};
 use ratatui::style::Color;
 
 pub struct Theme {
@@ -50,6 +50,9 @@ pub struct Glyphs {
     pub ok: char,
     /// The Status panel's repo → branch separator.
     pub arrow: char,
+    /// The inline separator between clauses in one-line summaries and
+    /// hint lines (e.g. key hints, the ◑-stale payload tail).
+    pub separator: char,
     /// Log severities (ADR 0007): their own tokens, distinct from the
     /// staging set and the unassigned marker.
     pub log_info: char,
@@ -63,6 +66,11 @@ pub struct Glyphs {
     pub tag_close: char,
     /// The persistent selection cursor (issue #45).
     pub cursor: char,
+    /// The keybar's key/label-pair gap: spacing, not a separator glyph
+    /// (unlike `separator`, deliberately airy rather than dense) — kept
+    /// distinct from the modal hint lines' dim middot. Two characters, so
+    /// `&'static str` rather than `char` like the rest of this struct.
+    pub keybar_gap: &'static str,
 }
 
 impl Default for Theme {
@@ -88,19 +96,21 @@ impl Default for Theme {
                 cursor: Color::Cyan,
             },
             glyphs: Glyphs {
-                // Staging defaults come from core (ADR 0006) so the CLI
+                // Staging defaults, the active marker, the arrow and the
+                // inline separator come from core (ADR 0006) so the CLI
                 // and TUI can't drift; a theme may still override.
                 staged: FileStage::Staged.glyph(),
                 partially_staged: FileStage::PartiallyStaged.glyph(),
                 unstaged: FileStage::Unstaged.glyph(),
                 staged_stale: HunkStage::StagedStale.glyph(),
-                active: '*',
+                active: ACTIVE_MARKER,
                 all: '≡',
                 unassigned: '!',
                 group: '▾',
                 refreshing: '⟳',
                 ok: '✓',
-                arrow: '→',
+                arrow: ARROW,
+                separator: SEPARATOR,
                 log_info: '·',
                 log_notice: '!',
                 log_error: '✗',
@@ -108,6 +118,7 @@ impl Default for Theme {
                 tag_open: '⟨',
                 tag_close: '⟩',
                 cursor: '❯',
+                keybar_gap: "  ",
             },
         }
     }

@@ -11,7 +11,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::diff::ChangeKind;
 use crate::state::MembershipRecord;
-use crate::universe::{ChangedFile, Hunk};
+use crate::universe::{ChangedFile, Hunk, ranges_overlap};
+use crate::vocabulary::{ARROW, count_noun};
 
 /// Dormant records prune after 14 days (ADR 0002).
 const DORMANT_TTL_SECS: u64 = 14 * 24 * 60 * 60;
@@ -89,7 +90,7 @@ impl Notice {
                 new_start,
                 changelist,
             } => {
-                format!("auto-captured hunk at {path}:{new_start} → '{changelist}'")
+                format!("auto-captured hunk at {path}:{new_start} {ARROW} '{changelist}'")
             }
             Notice::AmbiguousOverlap {
                 path,
@@ -100,7 +101,7 @@ impl Notice {
                 let overlap = quoted_list(candidates);
                 match assigned_to {
                     Some(name) => format!(
-                        "auto-captured hunk at {path}:{new_start} → '{name}' (ambiguous overlap: {overlap})"
+                        "auto-captured hunk at {path}:{new_start} {ARROW} '{name}' (ambiguous overlap: {overlap})"
                     ),
                     None => format!(
                         "hunk at {path}:{new_start} left unassigned (ambiguous overlap: {overlap})"
@@ -116,8 +117,10 @@ impl Notice {
                     Some(name) => format!("'{name}'"),
                     None => "unassigned".into(),
                 };
-                let plural = if *hunks == 1 { "" } else { "s" };
-                format!("restored {hunks} hunk{plural} to {destination} — {path}")
+                format!(
+                    "restored {} to {destination} — {path}",
+                    count_noun(*hunks, "hunk")
+                )
             }
             Notice::StaleHunk { path, new_start } => {
                 format!(
@@ -493,8 +496,8 @@ fn into_dormant(mut record: MembershipRecord, now_epoch_secs: u64) -> Option<Mem
 /// Overlap on HEAD-side ranges, widening empty ranges (pure insertions)
 /// to one line so an edit to an inserted hunk still pairs with it.
 pub(crate) fn old_ranges_overlap(hunk: &Hunk, record: &MembershipRecord) -> bool {
-    let span = |start: u32, lines: u32| (start, start + lines.max(1));
-    let (a_start, a_end) = span(hunk.old_start, hunk.old_lines);
-    let (b_start, b_end) = span(record.old_start, record.old_lines);
-    a_start < b_end && b_start < a_end
+    ranges_overlap(
+        (hunk.old_start, hunk.old_lines),
+        (record.old_start, record.old_lines),
+    )
 }
