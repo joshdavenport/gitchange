@@ -240,12 +240,10 @@ fn a_rename_presents_as_delete_plus_untracked() {
     // ADR 0011: rename detection is off in v0.1 — a rename is a deleted
     // old path plus an untracked new path, by decision not accident.
     let fixture = RepoFixture::new();
-    fixture.write("old.txt", "content\n").commit_all("init");
-    std::fs::rename(
-        fixture.path().join("old.txt"),
-        fixture.path().join("new.txt"),
-    )
-    .unwrap();
+    fixture
+        .write("old.txt", "content\n")
+        .commit_all("init")
+        .rename("old.txt", "new.txt");
 
     let repo = Repo::discover(fixture.path()).unwrap();
     let snapshot = repo.refresh().unwrap();

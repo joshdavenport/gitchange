@@ -76,6 +76,18 @@ impl RepoFixture {
         self
     }
 
+    /// Move a repo-relative path to another, git none the wiser — the
+    /// rename ADR 0011 sees as a delete plus an add.
+    #[allow(dead_code)]
+    pub fn rename(&self, from: &str, to: &str) -> &Self {
+        let target = self.dir.path().join(to);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::rename(self.dir.path().join(from), target).unwrap();
+        self
+    }
+
     /// Install a git hook (e.g. `pre-commit`) with the given script body,
     /// marked executable — the `with_hook` fixture ADR 0008 promised.
     #[allow(dead_code)]

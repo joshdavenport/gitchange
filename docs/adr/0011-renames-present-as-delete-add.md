@@ -10,14 +10,27 @@ lost from the repository's point of view.
 
 ## Known consequence: membership does not follow a rename
 
-Membership records match by path continuity, so a rename silently orphans
-the old path's records into dormancy rather than following the file — the
-new path's hunks are fresh changes, assigned to the active changelist. The
-same applies to binary whole-file hunks, which keep membership by path
-continuity (ADR 0009). This is the visible-not-silent failure shape: the
-work lands in the active changelist rather than vanishing, and the matcher
-(ticket 25) and whole-file hunks (ticket 35) inherit this as a stated
-baseline they may later improve on.
+Membership records match by path, so a rename never carries membership to
+the new path — the new path's hunks are fresh changes, captured by the
+active changelist with the usual advisory. This holds for binary
+whole-file hunks too: path continuity (ADR 0009) is *path* continuity, so
+identical bytes at a new path are a fresh change, not the old record's.
+
+What becomes of the old path's records depends on whether the old path
+still diffs (pinned in `tests/matcher.rs`, issue 56):
+
+- **Tracked file** — the old path stays in the universe as `Deleted`, so
+  its records re-anchor onto the deletion hunk and keep their changelist
+  (tier-2 overlap for text; for a whole-file hunk, path continuity — a
+  deletion is still a binary change at that path, ADR 0009). The rename's
+  two halves end up in two changelists.
+- **Untracked file** — the old path leaves the universe entirely, so its
+  records go dormant, retained for exact-match revival.
+
+Either way this is the visible-not-silent failure shape: the work lands in
+the active changelist or stays where it was sorted, never vanishing, and
+the matcher (ticket 25) and whole-file hunks (ticket 35) inherit this as a
+stated baseline they may later improve on.
 
 ## Considered options
 

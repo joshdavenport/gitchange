@@ -156,6 +156,49 @@ fn a_stale_hunk_fails_soft_and_the_fresh_one_is_still_assigned() {
 }
 
 #[test]
+fn a_binary_whole_file_hunk_still_assigns_after_a_mid_flight_rewrite() {
+    // Path continuity (ADR 0009) at the validate-at-apply boundary
+    // (ADR 0005): the whole file *is* the hunk, so a build rewriting the
+    // export between snapshot and keypress must not turn the assign into
+    // the stale no-op the test above asserts for text — that would be the
+    // membership loss the whole-file hunk exists to prevent.
+    let fixture = RepoFixture::new();
+    fixture
+        .write_bytes("logo.png", &[0u8, 1, 2, 3])
+        .commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("fixes").unwrap();
+    repo.create_changelist("chores").unwrap();
+    fixture.write_bytes("logo.png", &[0u8, 9, 9]);
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(owners(&snapshot, "logo.png"), vec![Some("fixes".into())]);
+    let hunk = snapshot.files[0].hunks[0].clone();
+
+    // The export is rebuilt under the snapshot's feet: a new blob OID, so
+    // an OID-matched re-find would miss it.
+    fixture.write_bytes("logo.png", &[0u8, 7, 7, 7, 7, 7]);
+
+    let outcome = repo
+        .assign_hunks("logo.png", &[hunk], Some("chores"))
+        .unwrap();
+    assert!(
+        outcome.advisories.is_empty(),
+        "the hunk is re-found at its path: no StaleHunk"
+    );
+    assert_eq!(
+        outcome.echo.as_deref(),
+        Some("assigned 1 hunk — logo.png → 'chores'")
+    );
+
+    let after = repo.refresh().unwrap();
+    assert_eq!(owners(&after, "logo.png"), vec![Some("chores".into())]);
+    assert!(
+        after.advisories.is_empty(),
+        "a clean assign raises no advisories"
+    );
+}
+
+#[test]
 fn assigning_to_an_unknown_changelist_is_an_error_and_changes_nothing() {
     let (_fixture, repo, snapshot) = two_hunk_fixture();
     let hunk = snapshot.files[0].hunks[1].clone();
