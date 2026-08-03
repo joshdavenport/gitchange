@@ -4,11 +4,12 @@
 
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+
+use super::git;
 
 #[derive(Serialize, Deserialize)]
 pub struct Fingerprint {
@@ -47,12 +48,14 @@ impl Fingerprint {
 }
 
 pub fn capture(repo_dir: &Path, scenario: &str) -> Result<Fingerprint> {
-    let head = git(repo_dir, &["rev-parse", "HEAD"])?.trim().to_string();
-    let index_digest = fnv1a64(git(repo_dir, &["diff", "--cached"])?.as_bytes());
+    let head = git::run(repo_dir, &["rev-parse", "HEAD"])?
+        .trim()
+        .to_string();
+    let index_digest = fnv1a64(git::run(repo_dir, &["diff", "--cached"])?.as_bytes());
     let worktree = [
-        git(repo_dir, &["diff"])?,
-        git(repo_dir, &["ls-files", "--others", "--exclude-standard"])?,
-        git(repo_dir, &["ls-files", "--unmerged"])?,
+        git::run(repo_dir, &["diff"])?,
+        git::run(repo_dir, &["ls-files", "--others", "--exclude-standard"])?,
+        git::run(repo_dir, &["ls-files", "--unmerged"])?,
     ]
     .join("\0");
     let state_path = repo_dir.join(".git/gitchange/state.json");
@@ -91,23 +94,6 @@ pub fn load(meta_dir: &Path, scenario: &str) -> Result<Option<Fingerprint>> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(err) => Err(err).with_context(|| format!("read {}", path.display())),
     }
-}
-
-fn git(repo_dir: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo_dir)
-        .args(args)
-        .output()
-        .context("spawn git")?;
-    if !output.status.success() {
-        bail!(
-            "git {:?} failed: {}",
-            args,
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 fn fnv1a64(bytes: &[u8]) -> String {

@@ -6,6 +6,7 @@
 
 pub(crate) mod builder;
 mod fingerprint;
+mod git;
 mod scenarios;
 
 use std::fs;

@@ -5,10 +5,11 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context, Result, anyhow, bail};
 use gitchange_core::{Hunk, Repo, Snapshot};
+
+use super::git;
 
 /// 2026-01-01T00:00:00Z — recent enough that the Commits panel doesn't
 /// look broken, fixed so rebuilds are byte-identical.
@@ -68,31 +69,19 @@ impl Sandbox {
 
     /// Run git in the sandbox, erroring on non-zero exit.
     pub fn git(&self, args: &[&str]) -> Result<String> {
-        let output = self.git_command(args).output().context("spawn git")?;
-        if !output.status.success() {
-            bail!(
-                "git {:?} failed: {}",
-                args,
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
-        }
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        git::run(&self.root, args)
     }
 
     /// Run git expecting failure (e.g. a conflicting merge); errors if
     /// the command unexpectedly succeeds.
     pub fn git_expect_failure(&self, args: &[&str]) -> Result<()> {
-        let output = self.git_command(args).output().context("spawn git")?;
+        let output = git::command(&self.root, args)
+            .output()
+            .context("spawn git")?;
         if output.status.success() {
             bail!("git {args:?} succeeded but the scenario expects it to fail");
         }
         Ok(())
-    }
-
-    fn git_command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new("git");
-        command.arg("-C").arg(&self.root).args(args);
-        command
     }
 
     /// Stage everything and commit with the next stepped timestamp.
@@ -100,18 +89,12 @@ impl Sandbox {
         self.git(&["add", "-A"])?;
         self.commits += 1;
         let date = format!("{} +0000", BASE_EPOCH + self.commits * 3600);
-        let output = self
-            .git_command(&["commit", "--quiet", "-m", message])
+        let args = ["commit", "--quiet", "-m", message];
+        let mut command = git::command(&self.root, &args);
+        command
             .env("GIT_AUTHOR_DATE", &date)
-            .env("GIT_COMMITTER_DATE", &date)
-            .output()
-            .context("spawn git commit")?;
-        if !output.status.success() {
-            bail!(
-                "git commit {message:?} failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
-        }
+            .env("GIT_COMMITTER_DATE", &date);
+        git::stdout_or_fail(command, &args)?;
         Ok(())
     }
 
