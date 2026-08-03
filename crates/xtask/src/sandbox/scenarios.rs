@@ -369,9 +369,9 @@ fn conflicted(sandbox: &mut Sandbox) -> Result<()> {
 /// text change for contrast.
 fn binary(sandbox: &mut Sandbox) -> Result<()> {
     baseline(sandbox)?;
-    sandbox.write_bytes("assets/logo.png", &png_bytes(0x11))?;
+    sandbox.write_bytes("assets/logo.png", &png_bytes(0x11, 12_698))?;
     sandbox.commit_all("Add logo asset")?;
-    sandbox.write_bytes("assets/logo.png", &png_bytes(0x2e))?;
+    sandbox.write_bytes("assets/logo.png", &png_bytes(0x2e, 15_462))?;
     sandbox.replace("README.md", "A tiny task timer", "A tiny, fast task timer")?;
     let repo = sandbox.repo()?;
     repo.create_changelist("assets-refresh")
@@ -380,12 +380,15 @@ fn binary(sandbox: &mut Sandbox) -> Result<()> {
     Ok(())
 }
 
-/// Deterministic pseudo-PNG: a real PNG signature followed by patterned
-/// bytes (with NULs so git treats it as binary). Not a valid image —
-/// nothing in the TUI decodes it.
-fn png_bytes(seed: u8) -> Vec<u8> {
+/// Deterministic pseudo-PNG of exactly `len` bytes: a real PNG signature
+/// followed by patterned bytes (with NULs so git treats it as binary).
+/// Not a valid image — nothing in the TUI decodes it. `len` is a
+/// parameter because the two revisions must differ in size for the
+/// sized placeholder (ADR 0009) to have anything to show.
+fn png_bytes(seed: u8, len: usize) -> Vec<u8> {
     let mut bytes = vec![0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
-    for i in 0..256u32 {
+    debug_assert!(len >= bytes.len(), "len must fit the signature");
+    for i in 0..(len - bytes.len()) as u32 {
         bytes.push((i as u8).wrapping_mul(seed));
     }
     bytes
