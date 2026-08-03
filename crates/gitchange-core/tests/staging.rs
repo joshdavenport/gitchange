@@ -481,7 +481,7 @@ fn identical_hunks_stage_the_one_at_the_requested_position() {
     let snapshot = repo.refresh().unwrap();
     let hunks = snapshot.files[0].hunks.clone();
     assert_eq!(hunks.len(), 2);
-    assert_eq!(hunks[0].lines, hunks[1].lines);
+    assert_eq!(hunks[0].identity, hunks[1].identity);
 
     let advisories = repo.stage_hunk("a.txt", &hunks[1]).unwrap().advisories;
 

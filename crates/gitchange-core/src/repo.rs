@@ -472,12 +472,17 @@ fn validate_changelist(snapshot: &Snapshot, changelist: Option<&str>) -> Result<
     Ok(())
 }
 
-/// Validate-at-apply (ADR 0005): find the live hunk whose verbatim lines
-/// match the snapshot's. Content-matched, not coordinate-matched, so a
+/// Validate-at-apply (ADR 0005): find the live hunk whose identity
+/// matches the snapshot's. Content-matched, not coordinate-matched, so a
 /// hunk merely shifted by edits above it still applies — at its fresh
 /// coordinates. Identical hunks (repeated code blocks) tie-break by
 /// proximity to the snapshot position, keeping the op on the hunk the
 /// user pointed at. `None` is the stale case.
+///
+/// A whole-file hunk matches by path continuity rather than content
+/// ([`HunkIdentity::same_hunk`]), so a binary rewritten between refresh
+/// and keypress still resolves — reachable in practice, since assign
+/// (`ctrl+a`/`A`) routes a binary's whole-file hunk through here.
 fn find_fresh<'a>(
     files: &'a [ChangedFile],
     path: &str,
@@ -487,7 +492,7 @@ fn find_fresh<'a>(
     let fresh = file
         .hunks
         .iter()
-        .filter(|candidate| candidate.lines == hunk.lines)
+        .filter(|candidate| candidate.identity.same_hunk(&hunk.identity))
         .min_by_key(|candidate| candidate.new_start.abs_diff(hunk.new_start))?;
     Some((file, fresh))
 }

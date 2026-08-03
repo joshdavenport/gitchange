@@ -9,7 +9,7 @@
 use crate::backend::HunkHeader;
 use crate::diff::{DiffHunk, FileDiff};
 use crate::matcher::anchor_lines;
-use crate::state::{MembershipRecord, OidAnchor, State};
+use crate::state::{MembershipRecord, OidAnchor, RecordIdentity, State};
 use crate::universe::{ChangedFile, Hunk, HunkStage, ranges_overlap};
 use crate::vocabulary::{UNASSIGNED, count_noun};
 
@@ -178,11 +178,12 @@ pub(crate) struct RecordKey {
 
 impl RecordKey {
     fn of(hunk: &Hunk) -> Self {
+        let (anchor, oid_anchor) = hunk.record_anchors();
         Self {
             old_start: hunk.old_start,
             old_lines: hunk.old_lines,
-            anchor: crate::matcher::anchor_of(hunk),
-            oid_anchor: hunk.oid_anchor.clone(),
+            anchor,
+            oid_anchor,
         }
     }
 
@@ -374,13 +375,17 @@ pub(crate) fn apply_aftermath(state: &mut State, plans: &[PathPlan], residual: &
                 .iter()
                 .find(|retained| retained.key.matches(record))
             {
-                // A retained binary `◑` record rewrites from the residual
-                // diff's OIDs (ADR 0009): the whole file is the hunk, so
-                // there is no region to overlap — coordinates stay
-                // degenerate. No residual (the worktree moved on) leaves
-                // the record for the next refresh to resolve — dormancy
-                // at worst, visible per ADR 0002.
-                if record.oid_anchor.is_some() {
+                // A retained whole-file `◑` record rewrites from the
+                // residual diff's OIDs (ADR 0009): the whole file is the
+                // hunk, so there is no region to overlap — coordinates
+                // stay degenerate. No residual (the worktree moved on)
+                // leaves the record for the next refresh to resolve —
+                // dormancy at worst, visible per ADR 0002. `plan` picked
+                // this record's flavour from `ChangedFile::binary`; the
+                // two agree because only `binary_whole_file_hunk` ever
+                // produces a `WholeFile` identity, and `RecordKey`
+                // compares `oid_anchor` before we get here.
+                if matches!(record.identity(), RecordIdentity::WholeFile { .. }) {
                     let sides = residual
                         .iter()
                         .find(|file| file.path == plan.path)

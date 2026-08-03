@@ -6,8 +6,8 @@
 use std::time::{Duration, Instant};
 
 use gitchange_core::{
-    ChangeKind, ChangedFile, Changelist, CommitInfo, GitOperation, Head, Hunk, HunkLine, HunkStage,
-    Snapshot,
+    ChangeKind, ChangedFile, Changelist, CommitInfo, GitOperation, Head, Hunk, HunkIdentity,
+    HunkLine, HunkStage, Snapshot,
 };
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -24,19 +24,20 @@ fn hunk(new_start: u32, changelist: Option<&str>, stage: HunkStage) -> Hunk {
         old_lines: 1,
         new_start,
         new_lines: 2,
-        lines: vec![
-            HunkLine {
-                origin: ' ',
-                content: "context\n".into(),
-            },
-            HunkLine {
-                origin: '+',
-                content: format!("added at {new_start}\n"),
-            },
-        ],
         stage,
         index_only: false,
-        oid_anchor: None,
+        identity: HunkIdentity::Text {
+            lines: vec![
+                HunkLine {
+                    origin: ' ',
+                    content: "context\n".into(),
+                },
+                HunkLine {
+                    origin: '+',
+                    content: format!("added at {new_start}\n"),
+                },
+            ],
+        },
         changelist: changelist.map(str::to_owned),
     }
 }
@@ -575,10 +576,12 @@ fn diff_content_lines_keep_their_origin_colours() {
     let mut app = App::new("repo");
     let mut snap = snapshot();
     // The fixture hunks carry no deletions; add one for the `-` case.
-    snap.files[1].hunks[0].lines.push(HunkLine {
-        origin: '-',
-        content: "removed at 14\n".into(),
-    });
+    if let HunkIdentity::Text { lines } = &mut snap.files[1].hunks[0].identity {
+        lines.push(HunkLine {
+            origin: '-',
+            content: "removed at 14\n".into(),
+        });
+    }
     app.apply_snapshot(snap);
     let buffer = render_buffer(&app);
 

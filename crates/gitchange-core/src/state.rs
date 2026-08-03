@@ -60,9 +60,33 @@ pub struct OidAnchor {
     pub changed: Option<String>,
 }
 
+/// A stored record's identity evidence, borrowed — the record-side
+/// mirror of [`HunkIdentity`]. The record keeps `anchor` and
+/// `oid_anchor` as independent serde fields so the state file stays
+/// `cat`-debuggable (ADR 0002); this reads that pair back as the sum
+/// type it has always represented, so matching never tests one field's
+/// emptiness to infer the other's meaning.
+///
+/// [`HunkIdentity`]: crate::universe::HunkIdentity
+pub(crate) enum RecordIdentity<'a> {
+    Text { anchor: &'a [String] },
+    WholeFile { oids: &'a OidAnchor },
+}
+
 impl MembershipRecord {
     pub(crate) fn is_dormant(&self) -> bool {
         self.dormant_since.is_some()
+    }
+
+    /// What this record claims, per [`RecordIdentity`]. `oid_anchor` is
+    /// present exactly for whole-file records, so it alone discriminates.
+    pub(crate) fn identity(&self) -> RecordIdentity<'_> {
+        match &self.oid_anchor {
+            Some(oids) => RecordIdentity::WholeFile { oids },
+            None => RecordIdentity::Text {
+                anchor: &self.anchor,
+            },
+        }
     }
 }
 

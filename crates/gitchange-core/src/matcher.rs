@@ -10,8 +10,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::diff::ChangeKind;
-use crate::state::MembershipRecord;
-use crate::universe::{ChangedFile, Hunk, ranges_overlap};
+use crate::state::{MembershipRecord, RecordIdentity};
+use crate::universe::{ChangedFile, Hunk, HunkIdentity, ranges_overlap};
 use crate::vocabulary::{ARROW, UNASSIGNED, count_noun};
 
 /// Dormant records prune after 14 days (ADR 0002).
@@ -422,6 +422,7 @@ pub(crate) fn record_for(
     anchor: &[String],
     owner: Option<String>,
 ) -> MembershipRecord {
+    let (_, oid_anchor) = hunk.record_anchors();
     MembershipRecord {
         path: path.into(),
         old_start: hunk.old_start,
@@ -430,48 +431,57 @@ pub(crate) fn record_for(
         new_lines: hunk.new_lines,
         changelist: owner,
         anchor: anchor.to_vec(),
-        oid_anchor: hunk.oid_anchor.clone(),
+        oid_anchor,
         dormant_since: None,
     }
 }
 
 /// Tier-1 identity: verbatim-anchor equality for text hunks; for a
-/// binary whole-file hunk, changed-side OID equality (ADR 0009) — the
-/// HEAD side deliberately doesn't participate, so a HEAD move alone
-/// never sheds an untouched binary change. The `oid_anchor` presence
-/// check keeps text and binary records from cross-matching (both sides
-/// have empty verbatim anchors for a binary).
+/// whole-file hunk, changed-side OID equality (ADR 0009) — the HEAD side
+/// deliberately doesn't participate, so a HEAD move alone never sheds an
+/// untouched binary change.
+///
+/// The cross-flavour arm is the load-bearing one: a whole-file record and
+/// a text record both carry an empty verbatim anchor, so without it a
+/// text hunk and a binary record at the same path would agree on
+/// emptiness and match. Stated once here and once in [`overlap_claim`];
+/// any further tier has to answer it too, because the match is
+/// exhaustive over the pair.
 pub(crate) fn exact_anchor_match(
     record: &MembershipRecord,
     hunk: &Hunk,
     anchor: &[String],
 ) -> bool {
-    match &hunk.oid_anchor {
-        Some(oids) => record
-            .oid_anchor
-            .as_ref()
-            .is_some_and(|stored| stored.changed == oids.changed),
-        None => record.oid_anchor.is_none() && record.anchor == anchor,
+    match (record.identity(), &hunk.identity) {
+        (RecordIdentity::Text { anchor: stored }, HunkIdentity::Text { .. }) => stored == anchor,
+        (RecordIdentity::WholeFile { oids: stored }, HunkIdentity::WholeFile { oids }) => {
+            stored.changed == oids.changed
+        }
+        _ => false,
     }
 }
 
-/// Tier-2 claim: HEAD-side range overlap for text hunks; for a binary
-/// whole-file hunk, path continuity (ADR 0009) — the whole file *is*
-/// the hunk, so any binary record at the path trivially "overlaps" it
-/// and a re-export (same path, new content) keeps its membership.
+/// Tier-2 claim: HEAD-side range overlap for text hunks; for a
+/// whole-file hunk, path continuity (`CONTEXT.md`, "Whole-file hunk") —
+/// the whole file *is* the hunk, so any whole-file record at the path
+/// trivially "overlaps" it and a re-export (same path, new content)
+/// keeps its membership. See [`exact_anchor_match`] on the cross arm.
 pub(crate) fn overlap_claim(record: &MembershipRecord, hunk: &Hunk) -> bool {
-    if hunk.oid_anchor.is_some() {
-        record.oid_anchor.is_some()
-    } else {
-        record.oid_anchor.is_none() && old_ranges_overlap(hunk, record)
+    match (record.identity(), &hunk.identity) {
+        (RecordIdentity::Text { .. }, HunkIdentity::Text { .. }) => {
+            old_ranges_overlap(hunk, record)
+        }
+        (RecordIdentity::WholeFile { .. }, HunkIdentity::WholeFile { .. }) => true,
+        _ => false,
     }
 }
 
 /// The content anchor of a fresh hunk: its verbatim lines, origin
-/// included, exactly the shape records store. Also how `commit()` keys
-/// records to the payload hunks it consumes (ADR 0004).
+/// included, exactly the shape records store — empty for a whole-file
+/// hunk, whose identity rides in `oid_anchor` instead. Also how
+/// `commit()` keys records to the payload hunks it consumes (ADR 0004).
 pub(crate) fn anchor_of(hunk: &Hunk) -> Vec<String> {
-    anchor_lines(&hunk.lines)
+    hunk.record_anchors().0
 }
 
 /// Verbatim diff lines in the anchor shape records store.

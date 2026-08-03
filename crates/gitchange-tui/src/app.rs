@@ -665,12 +665,14 @@ impl App {
                 .get(self.commit_row)
                 .map(|commit| commit.short_id.clone())
         });
-        // The hunk-mode selection's identity: its verbatim lines (the
-        // membership-anchor shape) plus position for tie-breaking.
+        // The hunk-mode selection's identity, plus position for
+        // tie-breaking. The same identity test core validates ops
+        // against, so the cursor survives a refresh on exactly the hunks
+        // an op would still apply to.
         let old_hunk = self.hunk_sel.and_then(|index| {
             self.selected_file()
                 .and_then(|file| file.hunks.get(index))
-                .map(|hunk| (hunk.lines.clone(), hunk.new_start))
+                .map(|hunk| (hunk.identity.clone(), hunk.new_start))
         });
 
         self.snapshot = Some(snapshot);
@@ -717,11 +719,11 @@ impl App {
                 }
                 None
             } else {
-                let survived = old_hunk.as_ref().and_then(|(lines, new_start)| {
+                let survived = old_hunk.as_ref().and_then(|(identity, new_start)| {
                     hunks
                         .iter()
                         .enumerate()
-                        .filter(|(_, hunk)| hunk.lines == *lines)
+                        .filter(|(_, hunk)| hunk.identity.same_hunk(identity))
                         .min_by_key(|(_, hunk)| hunk.new_start.abs_diff(*new_start))
                         .map(|(position, _)| position)
                 });
@@ -1638,7 +1640,10 @@ impl App {
                 foreign,
                 selected,
             });
-            for line in &hunk.lines {
+            // Whole-file hunks left through the `file.binary` branch
+            // above, so everything here is text; an empty slice would
+            // just render no content rows anyway.
+            for line in hunk.identity.text_lines().unwrap_or_default() {
                 lines.push(DiffLine::Content {
                     origin: line.origin,
                     text: line.content.trim_end_matches('\n').to_owned(),
@@ -1957,7 +1962,8 @@ fn step(index: usize, delta: isize, len: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use gitchange_core::{
-        BinarySides, BlobInfo, Changelist, CommitInfo, Head, Hunk, HunkLine, OidAnchor, PayloadFile,
+        BinarySides, BlobInfo, Changelist, CommitInfo, Head, Hunk, HunkIdentity, HunkLine,
+        OidAnchor, PayloadFile,
     };
 
     use super::*;
@@ -1972,19 +1978,20 @@ mod tests {
             old_lines: 1,
             new_start,
             new_lines: 2,
-            lines: vec![
-                HunkLine {
-                    origin: ' ',
-                    content: "context\n".into(),
-                },
-                HunkLine {
-                    origin: '+',
-                    content: format!("added at {new_start}\n"),
-                },
-            ],
             stage,
             index_only: false,
-            oid_anchor: None,
+            identity: HunkIdentity::Text {
+                lines: vec![
+                    HunkLine {
+                        origin: ' ',
+                        content: "context\n".into(),
+                    },
+                    HunkLine {
+                        origin: '+',
+                        content: format!("added at {new_start}\n"),
+                    },
+                ],
+            },
             changelist: changelist.map(str::to_owned),
         }
     }
@@ -2651,8 +2658,8 @@ mod tests {
         let index = app.hunk_sel.unwrap();
         assert_eq!(index, 2, "selection follows the hunk's content");
         assert_eq!(
-            app.selected_file().unwrap().hunks[index].lines,
-            before.lines
+            app.selected_file().unwrap().hunks[index].identity,
+            before.identity
         );
     }
 
@@ -3510,13 +3517,14 @@ mod tests {
                 old_lines: 0,
                 new_start: 0,
                 new_lines: 0,
-                lines: Vec::new(),
                 stage,
                 index_only: false,
-                oid_anchor: Some(OidAnchor {
-                    head: head.map(|blob| blob.oid),
-                    changed: changed.map(|blob| blob.oid),
-                }),
+                identity: HunkIdentity::WholeFile {
+                    oids: OidAnchor {
+                        head: head.map(|blob| blob.oid),
+                        changed: changed.map(|blob| blob.oid),
+                    },
+                },
                 changelist: None,
             }],
         }

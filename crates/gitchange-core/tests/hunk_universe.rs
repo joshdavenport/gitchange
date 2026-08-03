@@ -4,7 +4,7 @@
 
 mod support;
 
-use gitchange_core::{ChangeKind, FileStage, HunkStage, Repo};
+use gitchange_core::{ChangeKind, FileStage, HunkIdentity, HunkStage, Repo};
 use support::RepoFixture;
 
 /// Twenty numbered lines, with `edits` as (1-based line, replacement).
@@ -51,7 +51,9 @@ fn hunk_lines_carry_verbatim_content_with_origins() {
     let snapshot = repo.refresh().unwrap();
 
     let lines: Vec<(char, &str)> = snapshot.files[0].hunks[0]
-        .lines
+        .identity
+        .text_lines()
+        .expect("text hunk")
         .iter()
         .map(|line| (line.origin, line.content.as_str()))
         .collect();
@@ -187,7 +189,9 @@ fn an_untracked_file_presents_its_content_as_one_unstaged_hunk() {
     assert_eq!(file.kind, ChangeKind::Untracked);
     assert_eq!((file.staged_hunks(), file.total_hunks()), (0, 1));
     let lines: Vec<(char, &str)> = file.hunks[0]
-        .lines
+        .identity
+        .text_lines()
+        .expect("text hunk")
         .iter()
         .map(|line| (line.origin, line.content.as_str()))
         .collect();
@@ -206,7 +210,10 @@ fn a_deleted_file_presents_removals_as_one_hunk() {
     let file = &snapshot.files[0];
     assert_eq!(file.kind, ChangeKind::Deleted);
     assert_eq!((file.staged_hunks(), file.total_hunks()), (0, 1));
-    assert_eq!(file.hunks[0].lines[0].origin, '-');
+    assert_eq!(
+        file.hunks[0].identity.text_lines().expect("text hunk")[0].origin,
+        '-'
+    );
 }
 
 #[test]
@@ -277,9 +284,11 @@ fn a_changed_binary_file_is_one_whole_file_hunk() {
     assert_eq!(file.total_hunks(), 1);
     assert_eq!(file.stage(), FileStage::Unstaged);
     assert_eq!(file.hunks[0].stage, HunkStage::Unstaged);
-    assert!(file.hunks[0].lines.is_empty());
-
-    let anchor = file.hunks[0].oid_anchor.as_ref().expect("OID anchor");
+    // The whole-file identity carries no lines by construction, so the
+    // pattern match *is* the old "no lines" assertion (ADR 0009).
+    let HunkIdentity::WholeFile { oids: anchor } = &file.hunks[0].identity else {
+        panic!("a changed binary presents a whole-file hunk");
+    };
     assert!(anchor.head.is_some(), "HEAD-side blob OID");
     assert!(anchor.changed.is_some(), "changed-side content hash");
     assert_ne!(anchor.head, anchor.changed);
@@ -335,7 +344,9 @@ fn added_and_deleted_binaries_have_one_sided_anchors() {
 
     let added = snapshot.files.iter().find(|f| f.path == "new.bin").unwrap();
     assert_eq!(added.kind, ChangeKind::Untracked);
-    let anchor = added.hunks[0].oid_anchor.as_ref().unwrap();
+    let HunkIdentity::WholeFile { oids: anchor } = &added.hunks[0].identity else {
+        panic!("whole-file hunk");
+    };
     assert!(anchor.head.is_none());
     assert!(anchor.changed.is_some());
     let sides = added.binary_sides.as_ref().unwrap();
@@ -343,7 +354,9 @@ fn added_and_deleted_binaries_have_one_sided_anchors() {
 
     let deleted = snapshot.files.iter().find(|f| f.path == "old.bin").unwrap();
     assert_eq!(deleted.kind, ChangeKind::Deleted);
-    let anchor = deleted.hunks[0].oid_anchor.as_ref().unwrap();
+    let HunkIdentity::WholeFile { oids: anchor } = &deleted.hunks[0].identity else {
+        panic!("whole-file hunk");
+    };
     assert!(anchor.head.is_some());
     assert!(anchor.changed.is_none());
 }

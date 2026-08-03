@@ -59,6 +59,58 @@ impl ChangedFile {
     }
 }
 
+/// What a hunk *is*, and therefore what identifies it. The two flavours
+/// are mutually exclusive by construction: a text hunk's identity is its
+/// verbatim lines, a whole-file hunk's is its blob-OID pair (ADR 0009),
+/// and neither can carry the other's evidence. Every site that has to
+/// tell them apart matches here rather than testing a field for
+/// emptiness.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HunkIdentity {
+    /// A text hunk: the verbatim diff lines, origin included.
+    Text { lines: Vec<HunkLine> },
+    /// The degenerate single hunk a changed binary file presents
+    /// (`CONTEXT.md`, "Whole-file hunk"): no lines, identity carried by
+    /// the OID pair instead.
+    WholeFile { oids: OidAnchor },
+}
+
+impl HunkIdentity {
+    /// Whether two identities name the same hunk — the "is this still the
+    /// thing the user pointed at?" test that validate-at-apply
+    /// (ADR 0005) and the TUI's selection survival both run.
+    ///
+    /// Text compares verbatim lines, so a hunk merely shifted by edits
+    /// above it still counts. A whole-file hunk keeps its identity **by
+    /// path continuity** (`CONTEXT.md`, "Whole-file hunk"): the whole
+    /// file *is* the hunk, so a re-export — same path, new content — is
+    /// still the same hunk, exactly as tier-2 membership treats it. OIDs
+    /// deliberately don't participate; comparing them would make a
+    /// background rewrite silently void an assign.
+    ///
+    /// Cross-flavour never matches: both sides would otherwise agree on
+    /// the emptiness that used to stand in for this check.
+    pub fn same_hunk(&self, other: &HunkIdentity) -> bool {
+        match (self, other) {
+            (HunkIdentity::Text { lines }, HunkIdentity::Text { lines: candidate }) => {
+                lines == candidate
+            }
+            (HunkIdentity::WholeFile { .. }, HunkIdentity::WholeFile { .. }) => true,
+            _ => false,
+        }
+    }
+
+    /// The verbatim lines, for the text flavour only — `None` says "this
+    /// hunk has no lines to render or anchor on", where an empty slice
+    /// would read as "a text hunk that happens to be empty".
+    pub fn text_lines(&self) -> Option<&[HunkLine]> {
+        match self {
+            HunkIdentity::Text { lines } => Some(lines),
+            HunkIdentity::WholeFile { .. } => None,
+        }
+    }
+}
+
 /// One hunk in the universe. Coordinates are the worktree diff's when the
 /// hunk appears there, the index diff's for index-only hunks.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,21 +119,34 @@ pub struct Hunk {
     pub old_lines: u32,
     pub new_start: u32,
     pub new_lines: u32,
-    pub lines: Vec<HunkLine>,
     pub stage: HunkStage,
     /// True for hunks only the index diff sees (staged then reverted in
     /// the worktree) — their coordinates and lines address index content,
     /// not the worktree, so staging ops treat them differently.
     pub index_only: bool,
-    /// The blob-OID-pair anchor of a binary whole-file hunk (ADR 0009);
-    /// `None` for text hunks, whose identity is their verbatim lines.
-    pub oid_anchor: Option<OidAnchor>,
+    /// What this hunk is, and the evidence that identifies it.
+    pub identity: HunkIdentity,
     /// Owning changelist, written by the matcher after universe
     /// derivation; `None` is unassigned.
     pub changelist: Option<String>,
 }
 
 impl Hunk {
+    /// The identity projected into the shape [`MembershipRecord`] stores
+    /// it: `(anchor, oid_anchor)`. The record is a serde type whose
+    /// on-disk layout keeps the two as independent fields (ADR 0002
+    /// `cat`-debuggability), so this is the one place the sum type is
+    /// flattened back into a pair — every other reader matches
+    /// [`HunkIdentity`] instead.
+    ///
+    /// [`MembershipRecord`]: crate::state::MembershipRecord
+    pub(crate) fn record_anchors(&self) -> (Vec<String>, Option<OidAnchor>) {
+        match &self.identity {
+            HunkIdentity::Text { lines } => (crate::matcher::anchor_lines(lines), None),
+            HunkIdentity::WholeFile { oids } => (Vec::new(), Some(oids.clone())),
+        }
+    }
+
     /// The old-side unified-diff coordinate spelling, e.g. `"-63,1"`.
     /// Callers compose the surrounding `@@` framing themselves — the TUI
     /// frames it three different ways (a log echo, the diff panel's
@@ -250,18 +315,17 @@ fn binary_whole_file_hunk(worktree: Option<&FileDiff>, index: Option<&FileDiff>)
         old_lines: 0,
         new_start: 0,
         new_lines: 0,
-        lines: Vec::new(),
         stage,
         index_only,
-        oid_anchor: Some(
-            anchored
+        identity: HunkIdentity::WholeFile {
+            oids: anchored
                 .and_then(|file| file.binary_sides.as_ref())
                 .map(BinarySides::oid_anchor)
                 .unwrap_or(OidAnchor {
                     head: None,
                     changed: None,
                 }),
-        ),
+        },
         changelist: None,
     }
 }
@@ -336,10 +400,9 @@ fn to_hunk(hunk: DiffHunk, stage: HunkStage, index_only: bool) -> Hunk {
         old_lines: hunk.old_lines,
         new_start: hunk.new_start,
         new_lines: hunk.new_lines,
-        lines: hunk.lines,
         stage,
         index_only,
-        oid_anchor: None,
+        identity: HunkIdentity::Text { lines: hunk.lines },
         changelist: None,
     }
 }
