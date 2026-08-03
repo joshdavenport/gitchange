@@ -516,7 +516,7 @@ impl App {
         }
         self.watcher_degraded = true;
         self.push_log(
-            Severity::Notice,
+            Severity::Info,
             "watcher unavailable — falling back to polling",
         );
     }
@@ -591,7 +591,7 @@ impl App {
                 "commit disabled".to_owned()
             };
             self.push_log(
-                Severity::Notice,
+                Severity::Info,
                 format!("{} detected — {tail}", operation.label()),
             );
         }
@@ -2387,7 +2387,7 @@ mod tests {
         assert!(
             app.log
                 .iter()
-                .any(|entry| entry.severity == Severity::Notice
+                .any(|entry| entry.severity == Severity::Info
                     && entry.text.contains("falling back to polling")),
             "the event marks the moment the condition began"
         );

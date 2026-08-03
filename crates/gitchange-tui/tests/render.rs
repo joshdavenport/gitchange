@@ -329,7 +329,7 @@ fn pins_render_as_a_banner_atop_the_log_stream() {
     // The banner sits above the stream: the pin row precedes the
     // rebase-detected event line.
     let pin = text.find("▲ rebase in progress").unwrap();
-    let event = text.find("! rebase detected").unwrap();
+    let event = text.find("· rebase detected").unwrap();
     assert!(pin < event, "pins render above the event stream");
 }
 
