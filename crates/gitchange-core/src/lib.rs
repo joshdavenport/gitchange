@@ -15,13 +15,13 @@ mod vocabulary;
 pub use backend::{CommitPathSpec, GitBackend, HunkHeader};
 pub use commit::{
     AMEND_FLAG, CommitOptions, CommitOutcome, CommitPayload, NO_VERIFY_FLAG, PayloadFile,
-    PayloadHunk, WholeFilePayload,
+    PayloadHunk, WholeFilePayload, commit_echo,
 };
 pub use diff::{BinarySides, BlobInfo, ChangeKind, DiffHunk, FileDiff, HunkLine, RepoDiffs};
 pub use engine::{Condition, Engine, EngineEvent};
 pub use error::Error;
 pub use matcher::Advisory;
-pub use repo::{Repo, StageAllOutcome};
+pub use repo::{OpOutcome, Repo};
 pub use snapshot::{CommitInfo, FileGroup, GitOperation, GroupKind, Head, Snapshot};
 pub use state::{Changelist, MembershipRecord, OidAnchor, RESERVED_NAMES};
 pub use universe::{ChangedFile, FileStage, Hunk, HunkStage};

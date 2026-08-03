@@ -5,7 +5,7 @@
 
 mod support;
 
-use gitchange_core::{FileStage, HunkStage, Advisory, Repo};
+use gitchange_core::{Advisory, FileStage, HunkStage, Repo};
 use support::RepoFixture;
 
 /// Twenty numbered lines, with `edits` as (1-based line, replacement).
@@ -42,7 +42,7 @@ fn staging_one_hunk_of_a_multi_hunk_file_leaves_the_other_unstaged() {
     let snapshot = repo.refresh().unwrap();
     let hunk = snapshot.files[0].hunks[0].clone();
 
-    let advisories = repo.stage_hunk("a.txt", &hunk).unwrap();
+    let advisories = repo.stage_hunk("a.txt", &hunk).unwrap().advisories;
 
     assert_eq!(advisories, vec![]);
     // Ground truth: the real index holds only the first edit.
@@ -66,7 +66,7 @@ fn unstaging_one_hunk_leaves_the_sibling_staged() {
     let snapshot = repo.refresh().unwrap();
     let hunk = snapshot.files[0].hunks[0].clone();
 
-    let advisories = repo.unstage_hunk("a.txt", &hunk).unwrap();
+    let advisories = repo.unstage_hunk("a.txt", &hunk).unwrap().advisories;
 
     assert_eq!(advisories, vec![]);
     assert_eq!(
@@ -96,7 +96,7 @@ fn a_stale_hunk_fails_soft_with_a_notice_and_no_index_write() {
         &numbered(&[(2, "a different edit"), (18, "edit near bottom")]),
     );
 
-    let advisories = repo.stage_hunk("a.txt", &hunk).unwrap();
+    let advisories = repo.stage_hunk("a.txt", &hunk).unwrap().advisories;
 
     assert_eq!(
         advisories,
@@ -135,7 +135,7 @@ fn a_stale_hunk_fails_soft_on_unstage_too() {
         &numbered(&[(2, "a third edit"), (18, "edit near bottom")]),
     );
 
-    let advisories = repo.unstage_hunk("a.txt", &hunk).unwrap();
+    let advisories = repo.unstage_hunk("a.txt", &hunk).unwrap().advisories;
 
     assert_eq!(
         advisories,
@@ -240,7 +240,7 @@ fn a_moved_hunk_still_stages_at_its_fresh_position() {
     let shifted = format!("inserted line\n{}", numbered(&[(18, "edit near bottom")]));
     fixture.write("a.txt", &shifted);
 
-    let advisories = repo.stage_hunk("a.txt", &hunk).unwrap();
+    let advisories = repo.stage_hunk("a.txt", &hunk).unwrap().advisories;
 
     assert_eq!(advisories, vec![]);
     assert_eq!(
@@ -257,7 +257,7 @@ fn staging_a_staged_hunk_is_a_no_op() {
     let snapshot = repo.refresh().unwrap();
     let hunk = snapshot.files[0].hunks[0].clone();
 
-    let advisories = repo.stage_hunk("a.txt", &hunk).unwrap();
+    let advisories = repo.stage_hunk("a.txt", &hunk).unwrap().advisories;
 
     assert_eq!(advisories, vec![]);
     assert_eq!(
@@ -273,7 +273,7 @@ fn unstaging_an_unstaged_hunk_is_a_no_op() {
     let snapshot = repo.refresh().unwrap();
     let hunk = snapshot.files[0].hunks[0].clone();
 
-    let advisories = repo.unstage_hunk("a.txt", &hunk).unwrap();
+    let advisories = repo.unstage_hunk("a.txt", &hunk).unwrap().advisories;
 
     assert_eq!(advisories, vec![]);
     assert_eq!(
@@ -349,7 +349,7 @@ fn stage_hunk_stages_an_untracked_file_whole() {
     let snapshot = repo.refresh().unwrap();
     let hunk = snapshot.files[0].hunks[0].clone();
 
-    let advisories = repo.stage_hunk("new.txt", &hunk).unwrap();
+    let advisories = repo.stage_hunk("new.txt", &hunk).unwrap().advisories;
 
     assert_eq!(advisories, vec![]);
     assert_eq!(
@@ -370,7 +370,7 @@ fn unstage_hunk_removes_a_staged_new_file_from_the_index() {
     let snapshot = repo.refresh().unwrap();
     let hunk = snapshot.files[0].hunks[0].clone();
 
-    let advisories = repo.unstage_hunk("new.txt", &hunk).unwrap();
+    let advisories = repo.unstage_hunk("new.txt", &hunk).unwrap().advisories;
 
     assert_eq!(advisories, vec![]);
     assert_eq!(fixture.index_content("new.txt"), None);
@@ -421,7 +421,7 @@ fn stage_hunk_stages_a_deletion_whole() {
     let snapshot = repo.refresh().unwrap();
     let hunk = snapshot.files[0].hunks[0].clone();
 
-    let advisories = repo.stage_hunk("doomed.txt", &hunk).unwrap();
+    let advisories = repo.stage_hunk("doomed.txt", &hunk).unwrap().advisories;
 
     assert_eq!(advisories, vec![]);
     assert_eq!(fixture.index_content("doomed.txt"), None);
@@ -452,7 +452,7 @@ fn staging_a_hunk_of_a_non_utf8_text_file_keeps_the_bytes_verbatim() {
     let snapshot = repo.refresh().unwrap();
     let hunk = snapshot.files[0].hunks[0].clone();
 
-    let advisories = repo.stage_hunk("latin1.txt", &hunk).unwrap();
+    let advisories = repo.stage_hunk("latin1.txt", &hunk).unwrap().advisories;
 
     assert_eq!(advisories, vec![]);
     assert_eq!(
@@ -483,7 +483,7 @@ fn identical_hunks_stage_the_one_at_the_requested_position() {
     assert_eq!(hunks.len(), 2);
     assert_eq!(hunks[0].lines, hunks[1].lines);
 
-    let advisories = repo.stage_hunk("a.txt", &hunks[1]).unwrap();
+    let advisories = repo.stage_hunk("a.txt", &hunks[1]).unwrap().advisories;
 
     assert_eq!(advisories, vec![]);
     assert_eq!(
@@ -505,7 +505,7 @@ fn staging_a_binary_whole_file_hunk_is_a_whole_file_index_write() {
 
     let snapshot = repo.refresh().unwrap();
     let hunk = snapshot.files[0].hunks[0].clone();
-    let advisories = repo.stage_hunk("blob.bin", &hunk).unwrap();
+    let advisories = repo.stage_hunk("blob.bin", &hunk).unwrap().advisories;
     assert!(advisories.is_empty());
     assert_eq!(fixture.index_bytes("blob.bin").unwrap(), vec![0u8, 9, 9]);
     assert_eq!(

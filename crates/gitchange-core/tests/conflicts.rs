@@ -6,7 +6,7 @@
 
 mod support;
 
-use gitchange_core::{ChangeKind, CommitOptions, Error, GitOperation, Advisory, Repo, Snapshot};
+use gitchange_core::{Advisory, ChangeKind, CommitOptions, Error, GitOperation, Repo, Snapshot};
 use support::RepoFixture;
 
 fn repo(fixture: &RepoFixture) -> Repo {

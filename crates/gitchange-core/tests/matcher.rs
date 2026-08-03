@@ -640,7 +640,8 @@ fn a_binary_whole_file_hunk_is_assignable_like_any_other() {
     let hunk = snapshot.files[0].hunks[0].clone();
     let advisories = repo
         .assign_hunks("logo.png", &[hunk], Some("other"))
-        .unwrap();
+        .unwrap()
+        .advisories;
     assert!(advisories.is_empty());
 
     let snapshot = repo.refresh().unwrap();

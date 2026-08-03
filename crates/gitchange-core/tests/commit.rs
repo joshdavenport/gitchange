@@ -9,7 +9,7 @@ mod support;
 
 use std::fs;
 
-use gitchange_core::{CommitOptions, CommitOutcome, Error, HunkStage, Advisory, Repo, Snapshot};
+use gitchange_core::{Advisory, CommitOptions, CommitOutcome, Error, HunkStage, Repo, Snapshot};
 use support::RepoFixture;
 
 /// Lines `line 1`..=`line count`, as a vec for splicing edits into.
@@ -602,7 +602,7 @@ fn align_sets_index_to_worktree_for_the_changelists_stale_hunks() {
         .stage("b.txt")
         .write("b.txt", &text(&head));
 
-    let advisories = repo.align(Some("one")).unwrap();
+    let advisories = repo.align(Some("one")).unwrap().advisories;
     assert_eq!(advisories, Vec::<Advisory>::new());
 
     assert_eq!(fixture.index_content("a.txt"), Some(text(&worktree_a)));
@@ -646,7 +646,7 @@ fn stage_all_stages_only_the_changelists_unstaged_hunks() {
     repo.assign_hunks("b.txt", &b_hunks, None).unwrap();
 
     let outcome = repo.stage_all(Some("one")).unwrap();
-    assert_eq!(outcome.staged, 1);
+    assert_eq!(outcome.echo.as_deref(), Some("staged 1 hunk — 'one'"));
     assert_eq!(outcome.advisories, Vec::<Advisory>::new());
 
     assert_eq!(fixture.index_content("a.txt"), Some(text(&worktree_a)));

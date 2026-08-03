@@ -154,7 +154,6 @@ impl Engine {
     pub fn request_refresh(&self) {
         let _ = self.requests.send(());
     }
-
 }
 
 /// Start the notify watcher over the worktree root (which includes

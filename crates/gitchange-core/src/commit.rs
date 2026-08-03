@@ -11,6 +11,7 @@ use crate::diff::{DiffHunk, FileDiff};
 use crate::matcher::anchor_lines;
 use crate::state::{MembershipRecord, OidAnchor, State};
 use crate::universe::{ChangedFile, Hunk, HunkStage, ranges_overlap};
+use crate::vocabulary::{UNASSIGNED, count_noun};
 
 /// Flags for [`crate::Repo::commit`], both forwarded to the underlying
 /// `git commit` (ADR 0004).
@@ -27,6 +28,36 @@ pub const NO_VERIFY_FLAG: &str = "--no-verify";
 
 /// The git flag [`CommitOptions::amend`] drives. See [`NO_VERIFY_FLAG`].
 pub const AMEND_FLAG: &str = "--amend";
+
+/// The transparency echo for one commit invocation (ADR 0007): the
+/// shelled-out command's flags plus the temp-index context — one
+/// phrasing, sunk into core so frontends can't drift (ADR 0006). The
+/// caller logs it when git actually ran: on
+/// [`CommitOutcome::Committed`], and on
+/// [`crate::Error::HookRejected`] (git executed and refused); drift and
+/// guard failures mean it never did.
+pub fn commit_echo(
+    options: &CommitOptions,
+    changelist: Option<&str>,
+    payload: &CommitPayload,
+) -> String {
+    let mut echo = String::from("git commit");
+    if options.no_verify {
+        echo.push(' ');
+        echo.push_str(NO_VERIFY_FLAG);
+    }
+    if options.amend {
+        echo.push(' ');
+        echo.push_str(AMEND_FLAG);
+    }
+    let hunks = payload.staged_hunks() + payload.stale_hunks();
+    echo.push_str(&format!(
+        " (temp index — '{}', {})",
+        changelist.unwrap_or(UNASSIGNED),
+        count_noun(hunks, "hunk"),
+    ));
+    echo
+}
 
 /// What [`crate::Repo::commit`] produced.
 #[derive(Debug)]

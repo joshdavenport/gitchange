@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use gitchange_core::{CommitOptions, CommitOutcome, Hunk, Advisory, Repo, Snapshot};
+use gitchange_core::{Advisory, CommitOptions, CommitOutcome, Hunk, Repo, Snapshot};
 use support::RepoFixture;
 
 /// Repo-relative paths with file bytes — one tree state.
@@ -129,12 +129,16 @@ fn run(case: Case) {
     let worktree_before = worktree_state(fixture.path());
 
     let advisories = match &case.op {
-        Op::StageHunk { path, hunk } => repo
-            .stage_hunk(path, &hunk_at(&snapshot, path, *hunk))
-            .unwrap(),
-        Op::UnstageHunk { path, hunk } => repo
-            .unstage_hunk(path, &hunk_at(&snapshot, path, *hunk))
-            .unwrap(),
+        Op::StageHunk { path, hunk } => {
+            repo.stage_hunk(path, &hunk_at(&snapshot, path, *hunk))
+                .unwrap()
+                .advisories
+        }
+        Op::UnstageHunk { path, hunk } => {
+            repo.unstage_hunk(path, &hunk_at(&snapshot, path, *hunk))
+                .unwrap()
+                .advisories
+        }
         Op::StageFile(path) => {
             repo.stage_file(path).unwrap();
             Vec::new()
