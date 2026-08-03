@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use crate::diff::ChangeKind;
 use crate::state::MembershipRecord;
 use crate::universe::{ChangedFile, Hunk, ranges_overlap};
-use crate::vocabulary::{ARROW, count_noun};
+use crate::vocabulary::{ARROW, UNASSIGNED, count_noun};
 
 /// Dormant records prune after 14 days (ADR 0002).
 const DORMANT_TTL_SECS: u64 = 14 * 24 * 60 * 60;
@@ -115,7 +115,7 @@ impl Notice {
             } => {
                 let destination = match changelist {
                     Some(name) => format!("'{name}'"),
-                    None => "unassigned".into(),
+                    None => UNASSIGNED.into(),
                 };
                 format!(
                     "restored {} to {destination} — {path}",

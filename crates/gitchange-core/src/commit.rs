@@ -20,6 +20,14 @@ pub struct CommitOptions {
     pub amend: bool,
 }
 
+/// The git flag [`CommitOptions::no_verify`] drives — the commit
+/// dialog's checkbox label and the shelled-out command echo name it
+/// identically (ADR 0006).
+pub const NO_VERIFY_FLAG: &str = "--no-verify";
+
+/// The git flag [`CommitOptions::amend`] drives. See [`NO_VERIFY_FLAG`].
+pub const AMEND_FLAG: &str = "--amend";
+
 /// What [`crate::Repo::commit`] produced.
 #[derive(Debug)]
 pub enum CommitOutcome {

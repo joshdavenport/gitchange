@@ -9,9 +9,18 @@ use std::path::{Path, PathBuf};
 use crate::error::Error;
 use crate::state::{SCHEMA_VERSION, State};
 
-const STATE_FILE: &str = "state.json";
-const LOCK_FILE: &str = "state.json.lock";
-const TMP_FILE: &str = "state.json.tmp";
+/// Declares the state file's name and its lock/tmp siblings from one
+/// literal (a `macro_rules!` because `concat!` needs a literal token, not
+/// a `const` reference): renaming the file can't leave a sibling on the
+/// old stem.
+macro_rules! state_file_names {
+    ($stem:literal) => {
+        const STATE_FILE: &str = $stem;
+        const LOCK_FILE: &str = concat!($stem, ".lock");
+        const TMP_FILE: &str = concat!($stem, ".tmp");
+    };
+}
+state_file_names!("state.json");
 
 /// A held lockfile; dropping it releases the lock. Writers must hold one
 /// across their load-mutate-save cycle.

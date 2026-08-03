@@ -33,7 +33,7 @@ pub enum Error {
     /// A git operation is in progress (ADR 0007): the next commit would
     /// conclude it with one changelist's content, so commit refuses.
     /// Staging is never guarded by this.
-    #[error("{} in progress — conclude or abort it first", operation.label())]
+    #[error("{}", operation.in_progress_message())]
     OperationInProgress { operation: GitOperation },
 
     /// The commit payload is empty: the changelist has no staged hunks

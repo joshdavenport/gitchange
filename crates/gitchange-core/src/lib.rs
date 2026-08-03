@@ -14,7 +14,8 @@ mod vocabulary;
 
 pub use backend::{CommitPathSpec, GitBackend, HunkHeader};
 pub use commit::{
-    CommitOptions, CommitOutcome, CommitPayload, PayloadFile, PayloadHunk, WholeFilePayload,
+    AMEND_FLAG, CommitOptions, CommitOutcome, CommitPayload, NO_VERIFY_FLAG, PayloadFile,
+    PayloadHunk, WholeFilePayload,
 };
 pub use diff::{BinarySides, BlobInfo, ChangeKind, DiffHunk, FileDiff, HunkLine, RepoDiffs};
 pub use engine::{Condition, Engine, EngineEvent};
@@ -24,4 +25,7 @@ pub use repo::{Repo, StageAllOutcome};
 pub use snapshot::{CommitInfo, FileGroup, GitOperation, GroupKind, Head, Snapshot};
 pub use state::{Changelist, MembershipRecord, OidAnchor, RESERVED_NAMES};
 pub use universe::{ChangedFile, FileStage, Hunk, HunkStage};
-pub use vocabulary::{ACTIVE_MARKER, ARROW, SEPARATOR, count_noun};
+pub use vocabulary::{
+    ACTIVE_MARKER, ALL, ARROW, CONFLICTS, RESOLVE_OUTSIDE_GITCHANGE, SEPARATOR, UNASSIGNED,
+    conflicted_hint, count_noun,
+};

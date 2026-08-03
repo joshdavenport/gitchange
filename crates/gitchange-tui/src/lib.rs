@@ -11,13 +11,22 @@ use std::time::Instant;
 
 use crossbeam_channel::{at, never, select, unbounded};
 use gitchange_core::{
-    CommitOptions, CommitOutcome, Condition, Engine, EngineEvent, Repo, count_noun,
+    AMEND_FLAG, CommitOptions, CommitOutcome, Condition, Engine, EngineEvent, NO_VERIFY_FLAG, Repo,
+    UNASSIGNED, count_noun,
 };
 use ratatui::crossterm::event::{DisableFocusChange, EnableFocusChange, Event, KeyEventKind};
 use ratatui::crossterm::execute;
 
 use app::{Action, App, CommitDraft, CommitStep, Op, Severity};
 use theme::Theme;
+
+/// Error-modal titles reused across several ops' failure paths, so each
+/// wording is spelled once (titles that occur once stay inline — a const
+/// used once is noise).
+const COMMIT_FAILED: &str = "Commit failed";
+const STAGE_FAILED: &str = "Stage failed";
+const UNSTAGE_FAILED: &str = "Unstage failed";
+const CREATE_CHANGELIST_FAILED: &str = "Create changelist failed";
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -153,7 +162,7 @@ fn run_op(repo: &Repo, app: &mut App, op: Op) {
     match op {
         Op::CreateChangelist { name } => done(
             app,
-            "Create changelist failed",
+            CREATE_CHANGELIST_FAILED,
             None,
             repo.create_changelist(&name),
         ),
@@ -172,25 +181,19 @@ fn run_op(repo: &Repo, app: &mut App, op: Op) {
         Op::SetActive { name } => done(app, "Switch changelist failed", None, repo.switch(&name)),
         Op::StageFile { path } => {
             let echo = format!("staged file — {path}");
-            done(app, "Stage failed", Some(echo), repo.stage_file(&path));
+            done(app, STAGE_FAILED, Some(echo), repo.stage_file(&path));
         }
         Op::UnstageFile { path } => {
             let echo = format!("unstaged file — {path}");
-            done(app, "Unstage failed", Some(echo), repo.unstage_file(&path));
+            done(app, UNSTAGE_FAILED, Some(echo), repo.unstage_file(&path));
         }
         Op::StageHunk { path, hunk } => {
-            let echo = format!(
-                "staged hunk — {path} @@ -{},{}",
-                hunk.old_start, hunk.old_lines
-            );
-            hunk_op(app, "Stage failed", echo, repo.stage_hunk(&path, &hunk));
+            let echo = format!("staged hunk — {path} @@ {}", hunk.old_coords());
+            hunk_op(app, STAGE_FAILED, echo, repo.stage_hunk(&path, &hunk));
         }
         Op::UnstageHunk { path, hunk } => {
-            let echo = format!(
-                "unstaged hunk — {path} @@ -{},{}",
-                hunk.old_start, hunk.old_lines
-            );
-            hunk_op(app, "Unstage failed", echo, repo.unstage_hunk(&path, &hunk));
+            let echo = format!("unstaged hunk — {path} @@ {}", hunk.old_coords());
+            hunk_op(app, UNSTAGE_FAILED, echo, repo.unstage_hunk(&path, &hunk));
         }
         Op::Assign {
             path,
@@ -204,7 +207,7 @@ fn run_op(repo: &Repo, app: &mut App, op: Op) {
                 && let Err(error) = repo.create_changelist(&target)
                 && !matches!(error, gitchange_core::Error::ChangelistExists { .. })
             {
-                app.show_error("Create changelist failed", error.to_string());
+                app.show_error(CREATE_CHANGELIST_FAILED, error.to_string());
                 return;
             }
             match repo.assign_hunks(&path, &hunks, Some(&target)) {
@@ -256,7 +259,7 @@ fn run_commit_step(repo: &Repo, app: &mut App, step: CommitStep) {
             match repo.stage_all(changelist.as_deref()) {
                 Ok(outcome) => {
                     if outcome.staged > 0 {
-                        let label = changelist.as_deref().unwrap_or("unassigned");
+                        let label = changelist.as_deref().unwrap_or(UNASSIGNED);
                         app.push_log(
                             Severity::Info,
                             format!("staged {} — '{label}'", count_noun(outcome.staged, "hunk")),
@@ -265,7 +268,7 @@ fn run_commit_step(repo: &Repo, app: &mut App, step: CommitStep) {
                     app.push_notices(&outcome.notices);
                     open_commit_dialog(repo, app, changelist);
                 }
-                Err(error) => app.show_error("Commit failed", error.to_string()),
+                Err(error) => app.show_error(COMMIT_FAILED, error.to_string()),
             }
         }
         CommitStep::Commit(draft) => run_commit(repo, app, draft),
@@ -283,7 +286,7 @@ fn run_commit_step(repo: &Repo, app: &mut App, step: CommitStep) {
                     app.push_notices(&notices);
                 }
                 Err(error) => {
-                    app.show_error("Commit failed", error.to_string());
+                    app.show_error(COMMIT_FAILED, error.to_string());
                     app.restore_commit_dialog(draft);
                     return;
                 }
@@ -302,7 +305,7 @@ fn run_commit_step(repo: &Repo, app: &mut App, step: CommitStep) {
                     }
                 }
                 Err(error) => {
-                    app.show_error("Commit failed", error.to_string());
+                    app.show_error(COMMIT_FAILED, error.to_string());
                     app.restore_commit_dialog(draft);
                 }
             }
@@ -317,7 +320,7 @@ fn open_commit_dialog(repo: &Repo, app: &mut App, changelist: Option<String>) {
     match repo.commit_payload(changelist.as_deref()) {
         Ok(payload) if payload.is_empty() => app.offer_stage_all(changelist),
         Ok(payload) => app.open_commit_dialog(changelist, payload),
-        Err(error) => app.show_error("Commit failed", error.to_string()),
+        Err(error) => app.show_error(COMMIT_FAILED, error.to_string()),
     }
 }
 
@@ -337,10 +340,12 @@ fn run_commit(repo: &Repo, app: &mut App, draft: CommitDraft) {
     };
     let mut echo = String::from("git commit");
     if options.no_verify {
-        echo.push_str(" --no-verify");
+        echo.push(' ');
+        echo.push_str(NO_VERIFY_FLAG);
     }
     if options.amend {
-        echo.push_str(" --amend");
+        echo.push(' ');
+        echo.push_str(AMEND_FLAG);
     }
     let hunks = draft.payload.staged_hunks() + draft.payload.stale_hunks();
     echo.push_str(&format!(
@@ -383,7 +388,7 @@ fn run_commit(repo: &Repo, app: &mut App, draft: CommitDraft) {
                 gitchange_core::Error::HookRejected { stderr } => stderr.clone(),
                 other => other.to_string(),
             };
-            app.show_error("Commit failed", detail);
+            app.show_error(COMMIT_FAILED, detail);
             app.restore_commit_dialog(draft);
         }
     }

@@ -7,8 +7,8 @@
 use std::time::{Duration, Instant};
 
 use gitchange_core::{
-    ChangeKind, ChangedFile, CommitPayload, FileStage, GroupKind, Hunk, HunkStage, Notice,
-    Snapshot, count_noun,
+    CONFLICTS, ChangeKind, ChangedFile, CommitPayload, FileStage, GroupKind, Hunk, HunkStage,
+    Notice, Snapshot, UNASSIGNED, count_noun,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -18,6 +18,16 @@ pub const INDICATOR_DELAY: Duration = Duration::from_millis(500);
 
 /// Log entries kept — enough history for the panel plus scrollback.
 const LOG_CAP: usize = 200;
+
+/// The operation guard's "why" tail (ADR 0007): standalone when no path
+/// is conflicted, the suffix of a longer clause when some are.
+const COMMIT_DISABLED: &str = "commit disabled";
+
+/// The watcher-degraded condition's shared stem. ADR 0007 splits the
+/// onset log from the live pin deliberately (the event marks the
+/// moment, the pin names the state) — share only the stem, never the
+/// two full strings.
+const WATCHER_UNAVAILABLE: &str = "watcher unavailable";
 
 /// A log event's severity (ADR 0007): three levels, fixed — new event
 /// classes map onto these rather than growing the scale. Assigned here
@@ -62,7 +72,7 @@ pub enum Panel {
 }
 
 impl Panel {
-    const ALL: [Panel; 6] = [
+    pub const ALL: [Panel; 6] = [
         Panel::Status,
         Panel::Changelists,
         Panel::Files,
@@ -87,6 +97,19 @@ impl Panel {
     /// keybinding cannot disagree.
     pub fn from_number(c: char) -> Option<Panel> {
         Self::ALL.into_iter().find(|panel| panel.number() == c)
+    }
+
+    /// The panel's border title — an exhaustive match so a new variant
+    /// fails to compile rather than falling back to the wrong title.
+    pub fn title(self) -> &'static str {
+        match self {
+            Panel::Status => "Status",
+            Panel::Changelists => "Changelists",
+            Panel::Files => "Files",
+            Panel::Commits => "Commits",
+            Panel::Diff => "Diff",
+            Panel::Log => "Log",
+        }
     }
 }
 
@@ -118,9 +141,9 @@ impl Scope {
     pub fn title(&self) -> &str {
         match self {
             Scope::All => "all changelists",
-            Scope::Conflicts => "conflicts",
+            Scope::Conflicts => CONFLICTS,
             Scope::Changelist(name) => name,
-            Scope::Unassigned => "unassigned",
+            Scope::Unassigned => UNASSIGNED,
         }
     }
 }
@@ -319,7 +342,7 @@ impl CommitDraft {
 
     /// The dialog title's changelist name.
     pub fn changelist_label(&self) -> &str {
-        self.changelist.as_deref().unwrap_or("unassigned")
+        self.changelist.as_deref().unwrap_or(UNASSIGNED)
     }
 }
 
@@ -527,7 +550,7 @@ impl App {
         self.watcher_degraded = true;
         self.push_log(
             Severity::Info,
-            "watcher unavailable — falling back to polling",
+            format!("{WATCHER_UNAVAILABLE} — falling back to polling"),
         );
     }
 
@@ -552,12 +575,12 @@ impl App {
             let tail = if conflicted > 0 {
                 format!("{conflicted} conflicted")
             } else {
-                "commit disabled".to_owned()
+                COMMIT_DISABLED.to_owned()
             };
             pins.push(format!("{} in progress — {tail}", operation.label()));
         }
         if self.watcher_degraded {
-            pins.push("watcher unavailable — polling".to_owned());
+            pins.push(format!("{WATCHER_UNAVAILABLE} — polling"));
         }
         if let Some(snapshot) = &self.snapshot
             && matches!(snapshot.head, gitchange_core::Head::Detached { .. })
@@ -596,11 +619,11 @@ impl App {
             let conflicted = snapshot.conflicted_files().len();
             let tail = if conflicted > 0 {
                 format!(
-                    "{} conflicted, commit disabled",
+                    "{} conflicted, {COMMIT_DISABLED}",
                     count_noun(conflicted, "file")
                 )
             } else {
-                "commit disabled".to_owned()
+                COMMIT_DISABLED.to_owned()
             };
             self.push_log(
                 Severity::Info,
@@ -817,13 +840,7 @@ impl App {
                 // is in progress `c` is a soft no-op — the pin names the
                 // operation, this line says why nothing opened.
                 if let Some(operation) = self.snapshot.as_ref().and_then(|s| s.operation) {
-                    self.push_log(
-                        Severity::Info,
-                        format!(
-                            "{} in progress — conclude or abort it first",
-                            operation.label()
-                        ),
-                    );
+                    self.push_log(Severity::Info, operation.in_progress_message());
                     return None;
                 }
                 // `c` on the All view is a polite no-op with a message
@@ -1087,7 +1104,7 @@ impl App {
             }
         }
         if hunks == 0 {
-            let label = owner.unwrap_or("unassigned");
+            let label = owner.unwrap_or(UNASSIGNED);
             self.push_log(Severity::Info, format!("nothing to commit in '{label}'"));
             return;
         }
@@ -1203,10 +1220,7 @@ impl App {
         // `space` on quarantined content politely refuses (ADR 0007) —
         // three index stages are a workflow gitchange doesn't serve.
         if file.kind == ChangeKind::Conflicted {
-            self.push_log(
-                Severity::Info,
-                format!("{path} is conflicted — resolve outside gitchange"),
-            );
+            self.push_log(Severity::Info, gitchange_core::conflicted_hint(&path));
             return None;
         }
         let op = match file.stage() {
@@ -1274,7 +1288,7 @@ impl App {
                 .any(|file| file.path == path && file.kind == ChangeKind::Conflicted)
         });
         if conflicted {
-            return format!("{path} is conflicted — resolve outside gitchange");
+            return gitchange_core::conflicted_hint(path);
         }
         match payload {
             AssignPayload::FileRow(entry) => format!(
@@ -1458,23 +1472,15 @@ impl App {
                 // Conflicts first (ADR 0007), changelists in user order,
                 // unassigned last when non-empty.
                 for group in snapshot.groups() {
-                    let (label, group_scope, unassigned, conflicted, active) = match &group.kind {
-                        GroupKind::Conflicts => {
-                            ("conflicts".into(), Scope::Conflicts, false, true, false)
+                    let (group_scope, unassigned, conflicted, active) = match &group.kind {
+                        GroupKind::Conflicts => (Scope::Conflicts, false, true, false),
+                        GroupKind::Changelist { name, active } => {
+                            (Scope::Changelist(name.clone()), false, false, *active)
                         }
-                        GroupKind::Changelist { name, active } => (
-                            name.clone(),
-                            Scope::Changelist(name.clone()),
-                            false,
-                            false,
-                            *active,
-                        ),
-                        GroupKind::Unassigned => {
-                            ("unassigned".into(), Scope::Unassigned, true, false, false)
-                        }
+                        GroupKind::Unassigned => (Scope::Unassigned, true, false, false),
                     };
                     rows.push(FilesRow::Header {
-                        label,
+                        label: group.kind.label().to_owned(),
                         count: group.files.len(),
                         unassigned,
                         conflicted,
@@ -1591,9 +1597,10 @@ impl App {
             DiffLine::FileHeader(format!("+++ b/{}", file.path)),
         ];
         if file.kind == ChangeKind::Conflicted {
-            lines.push(DiffLine::Conflict(
-                "conflicted — resolve outside gitchange".into(),
-            ));
+            lines.push(DiffLine::Conflict(format!(
+                "conflicted — {}",
+                gitchange_core::RESOLVE_OUTSIDE_GITCHANGE
+            )));
             return lines;
         }
         if file.binary {
@@ -1614,10 +1621,7 @@ impl App {
             let tag = if owner.is_none() || foreign {
                 let unassigned = hunk.changelist.is_none();
                 Some(HunkTag {
-                    label: hunk
-                        .changelist
-                        .clone()
-                        .unwrap_or_else(|| "unassigned".into()),
+                    label: hunk.changelist.clone().unwrap_or_else(|| UNASSIGNED.into()),
                     stage: (!unassigned).then_some(hunk.stage),
                     unassigned,
                     dim: foreign,
@@ -1629,10 +1633,7 @@ impl App {
                 lines.push(DiffLine::Spacer);
             }
             lines.push(DiffLine::HunkHeader {
-                text: format!(
-                    "@@ -{},{} +{},{} @@",
-                    hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines
-                ),
+                text: format!("@@ {} {} @@", hunk.old_coords(), hunk.new_coords()),
                 tag,
                 foreign,
                 selected,
@@ -1697,10 +1698,7 @@ impl App {
         };
         let mut line = format!("{} in {path}", count_noun(hunks.len(), noun));
         if let AssignPayload::Hunk { hunk, .. } = payload {
-            line.push_str(&format!(
-                " @@ -{},{} +{},{}",
-                hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines
-            ));
+            line.push_str(&format!(" @@ {} {}", hunk.old_coords(), hunk.new_coords()));
         }
         if !provenance.is_empty() {
             let sources: Vec<String> = provenance
@@ -1747,7 +1745,7 @@ impl App {
             }
             let label = match &hunk.changelist {
                 Some(name) => format!("'{name}'"),
-                None => "unassigned".to_owned(),
+                None => UNASSIGNED.to_owned(),
             };
             match sources.iter_mut().find(|(seen, _)| *seen == label) {
                 Some((_, count)) => *count += 1,

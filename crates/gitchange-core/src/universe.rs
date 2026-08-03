@@ -81,6 +81,22 @@ pub struct Hunk {
     pub changelist: Option<String>,
 }
 
+impl Hunk {
+    /// The old-side unified-diff coordinate spelling, e.g. `"-63,1"`.
+    /// Callers compose the surrounding `@@` framing themselves — the TUI
+    /// frames it three different ways (a log echo, the diff panel's
+    /// unified header, the assign popup) that must not converge.
+    pub fn old_coords(&self) -> String {
+        format!("-{},{}", self.old_start, self.old_lines)
+    }
+
+    /// The new-side unified-diff coordinate spelling, e.g. `"+63,2"`. See
+    /// [`Hunk::old_coords`].
+    pub fn new_coords(&self) -> String {
+        format!("+{},{}", self.new_start, self.new_lines)
+    }
+}
+
 /// Per-hunk staging per ADR 0003's table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HunkStage {

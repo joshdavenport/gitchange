@@ -4,7 +4,9 @@
 
 use std::time::Instant;
 
-use gitchange_core::{ChangeKind, FileStage, Head, HunkStage, count_noun};
+use gitchange_core::{
+    ALL, AMEND_FLAG, ChangeKind, FileStage, Head, HunkStage, NO_VERIFY_FLAG, UNASSIGNED, count_noun,
+};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
@@ -58,15 +60,16 @@ pub fn draw(frame: &mut Frame, app: &App, theme: &Theme, now: Instant) {
 }
 
 /// A prototype-style panel frame: `[n]─Title - alt` on the top border,
-/// the position count on the bottom-right.
-fn panel_block<'a>(
+/// the position count on the bottom-right. The title comes from `panel`
+/// itself ([`Panel::title`]) so a panel can't be drawn under the wrong
+/// name.
+fn panel_block(
     panel: Panel,
-    title: &'a str,
     alt: Option<String>,
     count: Option<String>,
     app: &App,
     theme: &Theme,
-) -> Block<'a> {
+) -> Block<'static> {
     let focused = app.focus == panel;
     let border = if focused {
         theme.colors.border_focus
@@ -86,8 +89,11 @@ fn panel_block<'a>(
         theme.colors.dim
     };
     let mut spans = vec![
-        Span::styled(format!("[{}]─", panel.number()), prefix_color),
-        Span::styled(title, Style::new().fg(title_color)),
+        Span::styled(
+            format!("[{}]{}", panel.number(), theme.glyphs.rule),
+            prefix_color,
+        ),
+        Span::styled(panel.title(), Style::new().fg(title_color)),
     ];
     if let Some(alt) = alt {
         spans.push(Span::styled(format!(" - {alt}"), theme.colors.dim));
@@ -129,9 +135,12 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             spans.push(Span::styled(" (no commits yet)", theme.colors.dim));
             Line::from(spans)
         }
-        None => Line::styled("loading…", theme.colors.dim),
+        None => Line::styled(
+            format!("loading{}", theme.glyphs.ellipsis),
+            theme.colors.dim,
+        ),
     };
-    let block = panel_block(Panel::Status, "Status", None, None, app, theme);
+    let block = panel_block(Panel::Status, None, None, app, theme);
     frame.render_widget(Paragraph::new(line).block(block), area);
 }
 
@@ -191,7 +200,7 @@ fn draw_changelists(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                 // row; the arm exists for exhaustiveness.
                 Scope::All | Scope::Conflicts => vec![
                     Span::styled(format!("{} ", theme.glyphs.all), theme.colors.dim),
-                    Span::raw("all"),
+                    Span::raw(ALL),
                 ],
                 Scope::Changelist(name) => vec![
                     if row.active {
@@ -206,7 +215,7 @@ fn draw_changelists(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                 ],
                 Scope::Unassigned => vec![
                     Span::styled(format!("{} ", theme.glyphs.unassigned), theme.colors.warn),
-                    Span::styled("unassigned", theme.colors.warn),
+                    Span::styled(UNASSIGNED, theme.colors.warn),
                 ],
             });
             spans.push(Span::styled(format!(" ({})", row.count), theme.colors.dim));
@@ -221,14 +230,7 @@ fn draw_changelists(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         })
         .collect();
     let count = format!("{} of {}", app.changelist_row + 1, rows.len());
-    let block = panel_block(
-        Panel::Changelists,
-        "Changelists",
-        None,
-        Some(count),
-        app,
-        theme,
-    );
+    let block = panel_block(Panel::Changelists, None, Some(count), app, theme);
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
@@ -299,7 +301,6 @@ fn draw_files(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let (position, total) = app.files_count();
     let block = panel_block(
         Panel::Files,
-        "Files",
         Some(app.scope().title().to_owned()),
         Some(format!("{position} of {total}")),
         app,
@@ -339,7 +340,7 @@ fn draw_commits(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     } else {
         format!("{} of {}", app.commit_row + 1, commits.len())
     };
-    let block = panel_block(Panel::Commits, "Commits", None, Some(count), app, theme);
+    let block = panel_block(Panel::Commits, None, Some(count), app, theme);
     let scroll = keep_visible(app.commit_row, area.height.saturating_sub(2));
     frame.render_widget(Paragraph::new(lines).block(block).scroll((scroll, 0)), area);
 }
@@ -367,7 +368,6 @@ fn draw_diff(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let alt = app.diff_title();
     let block = panel_block(
         Panel::Diff,
-        "Diff",
         (!alt.is_empty()).then_some(alt),
         None,
         app,
@@ -503,7 +503,7 @@ fn decorate(
 /// conditions that currently hold — over one chronological stream of
 /// events, newest kept visible.
 fn draw_log(frame: &mut Frame, area: Rect, app: &App, pins: &[String], theme: &Theme) {
-    let block = panel_block(Panel::Log, "Log", None, None, app, theme);
+    let block = panel_block(Panel::Log, None, None, app, theme);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -691,7 +691,7 @@ fn draw_overlay(frame: &mut Frame, area: Rect, app: &App, overlay: &Overlay, the
             hunks,
             files,
         } => {
-            let label = changelist.as_deref().unwrap_or("unassigned");
+            let label = changelist.as_deref().unwrap_or(UNASSIGNED);
             let lines = vec![
                 Line::from(vec![
                     Span::styled(
@@ -775,12 +775,12 @@ fn draw_overlay(frame: &mut Frame, area: Rect, app: &App, overlay: &Overlay, the
                     AssignRow::CreateNew => Line::from(vec![
                         Span::raw("  "),
                         Span::styled("+", theme.colors.staged),
-                        Span::raw(" create new changelist…"),
+                        Span::raw(format!(" create new changelist{}", theme.glyphs.ellipsis)),
                     ]),
                 };
                 if matches!(assign_row, AssignRow::CreateNew) {
                     lines.push(Line::styled(
-                        "─".repeat(30),
+                        theme.glyphs.rule.to_string().repeat(30),
                         Style::new().fg(theme.colors.border),
                     ));
                 }
@@ -932,7 +932,10 @@ fn draw_commit_dialog(
     );
 
     let body_lines: Vec<Line> = if draft.body.is_empty() && (!active || !draft.body_focus) {
-        vec![Line::styled("…optional (tab)", theme.colors.dim)]
+        vec![Line::styled(
+            format!("{}optional (tab)", theme.glyphs.ellipsis),
+            theme.colors.dim,
+        )]
     } else {
         let mut lines: Vec<Line> = draft
             .body
@@ -967,9 +970,9 @@ fn draw_commit_dialog(
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            flag(draft.no_verify, "--no-verify"),
+            flag(draft.no_verify, NO_VERIFY_FLAG),
             Span::raw("   "),
-            flag(draft.amend, "--amend"),
+            flag(draft.amend, AMEND_FLAG),
         ])),
         flags_area,
     );
@@ -1052,7 +1055,10 @@ fn draw_keybar(frame: &mut Frame, area: Rect, app: &App, theme: &Theme, now: Ins
     }
     let right = if app.indicator_visible(now) {
         Span::styled(
-            format!("{} refreshing…", theme.glyphs.refreshing),
+            format!(
+                "{} refreshing{}",
+                theme.glyphs.refreshing, theme.glyphs.ellipsis
+            ),
             theme.colors.warn,
         )
     } else {

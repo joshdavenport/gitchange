@@ -166,7 +166,8 @@ fn the_panel_stack_renders_with_the_all_view() {
     app.apply_snapshot(snapshot());
     let text = render(&app);
 
-    for title in ["Status", "Changelists", "Files", "Commits", "Diff", "Log"] {
+    for panel in Panel::ALL {
+        let title = panel.title();
         assert!(text.contains(title), "missing panel title {title}\n{text}");
     }
     assert!(text.contains("works-in-progress"));

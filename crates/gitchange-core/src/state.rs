@@ -3,10 +3,12 @@ use serde::{Deserialize, Serialize};
 use crate::error::Error;
 use crate::matcher;
 use crate::universe::Hunk;
+use crate::vocabulary::{ALL, UNASSIGNED};
 
 /// Names claimed by pseudo-views (`CONTEXT.md`): never valid for user
-/// changelists.
-pub const RESERVED_NAMES: [&str; 2] = ["all", "unassigned"];
+/// changelists. Built from the same constants frontends print as labels
+/// (ADR 0006), so a reserved name and its printed label can't disagree.
+pub const RESERVED_NAMES: [&str; 2] = [ALL, UNASSIGNED];
 
 pub const SCHEMA_VERSION: u32 = 1;
 

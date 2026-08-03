@@ -2,6 +2,7 @@ use crate::diff::ChangeKind;
 use crate::matcher::Notice;
 use crate::state::Changelist;
 use crate::universe::ChangedFile;
+use crate::vocabulary::{CONFLICTS, UNASSIGNED};
 
 /// A git operation in progress (ADR 0007): each means "the next commit
 /// concludes this operation", so commit is guarded while one holds and
@@ -28,6 +29,17 @@ impl GitOperation {
             GitOperation::Revert => "revert",
             GitOperation::Am => "am",
         }
+    }
+
+    /// The operation guard's refusal sentence (ADR 0007):
+    /// `Error::OperationInProgress`'s `Display` and the TUI's soft no-op
+    /// log line on `c` both say this, so the commit guard's refusal and
+    /// the log explaining it can't drift apart. `Error` is
+    /// `#[non_exhaustive]`, so the TUI cannot construct the variant
+    /// itself to borrow its `Display` — this is the shared phrasing both
+    /// sides reach instead.
+    pub fn in_progress_message(&self) -> String {
+        format!("{} in progress — conclude or abort it first", self.label())
     }
 }
 
@@ -161,4 +173,15 @@ pub enum GroupKind {
     Changelist { name: String, active: bool },
     /// Hunks owned by no changelist.
     Unassigned,
+}
+
+impl GroupKind {
+    /// The group as user-facing text — the All view's row label.
+    pub fn label(&self) -> &str {
+        match self {
+            GroupKind::Conflicts => CONFLICTS,
+            GroupKind::Changelist { name, .. } => name,
+            GroupKind::Unassigned => UNASSIGNED,
+        }
+    }
 }

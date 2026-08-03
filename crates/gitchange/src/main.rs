@@ -56,12 +56,13 @@ fn status() -> anyhow::Result<()> {
             // Quarantined unmerged paths (ADR 0007) — outside gitchange's
             // remit until resolved, so no stage mark or hunk counts.
             GroupKind::Conflicts => {
-                println!("  conflicts");
+                println!("  {}", group.kind.label());
                 for file in &group.files {
                     println!(
-                        "      {} {} (resolve outside gitchange)",
+                        "      {} {} ({})",
                         file.kind.sigil(),
-                        file.path
+                        file.path,
+                        gitchange_core::RESOLVE_OUTSIDE_GITCHANGE
                     );
                 }
             }
@@ -71,7 +72,7 @@ fn status() -> anyhow::Result<()> {
                 print_files(&group.files);
             }
             GroupKind::Unassigned => {
-                println!("  unassigned");
+                println!("  {}", group.kind.label());
                 print_files(&group.files);
             }
         }

@@ -71,6 +71,14 @@ pub struct Glyphs {
     /// distinct from the modal hint lines' dim middot. Two characters, so
     /// `&'static str` rather than `char` like the rest of this struct.
     pub keybar_gap: &'static str,
+    /// The horizontal rule: the panel-title prefix's `[n]─Title` divider
+    /// and the assign popup's section break.
+    pub rule: char,
+    /// The truncation/continuation mark ("loading…", the assign popup's
+    /// "create new changelist…", the body input's placeholder, the
+    /// keybar's "refreshing…"). A theme targeting a terminal without
+    /// U+2026 can substitute plain dots.
+    pub ellipsis: char,
 }
 
 impl Default for Theme {
@@ -119,6 +127,8 @@ impl Default for Theme {
                 tag_close: '⟩',
                 cursor: '❯',
                 keybar_gap: "  ",
+                rule: '─',
+                ellipsis: '…',
             },
         }
     }
