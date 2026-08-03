@@ -412,24 +412,14 @@ mod tests {
     use super::super::case::CaseSpec;
     use super::*;
 
+    /// The spec fields are scenery here — these tests exercise the fit
+    /// and formatting maths over `times_ms`.
     fn result(name: &str, dimension: &str, scale: u64, times: &[f64]) -> CaseResult {
         CaseResult {
             spec: CaseSpec {
-                name: name.into(),
-                dimension: dimension.into(),
-                scale,
                 files: 10,
-                hunks_per_file: 4,
-                changelists: 4,
-                dormant: 0,
-                staged_files: 0,
-                huge_lines: 0,
-                binary_files: 0,
-                binary_kib: 0,
-                touch_every_iteration: false,
-                warmup: 1,
                 iterations: times.len(),
-                contrast_of: None,
+                ..CaseSpec::base(name, dimension, scale)
             },
             times_ms: times.to_vec(),
             hunks_total: 40,

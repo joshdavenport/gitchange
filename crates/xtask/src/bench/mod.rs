@@ -54,29 +54,14 @@ pub struct Args {
 
 /// The default matrix: one graduated series per dimension, varied one
 /// at a time so each table reads as that dimension's scaling shape,
-/// plus contrast cases that split diff cost from matcher cost.
-///
-/// The fixed values here are restated as prose in `report::blurb` and
-/// in docs/agents/benchmarks.md's dimension table — move all three
-/// together.
+/// plus contrast cases that split diff cost from matcher cost. The values
+/// held constant across every series live in [`CaseSpec::base`].
 fn matrix(args: &Args) -> Vec<CaseSpec> {
     let iterations = args.iterations.unwrap_or(if args.quick { 3 } else { 5 });
     let base = |name: &str, dimension: &str, scale: u64| CaseSpec {
-        name: name.into(),
-        dimension: dimension.into(),
-        scale,
-        files: 0,
-        hunks_per_file: 4,
-        changelists: 4,
-        dormant: 0,
-        staged_files: 0,
-        huge_lines: 0,
-        binary_files: 0,
-        binary_kib: 0,
-        touch_every_iteration: false,
         warmup: args.warmup,
         iterations,
-        contrast_of: None,
+        ..CaseSpec::base(name, dimension, scale)
     };
     let mut specs = Vec::new();
 

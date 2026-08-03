@@ -64,6 +64,36 @@ pub struct CaseSpec {
     pub contrast_of: Option<String>,
 }
 
+impl CaseSpec {
+    /// A case carrying the matrix's fixed values — the ones every series
+    /// holds constant so each table reads as one dimension's scaling
+    /// shape. Callers set the dimension they vary, and `warmup`/
+    /// `iterations` if one timed pass isn't enough.
+    ///
+    /// These values are restated as prose in `report::blurb` and in
+    /// docs/agents/benchmarks.md's dimension table — move all three
+    /// together.
+    pub fn base(name: &str, dimension: &str, scale: u64) -> Self {
+        Self {
+            name: name.into(),
+            dimension: dimension.into(),
+            scale,
+            files: 0,
+            hunks_per_file: 4,
+            changelists: 4,
+            dormant: 0,
+            staged_files: 0,
+            huge_lines: 0,
+            binary_files: 0,
+            binary_kib: 0,
+            touch_every_iteration: false,
+            warmup: 1,
+            iterations: 1,
+            contrast_of: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseResult {
     pub spec: CaseSpec,
@@ -467,23 +497,14 @@ fn verify(spec: &CaseSpec, snapshot: &Snapshot, root: &Path) -> Result<(usize, u
 mod tests {
     use super::*;
 
+    /// A smoke-sized graduated case: 3 files × 2 hunks = the 6 the
+    /// assertions below count, one timed pass.
     fn spec(name: &str) -> CaseSpec {
         CaseSpec {
-            name: name.into(),
-            dimension: "files".into(),
-            scale: 3,
             files: 3,
             hunks_per_file: 2,
             changelists: 2,
-            dormant: 0,
-            staged_files: 0,
-            huge_lines: 0,
-            binary_files: 0,
-            binary_kib: 0,
-            touch_every_iteration: false,
-            warmup: 1,
-            iterations: 1,
-            contrast_of: None,
+            ..CaseSpec::base(name, "files", 3)
         }
     }
 
