@@ -55,7 +55,11 @@ design requirement, not a nice-to-have.
 - **Move flow:** `m` opens a centered "Move to changelist" popup listing
   changelists (active one annotated), with a "+ create new changelist…"
   escape hatch at the bottom. `enter` move, `esc` cancel.
-- **Keybindings (settled this session):**
+  _Superseded by ticket 41: the operation is **assign**, the popup is
+  "Assign to changelist", and the keys are `a`/`A`/`ctrl+a` (ADR 0013).
+  The popup shape below is otherwise unchanged._
+- **Keybindings (settled this session; the assign keys were later
+  replaced — see ADR 0013 and ticket 41, which win over this list):**
   - `0-4` focus panel · `j/k` move within panel/hunks
   - `n` new changelist · `d` delete · `r` rename · `a` set active
   - `m` move file/hunk to changelist

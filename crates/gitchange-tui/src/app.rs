@@ -218,9 +218,10 @@ pub enum Op {
     SetActive {
         name: String,
     },
-    /// Move snapshot hunks to a changelist. `create` makes the target
-    /// first — the move popup's "+ create new changelist…" escape hatch.
-    Move {
+    /// Assign snapshot hunks to a changelist. `create` makes the target
+    /// first — the assign popup's "+ create new changelist…" escape
+    /// hatch.
+    Assign {
         path: String,
         hunks: Vec<Hunk>,
         target: String,
@@ -336,8 +337,8 @@ pub enum Overlay {
     /// Delete-changelist confirmation (brief §3-derived pattern): the
     /// changelist's hunks go to unassigned.
     ConfirmDelete { name: String },
-    /// The centered move popup (prototype variant D).
-    Move { payload: MovePayload, row: usize },
+    /// The centered assign popup (prototype variant D).
+    Assign { payload: AssignPayload, row: usize },
     /// The all-in-one commit dialog (commit-flow prototype variant A).
     Commit(CommitDraft),
     /// The ◑ staged-stale warn-and-confirm over the dialog (variant B,
@@ -368,29 +369,51 @@ pub enum InputKind {
     Rename {
         from: String,
     },
-    /// The move popup's escape hatch: create the named changelist, then
-    /// move the payload into it. `esc` returns to the popup.
-    NewChangelistForMove {
-        payload: MovePayload,
+    /// The assign popup's escape hatch: create the named changelist,
+    /// then assign the payload into it. `esc` returns to the popup.
+    NewChangelistForAssign {
+        payload: AssignPayload,
     },
 }
 
-/// What a confirmed move popup moves.
+/// What a confirmed assign popup assigns. The three scopes escalate with
+/// keypress difficulty (`a` / `A` / `ctrl+a`); `A` and `ctrl+a` may reach
+/// hunks rendered on another row, which only the popup's payload line
+/// makes acceptable (ADR 0013's ticket).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MovePayload {
-    /// A Files row (`m`): the file's hunks owned by the row's group.
+pub enum AssignPayload {
+    /// `a` on a Files row: the file's hunks owned by the row's group.
+    /// Under the unassigned group this coincides with `A` — the same
+    /// hunks by two routes, not a special case.
     FileRow(FileEntry),
-    /// Hunk mode `enter`: all of the file's hunks.
-    AllHunks { path: String },
-    /// Hunk mode `shift+enter`: the selected hunk, captured at popup
-    /// open so a refresh under the popup can't retarget it (the op
-    /// content-matches at apply regardless).
+    /// `a` in hunk mode: the selected hunk, captured at popup open so a
+    /// refresh under the popup can't retarget it (the op content-matches
+    /// at apply regardless).
     Hunk { path: String, hunk: Hunk },
+    /// `A`: the file's unassigned hunks, wherever they render. Names the
+    /// hunks it *takes*, not the target — unassigned is a target like any
+    /// other, reached through the popup's rows.
+    UnassignedHunks { path: String },
+    /// `ctrl+a`: every hunk of the file, hunks owned by other
+    /// changelists included.
+    AllHunks { path: String },
 }
 
-/// One row of the move popup.
+impl AssignPayload {
+    /// The file every scope is anchored to.
+    fn path(&self) -> &str {
+        match self {
+            AssignPayload::FileRow(entry) => &entry.path,
+            AssignPayload::Hunk { path, .. }
+            | AssignPayload::UnassignedHunks { path }
+            | AssignPayload::AllHunks { path } => path,
+        }
+    }
+}
+
+/// One row of the assign popup.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MoveRow {
+pub enum AssignRow {
     Changelist {
         name: String,
         active: bool,
@@ -413,7 +436,7 @@ pub struct App {
     /// on a file has focused the Diff panel for per-hunk work; `0`-key
     /// focus is plain scroll mode (`None`). Survives a blur to another
     /// panel (issue #45) — the cursor stays visible for the cross-panel
-    /// move key — and ends when the underlying file selection moves.
+    /// assign keys — and ends when the underlying file selection moves.
     pub hunk_sel: Option<usize>,
     /// The open modal, if any.
     pub overlay: Option<Overlay>,
@@ -681,7 +704,12 @@ impl App {
     // ── input ───────────────────────────────────────────────────────
 
     pub fn on_key(&mut self, key: KeyEvent) -> Option<Action> {
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        // Every `ctrl+<letter>` binding is matched on CONTROL alone
+        // (ADR 0013): the control byte a plain terminal sends carries no
+        // shift bit, so consulting SHIFT would make `ctrl+shift+<letter>`
+        // fire a different action than the user asked for.
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if ctrl && matches!(key.code, KeyCode::Char('c' | 'C')) {
             return Some(Action::Quit);
         }
         // The error modal sits above everything (ADR 0007): `esc`/`enter`
@@ -730,7 +758,26 @@ impl App {
                     value: String::new(),
                 });
             }
+            // The assign keymap (ADR 0013), scope escalating with
+            // keypress difficulty. `ctrl+a` is matched shift-agnostically
+            // so `ctrl+shift+a` — which most terminals cannot tell apart
+            // from it — does the same thing rather than something else.
+            KeyCode::Char('a' | 'A') if ctrl => {
+                if let Some(path) = self.assign_file_path() {
+                    self.open_assign(AssignPayload::AllHunks { path });
+                }
+            }
             KeyCode::Char('a') => {
+                if let Some(payload) = self.selected_assign_payload() {
+                    self.open_assign(payload);
+                }
+            }
+            KeyCode::Char('A') => {
+                if let Some(path) = self.assign_file_path() {
+                    self.open_assign(AssignPayload::UnassignedHunks { path });
+                }
+            }
+            KeyCode::Char('s') => {
                 if let Some(name) = self.scoped_changelist() {
                     return Some(Action::Op(Op::SetActive { name }));
                 }
@@ -783,36 +830,14 @@ impl App {
                     }
                 }
             }
-            KeyCode::Char('m') => {
-                if self.focus == Panel::Files
-                    && let Some(entry) = self.file_sel.clone()
-                {
-                    self.open_move(MovePayload::FileRow(entry));
-                } else if let Some(payload) = self.selected_hunk_payload() {
-                    // Hunk mode: `m` mirrors shift+enter (brief §3's "m
-                    // move file/hunk") — the fallback on terminals whose
-                    // keyboard protocol can't report shift+enter.
-                    self.open_move(payload);
-                }
-            }
             KeyCode::Enter => match self.focus {
-                // Drill-down: 2 → select changelist → 3 → files.
+                // Drill-down only: 2 → select changelist → 3 → files →
+                // hunk mode. `enter` assigns nothing anywhere — the Diff
+                // panel is the end of the drill, and the key it used to
+                // share with assign was the misfire ADR 0013 bars.
                 Panel::Changelists => self.focus_files(),
                 Panel::Files => self.enter_hunk_mode(),
-                Panel::Diff => {
-                    let payload = if key.modifiers.contains(KeyModifiers::SHIFT) {
-                        self.selected_hunk_payload()
-                    } else if self.hunk_sel.is_some() {
-                        self.selected_file().map(|file| MovePayload::AllHunks {
-                            path: file.path.clone(),
-                        })
-                    } else {
-                        None
-                    };
-                    if let Some(payload) = payload {
-                        self.open_move(payload);
-                    }
-                }
+                Panel::Diff => {}
                 _ => {}
             },
             KeyCode::Esc => match self.focus {
@@ -837,9 +862,9 @@ impl App {
             Overlay::Input { kind, mut value } => match key.code {
                 KeyCode::Esc => {
                     // The escape hatch returns to the popup it left.
-                    if let InputKind::NewChangelistForMove { payload } = kind {
-                        let row = self.move_rows().len().saturating_sub(1);
-                        self.overlay = Some(Overlay::Move { payload, row });
+                    if let InputKind::NewChangelistForAssign { payload } = kind {
+                        let row = self.assign_rows().len().saturating_sub(1);
+                        self.overlay = Some(Overlay::Assign { payload, row });
                     }
                     None
                 }
@@ -857,8 +882,8 @@ impl App {
                             }
                             Some(Action::Op(Op::RenameChangelist { from, to: name }))
                         }
-                        InputKind::NewChangelistForMove { payload } => {
-                            self.move_op(payload, name, true)
+                        InputKind::NewChangelistForAssign { payload } => {
+                            self.assign_op(payload, name, true)
                         }
                     }
                 }
@@ -930,28 +955,28 @@ impl App {
                     None
                 }
             },
-            Overlay::Move { payload, row } => {
-                let rows = self.move_rows();
+            Overlay::Assign { payload, row } => {
+                let rows = self.assign_rows();
                 let row = row.min(rows.len().saturating_sub(1));
                 match key.code {
                     KeyCode::Esc => None,
                     KeyCode::Char('j') | KeyCode::Down => {
                         let row = step(row, 1, rows.len());
-                        self.overlay = Some(Overlay::Move { payload, row });
+                        self.overlay = Some(Overlay::Assign { payload, row });
                         None
                     }
                     KeyCode::Char('k') | KeyCode::Up => {
                         let row = step(row, -1, rows.len());
-                        self.overlay = Some(Overlay::Move { payload, row });
+                        self.overlay = Some(Overlay::Assign { payload, row });
                         None
                     }
                     KeyCode::Enter => match rows.into_iter().nth(row) {
-                        Some(MoveRow::Changelist { name, .. }) => {
-                            self.move_op(payload, name, false)
+                        Some(AssignRow::Changelist { name, .. }) => {
+                            self.assign_op(payload, name, false)
                         }
-                        Some(MoveRow::CreateNew) => {
+                        Some(AssignRow::CreateNew) => {
                             self.overlay = Some(Overlay::Input {
-                                kind: InputKind::NewChangelistForMove { payload },
+                                kind: InputKind::NewChangelistForAssign { payload },
                                 value: String::new(),
                             });
                             None
@@ -959,7 +984,7 @@ impl App {
                         None => None,
                     },
                     _ => {
-                        self.overlay = Some(Overlay::Move { payload, row });
+                        self.overlay = Some(Overlay::Assign { payload, row });
                         None
                     }
                 }
@@ -975,8 +1000,9 @@ impl App {
         match key.code {
             KeyCode::Esc => return None,
             KeyCode::Tab => draft.body_focus = !draft.body_focus,
-            KeyCode::Char('n') if ctrl => draft.no_verify = !draft.no_verify,
-            KeyCode::Char('a') if ctrl => draft.amend = !draft.amend,
+            // Shift-agnostic like every other `ctrl+<letter>` (ADR 0013).
+            KeyCode::Char('n' | 'N') if ctrl => draft.no_verify = !draft.no_verify,
+            KeyCode::Char('a' | 'A') if ctrl => draft.amend = !draft.amend,
             KeyCode::Enter if draft.body_focus => draft.body.push('\n'),
             KeyCode::Enter => {
                 // An empty subject would only bounce off `git commit`;
@@ -1087,7 +1113,7 @@ impl App {
     }
 
     /// Move panel focus. Hunk mode survives a blur to another panel —
-    /// its cursor must stay visible because the move key acts on it
+    /// its cursor must stay visible because the assign keys act on it
     /// cross-panel (issue #45) — but refocusing the Diff panel itself
     /// (`0`) is scroll mode, so that resets it.
     fn set_focus(&mut self, panel: Panel) {
@@ -1099,7 +1125,7 @@ impl App {
 
     /// A hunk selection owns keys (and the keybar) only while the Diff
     /// panel is focused — a blurred one stays visible for the
-    /// cross-panel move key but claims nothing else (issue #45).
+    /// cross-panel assign keys but claims nothing else (issue #45).
     fn hunk_mode_focused(&self) -> bool {
         self.focus == Panel::Diff && self.hunk_sel.is_some()
     }
@@ -1125,7 +1151,7 @@ impl App {
         }
     }
 
-    /// The changelist the ops keys (`d`/`r`/`a`) act on: the selected
+    /// The changelist the ops keys (`d`/`r`/`s`) act on: the selected
     /// Changelists row while it names one, from the panels that show it.
     fn scoped_changelist(&self) -> Option<String> {
         if !matches!(self.focus, Panel::Changelists | Panel::Files) {
@@ -1174,38 +1200,97 @@ impl App {
         Some(Action::Op(op))
     }
 
-    /// The hunk-mode selection as a move payload.
-    fn selected_hunk_payload(&self) -> Option<MovePayload> {
+    /// What `a` assigns: the Files row's group-owned hunks from the Files
+    /// panel, the hunk-mode selection otherwise — including while that
+    /// selection is blurred, the cross-panel reach issue #45 keeps its
+    /// cursor visible for.
+    fn selected_assign_payload(&self) -> Option<AssignPayload> {
+        if self.focus == Panel::Files {
+            return self.file_sel.clone().map(AssignPayload::FileRow);
+        }
         let index = self.hunk_sel?;
         let file = self.selected_file()?;
         file.hunks
             .get(index)
             .cloned()
-            .map(|hunk| MovePayload::Hunk {
+            .map(|hunk| AssignPayload::Hunk {
                 path: file.path.clone(),
                 hunk,
             })
     }
 
-    /// Open the move popup when the payload has something to move.
-    fn open_move(&mut self, payload: MovePayload) {
-        let movable = self
+    /// The file the file-scoped assign keys (`A`, `ctrl+a`) act on: the
+    /// Files selection, which is also what the Diff panel renders and
+    /// what hunk mode is drilled into. `None` from the panels that show
+    /// no file, unless a hunk selection is still live there (issue #45).
+    fn assign_file_path(&self) -> Option<String> {
+        if !matches!(self.focus, Panel::Files | Panel::Diff) && self.hunk_sel.is_none() {
+            return None;
+        }
+        self.selected_file().map(|file| file.path.clone())
+    }
+
+    /// Open the assign popup when the payload has hunks in it. An empty
+    /// payload — `A` on a file with nothing unassigned, most often — is a
+    /// polite no-op with a Log line, never an error modal (ADR 0007).
+    fn open_assign(&mut self, payload: AssignPayload) {
+        let hunks = self
             .resolve_payload(&payload)
-            .is_some_and(|(_, hunks)| !hunks.is_empty());
-        if movable {
-            self.overlay = Some(Overlay::Move { payload, row: 0 });
+            .map_or(0, |(_, hunks)| hunks.len());
+        if hunks > 0 {
+            self.overlay = Some(Overlay::Assign { payload, row: 0 });
+        } else {
+            let reason = self.empty_payload_reason(&payload);
+            self.push_log(Severity::Info, reason);
         }
     }
 
-    /// Resolve a payload against the current snapshot and emit the move
+    /// Why nothing opened, in the Log's voice: which scope came up empty
+    /// on which file. A quarantined path says so instead — it holds no
+    /// assignable hunks by construction, and "no hunks" alone would read
+    /// as a bug next to the conflict placeholder in the Diff panel.
+    fn empty_payload_reason(&self, payload: &AssignPayload) -> String {
+        let path = payload.path();
+        let conflicted = self.snapshot.as_ref().is_some_and(|snapshot| {
+            snapshot
+                .files
+                .iter()
+                .any(|file| file.path == path && file.kind == ChangeKind::Conflicted)
+        });
+        if conflicted {
+            return format!("{path} is conflicted — resolve outside gitchange");
+        }
+        match payload {
+            AssignPayload::FileRow(entry) => format!(
+                "no hunks in '{}' for {path} — nothing to assign",
+                entry.group.title(),
+            ),
+            AssignPayload::UnassignedHunks { .. } => {
+                format!("no unassigned hunks in {path} — nothing to assign")
+            }
+            // A selected hunk resolves without consulting the snapshot,
+            // so it only lands here with no snapshot at all — which is
+            // also the only way the file scopes reach this arm.
+            AssignPayload::Hunk { .. } | AssignPayload::AllHunks { .. } => {
+                format!("no hunks in {path} — nothing to assign")
+            }
+        }
+    }
+
+    /// Resolve a payload against the current snapshot and emit the assign
     /// op. A payload that no longer resolves closes silently — the op
     /// content-validates again at apply anyway.
-    fn move_op(&mut self, payload: MovePayload, target: String, create: bool) -> Option<Action> {
+    fn assign_op(
+        &mut self,
+        payload: AssignPayload,
+        target: String,
+        create: bool,
+    ) -> Option<Action> {
         let (path, hunks) = self.resolve_payload(&payload)?;
         if hunks.is_empty() {
             return None;
         }
-        Some(Action::Op(Op::Move {
+        Some(Action::Op(Op::Assign {
             path,
             hunks,
             target,
@@ -1213,26 +1298,17 @@ impl App {
         }))
     }
 
-    fn resolve_payload(&self, payload: &MovePayload) -> Option<(String, Vec<Hunk>)> {
+    fn resolve_payload(&self, payload: &AssignPayload) -> Option<(String, Vec<Hunk>)> {
         let snapshot = self.snapshot.as_ref()?;
-        match payload {
-            MovePayload::Hunk { path, hunk } => Some((path.clone(), vec![hunk.clone()])),
-            MovePayload::AllHunks { path } => {
-                let file = snapshot.files.iter().find(|file| file.path == *path)?;
-                Some((path.clone(), file.hunks.clone()))
-            }
-            MovePayload::FileRow(entry) => {
-                let owner = entry.group.owner()?;
-                let file = snapshot.files.iter().find(|file| file.path == entry.path)?;
-                let hunks: Vec<Hunk> = file
-                    .hunks
-                    .iter()
-                    .filter(|hunk| hunk.changelist.as_deref() == owner)
-                    .cloned()
-                    .collect();
-                Some((entry.path.clone(), hunks))
-            }
-        }
+        let path = payload.path();
+        let file = || snapshot.files.iter().find(|file| file.path == path);
+        let hunks = match payload {
+            AssignPayload::Hunk { hunk, .. } => vec![hunk.clone()],
+            AssignPayload::AllHunks { .. } => file()?.hunks.clone(),
+            AssignPayload::UnassignedHunks { .. } => owned_hunks(file()?, None),
+            AssignPayload::FileRow(entry) => owned_hunks(file()?, entry.group.owner()?),
+        };
+        Some((path.to_owned(), hunks))
     }
 
     fn move_selection(&mut self, delta: isize) {
@@ -1526,7 +1602,7 @@ impl App {
         let scope = self.scope();
         let owner = scope.owner();
         for (index, hunk) in file.hunks.iter().enumerate() {
-            let foreign = owner.is_some_and(|owner| hunk.changelist.as_deref() != owner);
+            let foreign = owner.is_some_and(|owner| !owns(hunk, owner));
             let selected = self.hunk_sel == Some(index);
             let tag = if owner.is_none() || foreign {
                 let unassigned = hunk.changelist.is_none();
@@ -1575,48 +1651,103 @@ impl App {
             .position(|line| matches!(line, DiffLine::HunkHeader { selected: true, .. }))
     }
 
-    /// The move popup's rows (prototype variant D): every changelist,
+    /// The assign popup's rows (prototype variant D): every changelist,
     /// the active one annotated, then the create-new escape hatch.
-    pub fn move_rows(&self) -> Vec<MoveRow> {
-        let mut rows: Vec<MoveRow> = self
+    pub fn assign_rows(&self) -> Vec<AssignRow> {
+        let mut rows: Vec<AssignRow> = self
             .snapshot
             .as_ref()
             .map(|snapshot| {
                 snapshot
                     .changelists
                     .iter()
-                    .map(|changelist| MoveRow::Changelist {
+                    .map(|changelist| AssignRow::Changelist {
                         name: changelist.name.clone(),
                         active: snapshot.active.as_deref() == Some(changelist.name.as_str()),
                     })
                     .collect()
             })
             .unwrap_or_default();
-        rows.push(MoveRow::CreateNew);
+        rows.push(AssignRow::CreateNew);
         rows
     }
 
-    /// The move popup's subject line: what is being moved.
-    pub fn move_description(&self, payload: &MovePayload) -> String {
-        let kind_of = |path: &str| {
-            self.snapshot
-                .as_ref()
-                .and_then(|snapshot| snapshot.files.iter().find(|file| file.path == path))
-                .map(|file| file.kind)
+    /// The assign popup's subject line: the payload stated before it
+    /// lands — how many hunks, in which file, and which other changelists
+    /// they are coming out of. `A` and `ctrl+a` are allowed to reach
+    /// hunks rendered on another row *because* this line names them; drop
+    /// it and the keymap is back to filing hunks silently.
+    pub fn assign_description(&self, payload: &AssignPayload) -> String {
+        let Some((path, hunks)) = self.resolve_payload(payload) else {
+            return self.empty_payload_reason(payload);
         };
-        let sigil = |kind: Option<ChangeKind>| kind.map_or(' ', kind_sigil);
-        match payload {
-            MovePayload::FileRow(entry) => {
-                format!("{} {}", sigil(kind_of(&entry.path)), entry.path)
-            }
-            MovePayload::AllHunks { path } => {
-                format!("{} {path} (all hunks)", sigil(kind_of(path)))
-            }
-            MovePayload::Hunk { path, hunk } => format!(
-                "{path} @@ -{},{} +{},{}",
+        // The `A` scope's noun already names where its hunks come from, so
+        // it takes no provenance tail — "1 unassigned hunk (1 from
+        // unassigned)" says one thing twice.
+        let (noun, provenance) = match payload {
+            AssignPayload::UnassignedHunks { .. } => ("unassigned hunk", Vec::new()),
+            _ => ("hunk", self.assign_provenance(&hunks)),
+        };
+        let mut line = format!("{} in {path}", count_noun(hunks.len(), noun));
+        if let AssignPayload::Hunk { hunk, .. } = payload {
+            line.push_str(&format!(
+                " @@ -{},{} +{},{}",
                 hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines
-            ),
+            ));
         }
+        if !provenance.is_empty() {
+            let sources: Vec<String> = provenance
+                .iter()
+                .map(|(label, count)| {
+                    if hunks.len() == 1 {
+                        format!("from {label}")
+                    } else {
+                        format!("{count} from {label}")
+                    }
+                })
+                .collect();
+            line.push_str(&format!(" ({})", sources.join(", ")));
+        }
+        line
+    }
+
+    /// The changelist an assign payload is stated relative to: the
+    /// drilled changelist, or — in the All view, where the panel shows no
+    /// single owner — the selected row's own group, so off-row reach is
+    /// named there too. `Some(None)` is unassigned; the outer `None` means
+    /// no owner is in view at all (nothing to call foreign).
+    fn assign_owner(&self) -> Option<Option<String>> {
+        let scope = self.scope();
+        if let Some(owner) = scope.owner() {
+            return Some(owner.map(str::to_owned));
+        }
+        let group = &self.file_sel.as_ref()?.group;
+        Some(group.owner()?.map(str::to_owned))
+    }
+
+    /// The payload's foreign sources as `(label, count)` in payload
+    /// order: the changelists owning payload hunks that the row the user
+    /// is standing on does not. Foreign is the diff view-model's own
+    /// notion, owner-relative through [`App::assign_owner`].
+    fn assign_provenance(&self, hunks: &[Hunk]) -> Vec<(String, usize)> {
+        let Some(owner) = self.assign_owner() else {
+            return Vec::new();
+        };
+        let mut sources: Vec<(String, usize)> = Vec::new();
+        for hunk in hunks {
+            if owns(hunk, owner.as_deref()) {
+                continue;
+            }
+            let label = match &hunk.changelist {
+                Some(name) => format!("'{name}'"),
+                None => "unassigned".to_owned(),
+            };
+            match sources.iter_mut().find(|(seen, _)| *seen == label) {
+                Some((_, count)) => *count += 1,
+                None => sources.push((label, 1)),
+            }
+        }
+        sources
     }
 
     /// Append one event to the Log panel's stream (ADR 0007), keeping a
@@ -1667,14 +1798,15 @@ impl App {
 
     /// Contextual keybar hints for the focused panel (staging and commit
     /// keys arrive with #33). Hunk mode swaps in its own bar (prototype
-    /// variant C).
+    /// variant C). The assign trio is one hint with its three scopes in
+    /// key order — the bar has to match the keymap exactly (ADR 0013), and
+    /// three separate hints crowd out the rest of the bar.
     pub fn key_hints(&self) -> Vec<(&'static str, &'static str)> {
         if self.hunk_mode_focused() {
             return vec![
                 ("j/k", "next/prev hunk"),
                 ("space", "stage/unstage hunk"),
-                ("enter", "add all hunks to changelist"),
-                ("shift+enter/m", "add hunk to changelist"),
+                ("a/A/ctrl+a", "assign hunk / unassigned / all"),
                 ("c", "commit changelist"),
                 ("esc", "back to files"),
                 ("?", "keybindings"),
@@ -1687,26 +1819,37 @@ impl App {
                 ("n", "new"),
                 ("d", "delete"),
                 ("r", "rename"),
-                ("a", "set active"),
+                ("s", "switch active"),
                 ("c", "commit"),
             ],
             Panel::Files => vec![
                 ("j/k", "move"),
                 ("space", "stage file"),
                 ("enter", "hunks"),
-                ("m", "move to changelist"),
+                ("a/A/ctrl+a", "assign group / unassigned / all"),
                 ("c", "commit"),
                 ("n", "new"),
                 ("d", "delete"),
                 ("r", "rename"),
-                ("a", "set active"),
+                ("s", "switch active"),
                 ("esc", "back"),
             ],
-            Panel::Diff => vec![("j/k", "scroll"), ("esc", "back")],
+            Panel::Diff => vec![
+                ("j/k", "scroll"),
+                ("A/ctrl+a", "assign unassigned / all"),
+                ("esc", "back"),
+            ],
             Panel::Commits => vec![("j/k", "move")],
             Panel::Log => vec![("j/k", "scroll")],
             Panel::Status => Vec::new(),
         };
+        // A hunk selection that survived a blur (issue #45) keeps the
+        // assign keys live in whatever panel now holds focus, so the bar
+        // has to say so there too — an advertised keymap that omits a live
+        // key is the same dishonesty ADR 0013 bars in the other direction.
+        if self.hunk_sel.is_some() && !matches!(self.focus, Panel::Files | Panel::Diff) {
+            hints.push(("a/A/ctrl+a", "assign hunk / unassigned / all"));
+        }
         hints.extend([
             ("0-5", "panels"),
             ("R", "refresh"),
@@ -1803,8 +1946,23 @@ fn file_row(file: &ChangedFile, group: Scope, indent: bool) -> FilesRow {
     }
 }
 
-/// The one-letter change-kind sigil file rows and move descriptions
-/// share.
+/// Whether `owner` (`None` = unassigned) owns `hunk` — the one ownership
+/// test the diff view-model tags foreign hunks by and the assign payloads
+/// select by, so the popup can never disagree with what the panel drew.
+fn owns(hunk: &Hunk, owner: Option<&str>) -> bool {
+    hunk.changelist.as_deref() == owner
+}
+
+/// A file's hunks owned by `owner`, in file order.
+fn owned_hunks(file: &ChangedFile, owner: Option<&str>) -> Vec<Hunk> {
+    file.hunks
+        .iter()
+        .filter(|hunk| owns(hunk, owner))
+        .cloned()
+        .collect()
+}
+
+/// The one-letter change-kind sigil the Files rows carry.
 pub fn kind_sigil(kind: ChangeKind) -> char {
     match kind {
         ChangeKind::Added => 'A',
@@ -2585,50 +2743,71 @@ mod tests {
         assert_eq!(app.focus, Panel::Files, "nothing selectable ends hunk mode");
     }
 
-    // ── move flow (ticket #32, prototype variant D) ─────────────────
+    // ── assign flow (tickets #32/#41, prototype variant D) ──────────
+
+    /// The shared fixture owns every print.css hunk; this one leaves the
+    /// middle one unassigned so the `A` scope has something to find and
+    /// `ctrl+a` has two foreign sources to name.
+    fn mixed_app() -> App {
+        let mut snapshot = snapshot();
+        snapshot.files[1].hunks[1].changelist = None;
+        let mut app = App::new("repo");
+        app.apply_snapshot(snapshot);
+        app.on_key(key(KeyCode::Char('3'))); // print.css under 'fixes'
+        app
+    }
+
+    /// The payload the open popup carries, resolved to hunk positions.
+    fn payload_starts(app: &App) -> Vec<u32> {
+        let Some(Overlay::Assign { payload, .. }) = &app.overlay else {
+            panic!("no assign popup open, got {:?}", app.overlay);
+        };
+        let (_, hunks) = app.resolve_payload(payload).expect("payload resolves");
+        hunks.iter().map(|hunk| hunk.new_start).collect()
+    }
 
     #[test]
-    fn move_rows_list_changelists_with_active_annotated_then_create_new() {
+    fn assign_rows_list_changelists_with_active_annotated_then_create_new() {
         let app = app();
         assert_eq!(
-            app.move_rows(),
+            app.assign_rows(),
             vec![
-                MoveRow::Changelist {
+                AssignRow::Changelist {
                     name: "fixes".into(),
                     active: true,
                 },
-                MoveRow::Changelist {
+                AssignRow::Changelist {
                     name: "chores".into(),
                     active: false,
                 },
-                MoveRow::CreateNew,
+                AssignRow::CreateNew,
             ]
         );
     }
 
     #[test]
-    fn m_in_files_opens_the_popup_and_enter_moves_the_rows_group_hunks() {
+    fn a_in_files_opens_the_popup_and_enter_assigns_the_rows_group_hunks() {
         let mut app = app();
         app.on_key(key(KeyCode::Char('3'))); // print.css under 'fixes'
-        app.on_key(key(KeyCode::Char('m')));
+        app.on_key(key(KeyCode::Char('a')));
         assert!(matches!(
             app.overlay,
-            Some(Overlay::Move {
-                payload: MovePayload::FileRow(_),
+            Some(Overlay::Assign {
+                payload: AssignPayload::FileRow(_),
                 row: 0
             })
         ));
 
         app.on_key(key(KeyCode::Char('j'))); // select 'chores'
         let action = app.on_key(key(KeyCode::Enter));
-        let Some(Action::Op(Op::Move {
+        let Some(Action::Op(Op::Assign {
             path,
             hunks,
             target,
             create,
         })) = action
         else {
-            panic!("expected a move op, got {action:?}");
+            panic!("expected an assign op, got {action:?}");
         };
         assert_eq!(path, "src/print.css");
         assert_eq!(target, "chores");
@@ -2636,65 +2815,288 @@ mod tests {
         assert_eq!(
             hunks.iter().map(|hunk| hunk.new_start).collect::<Vec<_>>(),
             vec![14, 41],
-            "only the row's group-owned hunks move"
+            "only the row's group-owned hunks are assigned"
         );
         assert!(app.overlay.is_none(), "confirming closes the popup");
     }
 
     #[test]
-    fn hunk_mode_enter_moves_all_hunks_and_shift_enter_the_selected_one() {
+    fn a_in_hunk_mode_targets_the_selected_hunk() {
         let mut app = hunk_mode_app();
         app.on_key(key(KeyCode::Char('j'))); // hunk at 41
-        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
-        let Some(Overlay::Move {
-            payload: MovePayload::Hunk { hunk, .. },
-            ..
-        }) = app.overlay.clone()
-        else {
-            panic!("expected a selected-hunk payload, got {:?}", app.overlay);
-        };
-        assert_eq!(hunk.new_start, 41);
-        let action = app.on_key(key(KeyCode::Enter)); // move to 'fixes'
-        assert!(matches!(
-            action,
-            Some(Action::Op(Op::Move { ref hunks, ref target, .. }))
-                if hunks.len() == 1 && target == "fixes"
-        ));
-
-        // Plain enter targets every hunk of the file.
-        app.on_key(key(KeyCode::Enter));
-        let action = app.on_key(key(KeyCode::Enter));
-        assert!(matches!(
-            action,
-            Some(Action::Op(Op::Move { ref hunks, .. })) if hunks.len() == 3
-        ));
-    }
-
-    #[test]
-    fn m_in_hunk_mode_targets_the_selected_hunk() {
-        let mut app = hunk_mode_app();
-        app.on_key(key(KeyCode::Char('j'))); // hunk at 41
-        app.on_key(key(KeyCode::Char('m')));
+        app.on_key(key(KeyCode::Char('a')));
         assert!(matches!(
             app.overlay,
-            Some(Overlay::Move {
-                payload: MovePayload::Hunk { ref hunk, .. },
+            Some(Overlay::Assign {
+                payload: AssignPayload::Hunk { ref hunk, .. },
                 ..
             }) if hunk.new_start == 41
         ));
+        let action = app.on_key(key(KeyCode::Enter)); // → 'fixes'
+        assert!(matches!(
+            action,
+            Some(Action::Op(Op::Assign { ref hunks, ref target, .. }))
+                if hunks.len() == 1 && target == "fixes"
+        ));
     }
 
     #[test]
-    fn the_create_new_escape_hatch_yields_a_create_and_move_op() {
+    fn shift_a_targets_the_files_unassigned_hunks_from_files_and_hunk_mode() {
+        let mut app = mixed_app();
+        app.on_key(key(KeyCode::Char('A')));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::Assign {
+                payload: AssignPayload::UnassignedHunks { ref path },
+                ..
+            }) if path == "src/print.css"
+        ));
+        assert_eq!(payload_starts(&app), vec![41], "only the unassigned hunk");
+        app.on_key(key(KeyCode::Esc));
+
+        // Same scope from hunk mode, where the cursor sits on a hunk the
+        // payload does not include — the off-row reach the popup states.
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.hunk_sel, Some(0), "cursor on the 'fixes' hunk at 14");
+        app.on_key(key(KeyCode::Char('A')));
+        assert_eq!(payload_starts(&app), vec![41]);
+    }
+
+    #[test]
+    fn ctrl_a_targets_every_hunk_of_the_file_foreign_included() {
+        let mut app = mixed_app();
+        app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::Assign {
+                payload: AssignPayload::AllHunks { ref path },
+                ..
+            }) if path == "src/print.css"
+        ));
+        assert_eq!(payload_starts(&app), vec![14, 41, 63]);
+        app.on_key(key(KeyCode::Esc));
+
+        // Same scope from hunk mode, cursor on the first hunk.
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.hunk_sel, Some(0));
+        app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+        assert_eq!(payload_starts(&app), vec![14, 41, 63]);
+    }
+
+    #[test]
+    fn ctrl_shift_a_does_exactly_what_ctrl_a_does() {
+        // ADR 0013: the control byte a plain terminal sends carries no
+        // shift bit, so SHIFT must not be consulted — under either
+        // encoding a terminal might use for the letter.
+        for code in [KeyCode::Char('a'), KeyCode::Char('A')] {
+            let mut app = mixed_app();
+            app.on_key(KeyEvent::new(
+                code,
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            ));
+            assert!(
+                matches!(
+                    app.overlay,
+                    Some(Overlay::Assign {
+                        payload: AssignPayload::AllHunks { .. },
+                        ..
+                    })
+                ),
+                "{code:?} with ctrl+shift must assign all hunks, got {:?}",
+                app.overlay
+            );
+            assert_eq!(payload_starts(&app), vec![14, 41, 63]);
+        }
+    }
+
+    /// ADR 0013's invariant, guarded over the source of the modules that
+    /// handle keys: no binding may branch on SHIFT. A terminal cannot be
+    /// relied upon to report it on a non-printing key, and
+    /// `ctrl+shift+<letter>` is indistinguishable from `ctrl+<letter>` —
+    /// so a binding that reads it degrades into some *other* action rather
+    /// than into nothing. Shifted letters (`A`, `R`) are matched as their
+    /// own `KeyCode::Char`, which needs no modifier test. A guard, not a
+    /// proof: the behavioural half is
+    /// [`ctrl_shift_a_does_exactly_what_ctrl_a_does`].
+    #[test]
+    fn no_binding_inspects_the_shift_modifier() {
+        for (name, source) in [
+            ("app.rs", include_str!("app.rs")),
+            ("ui.rs", include_str!("ui.rs")),
+            ("lib.rs", include_str!("lib.rs")),
+        ] {
+            // This module's own SHIFT mentions live past the split.
+            let production = source.split("#[cfg(test)]").next().unwrap_or_default();
+            assert!(
+                !production.contains("KeyModifiers::SHIFT"),
+                "{name} inspects SHIFT"
+            );
+        }
+    }
+
+    #[test]
+    fn under_the_unassigned_group_a_and_shift_a_reach_the_same_hunks() {
+        let mut app = mixed_app();
+        app.on_key(key(KeyCode::Char('2')));
+        for _ in 0..3 {
+            app.on_key(key(KeyCode::Char('j'))); // all → fixes → chores → unassigned
+        }
+        assert_eq!(app.scope(), Scope::Unassigned);
+        app.on_key(key(KeyCode::Char('3')));
+        app.on_key(key(KeyCode::Char('j'))); // nav.astro → print.css
+
+        let row = app.selected_assign_payload().expect("a row is selected");
+        assert!(matches!(row, AssignPayload::FileRow(_)));
+        assert_eq!(
+            app.resolve_payload(&row),
+            app.resolve_payload(&AssignPayload::UnassignedHunks {
+                path: "src/print.css".into()
+            }),
+            "the row's group is unassigned, so `a` and `A` coincide"
+        );
+    }
+
+    #[test]
+    fn an_empty_payload_is_a_polite_no_op_with_a_log_line() {
+        // Every print.css hunk is owned, so `A` has nothing to assign.
+        let mut app = app();
+        app.on_key(key(KeyCode::Char('3')));
+        let logged = app.log.len();
+        app.on_key(key(KeyCode::Char('A')));
+        assert!(app.overlay.is_none(), "no popup over an empty payload");
+        assert!(app.error_modal.is_none(), "an empty scope is not an error");
+        assert_eq!(app.log.len(), logged + 1);
+        let entry = app.log.last().unwrap();
+        assert_eq!(entry.severity, Severity::Info);
+        assert_eq!(
+            entry.text,
+            "no unassigned hunks in src/print.css — nothing to assign"
+        );
+    }
+
+    #[test]
+    fn assign_on_a_conflicted_row_says_why_rather_than_no_hunks() {
+        let mut app = app();
+        let mut busy = snapshot();
+        busy.files.insert(
+            0,
+            ChangedFile {
+                path: "src/merge.ts".into(),
+                kind: ChangeKind::Conflicted,
+                binary: false,
+                binary_sides: None,
+                hunks: Vec::new(),
+            },
+        );
+        app.apply_snapshot(busy);
+        app.on_key(key(KeyCode::Char('3')));
+        for _ in 0..app.file_entries().len() {
+            app.on_key(key(KeyCode::Char('k'))); // up to the conflicted row
+        }
+        assert_eq!(app.file_sel.as_ref().unwrap().path, "src/merge.ts");
+
+        for assign in [
+            key(KeyCode::Char('a')),
+            key(KeyCode::Char('A')),
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+        ] {
+            let logged = app.log.len();
+            assert_eq!(app.on_key(assign), None);
+            assert!(app.overlay.is_none());
+            assert_eq!(app.log.len(), logged + 1);
+            assert_eq!(
+                app.log.last().unwrap().text,
+                "src/merge.ts is conflicted — resolve outside gitchange"
+            );
+        }
+    }
+
+    #[test]
+    fn the_assign_popup_states_the_payload_before_it_lands() {
+        let mut app = mixed_app();
+        app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+        let Some(Overlay::Assign { payload, .. }) = app.overlay.clone() else {
+            panic!("expected the assign popup");
+        };
+        assert_eq!(
+            app.assign_description(&payload),
+            "3 hunks in src/print.css (1 from unassigned, 1 from 'chores')",
+            "off-row reach is named: counts first, then whose hunks they are"
+        );
+        app.on_key(key(KeyCode::Esc));
+
+        app.on_key(key(KeyCode::Char('A')));
+        let Some(Overlay::Assign { payload, .. }) = app.overlay.clone() else {
+            panic!("expected the assign popup");
+        };
+        assert_eq!(
+            app.assign_description(&payload),
+            "1 unassigned hunk in src/print.css",
+            "the noun names the source, so no redundant provenance"
+        );
+    }
+
+    #[test]
+    fn the_popup_names_a_single_hunks_source_when_it_is_foreign() {
+        let mut app = app();
+        app.on_key(key(KeyCode::Char('2')));
+        app.on_key(key(KeyCode::Char('j'))); // drill into 'fixes'
+        app.on_key(key(KeyCode::Char('3')));
+        app.on_key(key(KeyCode::Enter)); // hunk mode on print.css
+        app.on_key(key(KeyCode::Char('j')));
+        app.on_key(key(KeyCode::Char('j'))); // the 'chores' hunk at 63
+        app.on_key(key(KeyCode::Char('a')));
+        let Some(Overlay::Assign { payload, .. }) = app.overlay.clone() else {
+            panic!("expected the assign popup");
+        };
+        assert_eq!(
+            app.assign_description(&payload),
+            "1 hunk in src/print.css @@ -63,1 +63,2 (from 'chores')"
+        );
+    }
+
+    #[test]
+    fn enter_is_drill_in_only_and_never_assigns() {
         let mut app = hunk_mode_app();
-        app.on_key(key(KeyCode::Enter)); // open popup (all hunks)
+        // Hunk mode is the end of the drill; enter does nothing there,
+        // with or without shift (which a plain terminal drops anyway).
+        assert_eq!(app.on_key(key(KeyCode::Enter)), None);
+        assert!(app.overlay.is_none());
+        assert_eq!(
+            app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)),
+            None
+        );
+        assert!(app.overlay.is_none());
+
+        // Diff scroll mode too.
+        app.on_key(key(KeyCode::Char('0')));
+        assert_eq!(app.on_key(key(KeyCode::Enter)), None);
+        assert!(app.overlay.is_none());
+    }
+
+    #[test]
+    fn m_is_unbound() {
+        let mut hunks = hunk_mode_app();
+        assert_eq!(hunks.on_key(key(KeyCode::Char('m'))), None);
+        assert!(hunks.overlay.is_none());
+
+        let mut files = app();
+        files.on_key(key(KeyCode::Char('3')));
+        assert_eq!(files.on_key(key(KeyCode::Char('m'))), None);
+        assert!(files.overlay.is_none());
+    }
+
+    #[test]
+    fn the_create_new_escape_hatch_yields_a_create_and_assign_op() {
+        let mut app = hunk_mode_app();
+        app.on_key(key(KeyCode::Char('a'))); // open popup (selected hunk)
         app.on_key(key(KeyCode::Char('j')));
         app.on_key(key(KeyCode::Char('j'))); // '+ create new changelist…'
         app.on_key(key(KeyCode::Enter));
         assert!(matches!(
             app.overlay,
             Some(Overlay::Input {
-                kind: InputKind::NewChangelistForMove { .. },
+                kind: InputKind::NewChangelistForAssign { .. },
                 ..
             })
         ));
@@ -2704,24 +3106,24 @@ mod tests {
         let action = app.on_key(key(KeyCode::Enter));
         assert!(matches!(
             action,
-            Some(Action::Op(Op::Move { ref target, create: true, .. })) if target == "docs"
+            Some(Action::Op(Op::Assign { ref target, create: true, .. })) if target == "docs"
         ));
     }
 
     #[test]
-    fn esc_from_the_escape_hatch_returns_to_the_move_popup() {
+    fn esc_from_the_escape_hatch_returns_to_the_assign_popup() {
         let mut app = hunk_mode_app();
-        app.on_key(key(KeyCode::Enter));
+        app.on_key(key(KeyCode::Char('a')));
         app.on_key(key(KeyCode::Char('j')));
         app.on_key(key(KeyCode::Char('j')));
         app.on_key(key(KeyCode::Enter)); // into the input
         app.on_key(key(KeyCode::Esc));
-        assert!(matches!(app.overlay, Some(Overlay::Move { .. })));
+        assert!(matches!(app.overlay, Some(Overlay::Assign { .. })));
         app.on_key(key(KeyCode::Esc));
         assert!(app.overlay.is_none());
     }
 
-    // ── changelist ops (n/d/r/a) ────────────────────────────────────
+    // ── changelist ops (n/d/r/s) ────────────────────────────────────
 
     // ── space staging (ticket #33) ──────────────────────────────────
 
@@ -3130,19 +3532,23 @@ mod tests {
     }
 
     #[test]
-    fn a_sets_the_scoped_changelist_active_and_pseudo_rows_are_inert() {
+    fn s_switches_the_scoped_changelist_and_pseudo_rows_are_inert() {
         let mut app = app();
         app.on_key(key(KeyCode::Char('j')));
         app.on_key(key(KeyCode::Char('j'))); // 'chores'
         assert_eq!(
-            app.on_key(key(KeyCode::Char('a'))),
+            app.on_key(key(KeyCode::Char('s'))),
             Some(Action::Op(Op::SetActive {
                 name: "chores".into()
             }))
         );
+        // `a` is the assign key now, and the Changelists panel has
+        // nothing for it to assign.
+        assert_eq!(app.on_key(key(KeyCode::Char('a'))), None);
+        assert!(app.overlay.is_none());
 
         app.on_key(key(KeyCode::Esc)); // back to 'all'
-        assert_eq!(app.on_key(key(KeyCode::Char('a'))), None);
+        assert_eq!(app.on_key(key(KeyCode::Char('s'))), None);
         assert_eq!(app.on_key(key(KeyCode::Char('d'))), None);
         assert!(app.overlay.is_none(), "all/unassigned rows take no ops");
     }

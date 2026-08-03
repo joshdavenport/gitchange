@@ -8,7 +8,7 @@
 
 use anyhow::Result;
 
-use super::builder::{Sandbox, move_file, move_hunk, refresh, stage_hunk};
+use super::builder::{Sandbox, assign_file, assign_hunk, refresh, stage_hunk};
 
 pub struct Scenario {
     pub name: &'static str,
@@ -279,9 +279,9 @@ fn build_sorted_state(sandbox: &mut Sandbox) -> Result<()> {
     repo.create_changelist("api-cleanup")
         .map_err(|err| anyhow::anyhow!("create changelist: {err}"))?;
     let snapshot = refresh(&repo)?;
-    move_file(&repo, &snapshot, "src/main.rs", "debug-logging")?;
-    move_hunk(&repo, &snapshot, "src/timer.rs", 1, "debug-logging")?;
-    move_file(&repo, &snapshot, "src/report.rs", "api-cleanup")?;
+    assign_file(&repo, &snapshot, "src/main.rs", "debug-logging")?;
+    assign_hunk(&repo, &snapshot, "src/timer.rs", 1, "debug-logging")?;
+    assign_file(&repo, &snapshot, "src/report.rs", "api-cleanup")?;
     refresh(&repo)?;
     Ok(())
 }
@@ -412,9 +412,9 @@ fn large(sandbox: &mut Sandbox) -> Result<()> {
         .map_err(|err| anyhow::anyhow!("create changelist: {err}"))?;
     let snapshot = refresh(&repo)?;
     for i in 30..45 {
-        move_file(&repo, &snapshot, &gen_path(i), "misc-fixes")?;
+        assign_file(&repo, &snapshot, &gen_path(i), "misc-fixes")?;
     }
-    move_hunk(&repo, &snapshot, "src/timer.rs", 1, "misc-fixes")?;
+    assign_hunk(&repo, &snapshot, "src/timer.rs", 1, "misc-fixes")?;
     refresh(&repo)?;
     Ok(())
 }

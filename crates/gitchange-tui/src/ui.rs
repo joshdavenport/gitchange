@@ -12,8 +12,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 use crate::app::{
-    App, CommitDraft, DiffLine, ErrorModal, FilesRow, InputKind, LogEntry, MoveRow, Overlay, Panel,
-    Scope, Severity, count_noun, payload_counts,
+    App, AssignRow, CommitDraft, DiffLine, ErrorModal, FilesRow, InputKind, LogEntry, Overlay,
+    Panel, Scope, Severity, count_noun, payload_counts,
 };
 use crate::theme::Theme;
 
@@ -397,8 +397,8 @@ fn render_diff_line(
             // In hunk mode every header carries the cursor column — the
             // selected hunk's glyph, a same-width blank elsewhere so the
             // headers stay aligned (issue #45). The cursor persists
-            // while the panel is blurred, since the move key acts on the
-            // selection cross-panel.
+            // while the panel is blurred, since the assign keys act on
+            // the selection cross-panel.
             let mut spans = Vec::new();
             if hunk_mode {
                 spans.push(cursor_span(selected, theme));
@@ -651,7 +651,7 @@ fn draw_overlay(frame: &mut Frame, area: Rect, app: &App, overlay: &Overlay, the
     match overlay {
         Overlay::Input { kind, value } => {
             let title = match kind {
-                InputKind::NewChangelist | InputKind::NewChangelistForMove { .. } => {
+                InputKind::NewChangelist | InputKind::NewChangelistForAssign { .. } => {
                     "New changelist"
                 }
                 InputKind::Rename { .. } => "Rename changelist",
@@ -667,7 +667,7 @@ fn draw_overlay(frame: &mut Frame, area: Rect, app: &App, overlay: &Overlay, the
         Overlay::ConfirmDelete { name } => {
             let lines = vec![
                 Line::raw(format!("Delete '{name}'?")),
-                Line::styled("Its hunks move to unassigned.", theme.colors.dim),
+                Line::styled("Its hunks become unassigned.", theme.colors.dim),
                 Line::raw(""),
                 modal_hints("delete", theme),
             ];
@@ -752,17 +752,17 @@ fn draw_overlay(frame: &mut Frame, area: Rect, app: &App, overlay: &Overlay, the
                 popup,
             );
         }
-        Overlay::Move { payload, row } => {
-            let rows = app.move_rows();
+        Overlay::Assign { payload, row } => {
+            let rows = app.assign_rows();
             let selected = (*row).min(rows.len().saturating_sub(1));
             let mut lines = vec![
-                Line::styled(app.move_description(payload), theme.colors.dim),
+                Line::styled(app.assign_description(payload), theme.colors.dim),
                 Line::raw(""),
             ];
             let mut selected_line = None;
-            for (index, move_row) in rows.iter().enumerate() {
-                let line = match move_row {
-                    MoveRow::Changelist { name, active } => {
+            for (index, assign_row) in rows.iter().enumerate() {
+                let line = match assign_row {
+                    AssignRow::Changelist { name, active } => {
                         let mut spans = vec![
                             Span::raw("  "),
                             Span::styled(name.clone(), theme.colors.changelist),
@@ -772,13 +772,13 @@ fn draw_overlay(frame: &mut Frame, area: Rect, app: &App, overlay: &Overlay, the
                         }
                         Line::from(spans)
                     }
-                    MoveRow::CreateNew => Line::from(vec![
+                    AssignRow::CreateNew => Line::from(vec![
                         Span::raw("  "),
                         Span::styled("+", theme.colors.staged),
                         Span::raw(" create new changelist…"),
                     ]),
                 };
-                if matches!(move_row, MoveRow::CreateNew) {
+                if matches!(assign_row, AssignRow::CreateNew) {
                     lines.push(Line::styled(
                         "─".repeat(30),
                         Style::new().fg(theme.colors.border),
@@ -790,7 +790,7 @@ fn draw_overlay(frame: &mut Frame, area: Rect, app: &App, overlay: &Overlay, the
                 lines.push(line);
             }
             lines.push(Line::raw(""));
-            lines.push(modal_hints("move", theme));
+            lines.push(modal_hints("assign", theme));
             let width = (lines.iter().map(Line::width).max().unwrap_or(0) as u16 + 4).max(40);
             // The popup's width follows its widest row, so the selected
             // row can only be padded to the inner width once it's known.
@@ -803,7 +803,7 @@ fn draw_overlay(frame: &mut Frame, area: Rect, app: &App, overlay: &Overlay, the
             let popup = centered(area, width, lines.len() as u16 + 2);
             frame.render_widget(Clear, popup);
             frame.render_widget(
-                Paragraph::new(lines).block(modal_block("Move to changelist", theme)),
+                Paragraph::new(lines).block(modal_block("Assign to changelist", theme)),
                 popup,
             );
         }
@@ -1060,19 +1060,22 @@ fn draw_keybar(frame: &mut Frame, area: Rect, app: &App, theme: &Theme, now: Ins
 }
 
 fn draw_help(frame: &mut Frame, area: Rect, theme: &Theme) {
+    // The panel-level keymap, assign trio in escalating scope: every
+    // binding here is one a plain terminal can report (ADR 0013). Modal
+    // keys stay with their modals, which print their own hint lines.
     const BINDINGS: &[(&str, &str)] = &[
         ("1-5, 0", "focus panel (0 = diff)"),
         ("j/k, ↓/↑", "move within panel / hunks / scroll diff"),
         ("enter", "drill in: changelist → files → hunk mode"),
-        ("enter", "hunk mode: add all hunks to changelist"),
-        ("shift+enter", "hunk mode: add hunk to changelist"),
+        ("a", "assign hunk (files: the row's group)"),
+        ("A", "assign the file's unassigned hunks"),
+        ("ctrl+a", "assign every hunk of the file"),
         ("space", "stage/unstage file (hunk mode: hunk)"),
         ("c", "commit changelist"),
-        ("m", "move file to changelist"),
         ("n", "new changelist"),
         ("d", "delete changelist"),
         ("r", "rename changelist"),
-        ("a", "set active changelist"),
+        ("s", "switch active changelist"),
         ("esc", "back (diff → files → changelists → all)"),
         ("R", "refresh now"),
         ("?", "toggle keybindings"),

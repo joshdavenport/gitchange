@@ -213,6 +213,14 @@ fn help_overlay_lists_bindings() {
     let text = render(&app);
     assert!(text.contains("Keybindings"));
     assert!(text.contains("focus panel"));
+    // The assign trio and the switch key it displaced (ADR 0013).
+    assert!(text.contains("assign hunk"));
+    assert!(text.contains("assign the file's unassigned hunks"));
+    assert!(text.contains("ctrl+a"));
+    assert!(text.contains("switch active changelist"));
+    // Retired: neither survives anywhere in the overlay.
+    assert!(!text.contains("shift+enter"));
+    assert!(!text.contains("move file to changelist"));
 }
 
 #[test]
@@ -241,22 +249,26 @@ fn hunk_mode_swaps_the_title_and_keybar() {
     app.on_key(key(KeyCode::Enter));
     let text = render(&app);
     assert!(text.contains("print.css — hunk 1 of 2"));
-    assert!(text.contains("add all hunks to changelist"));
-    assert!(text.contains("shift+enter"));
+    // The bar advertises exactly the bindings the keymap has (ADR 0013).
+    assert!(text.contains("a/A/ctrl+a"));
+    assert!(text.contains("assign hunk / unassigned / all"));
+    assert!(!text.contains("shift+enter"));
 }
 
 #[test]
-fn the_move_popup_lists_changelists_and_the_escape_hatch() {
+fn the_assign_popup_lists_changelists_and_the_escape_hatch() {
     let mut app = App::new("repo");
     app.apply_snapshot(snapshot());
     app.on_key(key(KeyCode::Char('3')));
-    app.on_key(key(KeyCode::Char('m')));
+    app.on_key(key(KeyCode::Char('a')));
     let text = render(&app);
-    assert!(text.contains("Move to changelist"));
-    assert!(text.contains("M src/print.css"));
+    assert!(text.contains("Assign to changelist"));
+    // The payload states itself before it lands: the row is print.css
+    // under 'fixes', which owns one of its two hunks.
+    assert!(text.contains("1 hunk in src/print.css"));
     assert!(text.contains("fixes (active)"));
     assert!(text.contains("+ create new changelist…"));
-    assert!(text.contains("enter move · esc cancel"));
+    assert!(text.contains("enter assign · esc cancel"));
 }
 
 #[test]
@@ -281,7 +293,7 @@ fn the_delete_confirmation_names_the_unassigned_aftermath() {
     let text = render(&app);
     assert!(text.contains("Delete changelist"));
     assert!(text.contains("Delete 'fixes'?"));
-    assert!(text.contains("Its hunks move to unassigned."));
+    assert!(text.contains("Its hunks become unassigned."));
 }
 
 #[test]
@@ -536,12 +548,12 @@ fn the_pin_banner_tint_spans_the_full_inner_width() {
 }
 
 #[test]
-fn the_move_popup_selection_tint_spans_the_popup_inner_width() {
+fn the_assign_popup_selection_tint_spans_the_popup_inner_width() {
     let theme = Theme::default();
     let mut app = App::new("repo");
     app.apply_snapshot(snapshot());
     app.on_key(key(KeyCode::Char('3')));
-    app.on_key(key(KeyCode::Char('m')));
+    app.on_key(key(KeyCode::Char('a')));
     let buffer = render_buffer(&app);
 
     let (x, y) = find_text(&buffer, "fixes (active)");
@@ -798,7 +810,7 @@ fn the_hunk_cursor_glyph_survives_a_blur() {
     let border = border_right_of(&buffer, x, y);
     assert_bg_span(&buffer, y, x, border, theme.colors.selection);
 
-    // Blur to Commits: the selection survives (the move key acts on it
+    // Blur to Commits: the selection survives (the assign keys act on it
     // cross-panel), the cursor stays, only the tint goes.
     app.on_key(key(KeyCode::Char('4')));
     assert_eq!(app.hunk_sel, Some(0), "hunk mode survives a blur");

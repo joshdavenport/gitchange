@@ -1,7 +1,7 @@
-//! Explicit membership moves (ticket #32): `Repo::move_hunks` re-anchors
-//! records under the locked state cycle; membership is asserted through
-//! the public `Repo::refresh()` on real temp repos (ADR 0008), never
-//! record internals.
+//! Explicit membership assignment (tickets #32/#41): `Repo::assign_hunks`
+//! re-anchors records under the locked state cycle; membership is asserted
+//! through the public `Repo::refresh()` on real temp repos (ADR 0008),
+//! never record internals.
 
 mod support;
 
@@ -39,7 +39,7 @@ fn owners(snapshot: &Snapshot, path: &str) -> Vec<Option<String>> {
 }
 
 /// A repo with `a.txt` carrying two well-separated hunks, both captured
-/// by the active changelist 'fixes'; 'chores' exists as a move target.
+/// by the active changelist 'fixes'; 'chores' exists as an assign target.
 fn two_hunk_fixture() -> (RepoFixture, Repo, Snapshot) {
     let fixture = RepoFixture::new();
     fixture
@@ -59,11 +59,11 @@ fn two_hunk_fixture() -> (RepoFixture, Repo, Snapshot) {
 }
 
 #[test]
-fn moving_a_hunk_between_changelists_updates_membership_on_refresh() {
+fn assigning_a_hunk_to_another_changelist_updates_membership_on_refresh() {
     let (_fixture, repo, snapshot) = two_hunk_fixture();
     let hunk = snapshot.files[0].hunks[1].clone();
 
-    let notices = repo.move_hunks("a.txt", &[hunk], Some("chores")).unwrap();
+    let notices = repo.assign_hunks("a.txt", &[hunk], Some("chores")).unwrap();
     assert!(notices.is_empty());
 
     let after = repo.refresh().unwrap();
@@ -75,15 +75,15 @@ fn moving_a_hunk_between_changelists_updates_membership_on_refresh() {
     // both changelists.
     assert_eq!(after.files_in(Some("fixes")).len(), 1);
     assert_eq!(after.files_in(Some("chores")).len(), 1);
-    assert!(after.notices.is_empty(), "a clean move raises no notices");
+    assert!(after.notices.is_empty(), "a clean assign raises no notices");
 }
 
 #[test]
-fn moving_every_hunk_empties_the_source_changelist() {
+fn assigning_every_hunk_empties_the_source_changelist() {
     let (_fixture, repo, snapshot) = two_hunk_fixture();
     let hunks = snapshot.files[0].hunks.clone();
 
-    let notices = repo.move_hunks("a.txt", &hunks, Some("chores")).unwrap();
+    let notices = repo.assign_hunks("a.txt", &hunks, Some("chores")).unwrap();
     assert!(notices.is_empty());
 
     let after = repo.refresh().unwrap();
@@ -95,11 +95,11 @@ fn moving_every_hunk_empties_the_source_changelist() {
 }
 
 #[test]
-fn an_explicit_move_to_unassigned_is_sticky_across_edits() {
+fn an_explicit_assign_to_unassigned_is_sticky_across_edits() {
     let (fixture, repo, snapshot) = two_hunk_fixture();
     let hunk = snapshot.files[0].hunks[1].clone();
 
-    repo.move_hunks("a.txt", &[hunk], None).unwrap();
+    repo.assign_hunks("a.txt", &[hunk], None).unwrap();
     let after = repo.refresh().unwrap();
     assert_eq!(owners(&after, "a.txt"), vec![Some("fixes".into()), None]);
 
@@ -114,7 +114,7 @@ fn an_explicit_move_to_unassigned_is_sticky_across_edits() {
 }
 
 #[test]
-fn a_stale_hunk_fails_soft_and_the_fresh_one_still_moves() {
+fn a_stale_hunk_fails_soft_and_the_fresh_one_is_still_assigned() {
     let (fixture, repo, snapshot) = two_hunk_fixture();
     let hunks = snapshot.files[0].hunks.clone();
     let stale_start = hunks[0].new_start;
@@ -125,7 +125,7 @@ fn a_stale_hunk_fails_soft_and_the_fresh_one_still_moves() {
         &numbered(30, &[(5, "five, changed!"), (25, "twentyfive!")]),
     );
 
-    let notices = repo.move_hunks("a.txt", &hunks, Some("chores")).unwrap();
+    let notices = repo.assign_hunks("a.txt", &hunks, Some("chores")).unwrap();
     assert_eq!(
         notices,
         vec![Notice::StaleHunk {
@@ -139,16 +139,18 @@ fn a_stale_hunk_fails_soft_and_the_fresh_one_still_moves() {
     assert_eq!(
         owners(&after, "a.txt"),
         vec![Some("fixes".into()), Some("chores".into())],
-        "the stale hunk keeps its owner; the fresh one moved"
+        "the stale hunk keeps its owner; the fresh one was assigned"
     );
 }
 
 #[test]
-fn moving_to_an_unknown_changelist_is_an_error_and_changes_nothing() {
+fn assigning_to_an_unknown_changelist_is_an_error_and_changes_nothing() {
     let (_fixture, repo, snapshot) = two_hunk_fixture();
     let hunk = snapshot.files[0].hunks[1].clone();
 
-    let err = repo.move_hunks("a.txt", &[hunk], Some("nope")).unwrap_err();
+    let err = repo
+        .assign_hunks("a.txt", &[hunk], Some("nope"))
+        .unwrap_err();
     assert!(matches!(err, Error::UnknownChangelist { name } if name == "nope"));
 
     let after = repo.refresh().unwrap();
@@ -159,10 +161,10 @@ fn moving_to_an_unknown_changelist_is_an_error_and_changes_nothing() {
 }
 
 #[test]
-fn a_moved_hunk_keeps_its_new_owner_when_edited() {
+fn an_assigned_hunk_keeps_its_new_owner_when_edited() {
     let (fixture, repo, snapshot) = two_hunk_fixture();
     let hunk = snapshot.files[0].hunks[1].clone();
-    repo.move_hunks("a.txt", &[hunk], Some("chores")).unwrap();
+    repo.assign_hunks("a.txt", &[hunk], Some("chores")).unwrap();
     repo.refresh().unwrap();
 
     // The old owner's record must not linger and re-claim the hunk via

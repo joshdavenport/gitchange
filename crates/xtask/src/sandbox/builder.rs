@@ -136,16 +136,16 @@ fn file_hunks<'a>(snapshot: &'a Snapshot, path: &str) -> Result<&'a [Hunk]> {
         .with_context(|| format!("snapshot has no changed file `{path}`"))
 }
 
-/// Move every hunk of `path` to `target`.
-pub fn move_file(repo: &Repo, snapshot: &Snapshot, path: &str, target: &str) -> Result<()> {
+/// Assign every hunk of `path` to `target`.
+pub fn assign_file(repo: &Repo, snapshot: &Snapshot, path: &str, target: &str) -> Result<()> {
     let hunks = file_hunks(snapshot, path)?;
-    repo.move_hunks(path, hunks, Some(target))
-        .map_err(|err| anyhow!("move `{path}` to `{target}`: {err}"))?;
+    repo.assign_hunks(path, hunks, Some(target))
+        .map_err(|err| anyhow!("assign `{path}` to `{target}`: {err}"))?;
     Ok(())
 }
 
-/// Move one hunk of `path` (by snapshot position) to `target`.
-pub fn move_hunk(
+/// Assign one hunk of `path` (by snapshot position) to `target`.
+pub fn assign_hunk(
     repo: &Repo,
     snapshot: &Snapshot,
     path: &str,
@@ -156,8 +156,8 @@ pub fn move_hunk(
     let hunk = hunks
         .get(index)
         .with_context(|| format!("`{path}` has {} hunks, wanted index {index}", hunks.len()))?;
-    repo.move_hunks(path, std::slice::from_ref(hunk), Some(target))
-        .map_err(|err| anyhow!("move `{path}` hunk {index} to `{target}`: {err}"))?;
+    repo.assign_hunks(path, std::slice::from_ref(hunk), Some(target))
+        .map_err(|err| anyhow!("assign `{path}` hunk {index} to `{target}`: {err}"))?;
     Ok(())
 }
 

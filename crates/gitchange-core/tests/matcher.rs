@@ -623,9 +623,9 @@ fn binary_dormant_revival_is_exact_only() {
 }
 
 #[test]
-fn a_binary_whole_file_hunk_moves_between_changelists() {
-    // The whole-file hunk flows through the explicit move op like any
-    // hunk (ADR 0009: movable between changelists).
+fn a_binary_whole_file_hunk_is_assignable_like_any_other() {
+    // The whole-file hunk flows through the explicit assign op like any
+    // hunk (ADR 0009: assignable between changelists).
     let fixture = RepoFixture::new();
     fixture
         .write_bytes("logo.png", &[0u8, 1, 2, 3])
@@ -638,7 +638,9 @@ fn a_binary_whole_file_hunk_moves_between_changelists() {
     assert_eq!(owners(&snapshot, "logo.png"), vec![Some("art".into())]);
 
     let hunk = snapshot.files[0].hunks[0].clone();
-    let notices = repo.move_hunks("logo.png", &[hunk], Some("other")).unwrap();
+    let notices = repo
+        .assign_hunks("logo.png", &[hunk], Some("other"))
+        .unwrap();
     assert!(notices.is_empty());
 
     let snapshot = repo.refresh().unwrap();

@@ -307,14 +307,14 @@ impl Repo {
         Ok(notices)
     }
 
-    /// Move snapshot hunks of `path` to `target` (`None` = unassigned):
-    /// an explicit membership op, one locked load-mutate-save cycle
-    /// (ADR 0002). Validates at apply like staging (ADR 0005): each hunk
-    /// is content-matched against the live tree; a vanished hunk fails
-    /// soft with a `Notice::StaleHunk` while the rest still move. The
-    /// caller's follow-up refresh re-derives membership from the written
-    /// records.
-    pub fn move_hunks(
+    /// Assign snapshot hunks of `path` to `target` (`None` =
+    /// unassigned): an explicit membership op, one locked
+    /// load-mutate-save cycle (ADR 0002). Validates at apply like
+    /// staging (ADR 0005): each hunk is content-matched against the live
+    /// tree; a vanished hunk fails soft with a `Notice::StaleHunk` while
+    /// the rest are still assigned. The caller's follow-up refresh
+    /// re-derives membership from the written records.
+    pub fn assign_hunks(
         &self,
         path: &str,
         hunks: &[Hunk],
@@ -330,7 +330,7 @@ impl Repo {
             }
         }
         if !fresh.is_empty() {
-            self.update_state(|state| state.move_records(path, &fresh, target))?;
+            self.update_state(|state| state.assign_records(path, &fresh, target))?;
         }
         Ok(notices)
     }

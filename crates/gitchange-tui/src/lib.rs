@@ -13,10 +13,7 @@ use crossbeam_channel::{at, never, select, unbounded};
 use gitchange_core::{
     CommitOptions, CommitOutcome, Condition, Engine, EngineEvent, HunkStage, Repo,
 };
-use ratatui::crossterm::event::{
-    DisableFocusChange, EnableFocusChange, Event, KeyEventKind, KeyboardEnhancementFlags,
-    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
-};
+use ratatui::crossterm::event::{DisableFocusChange, EnableFocusChange, Event, KeyEventKind};
 use ratatui::crossterm::execute;
 
 use app::{Action, App, CommitDraft, CommitStep, Op, Severity, count_noun};
@@ -49,15 +46,11 @@ pub fn run() -> Result<(), Error> {
 
     let mut terminal = ratatui::init();
     let _ = execute!(std::io::stdout(), EnableFocusChange);
-    // Kitty-protocol terminals report `shift+enter` (hunk mode's
-    // add-selected-hunk) only with this flag; elsewhere the push is a
-    // harmless no-op and shift+enter reads as plain enter.
-    let _ = execute!(
-        std::io::stdout(),
-        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-    );
+    // No kitty keyboard-protocol push: nothing in the keymap depends on a
+    // modifier only that protocol reports (ADR 0013), so the flags would
+    // be dead weight — and a standing invitation to bind against them.
+    // Focus events are unaffected; they are not part of that protocol.
     let result = event_loop(&mut terminal, &engine, &repo, App::new(repo_name));
-    let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
     let _ = execute!(std::io::stdout(), DisableFocusChange);
     ratatui::restore();
     result
@@ -199,14 +192,14 @@ fn run_op(repo: &Repo, app: &mut App, op: Op) {
             );
             hunk_op(app, "Unstage failed", echo, repo.unstage_hunk(&path, &hunk));
         }
-        Op::Move {
+        Op::Assign {
             path,
             hunks,
             target,
             create,
         } => {
             // A name that already exists is a valid target: fall through
-            // to the move rather than stranding it behind the create.
+            // to the assign rather than stranding it behind the create.
             if create
                 && let Err(error) = repo.create_changelist(&target)
                 && !matches!(error, gitchange_core::Error::ChangelistExists { .. })
@@ -214,19 +207,22 @@ fn run_op(repo: &Repo, app: &mut App, op: Op) {
                 app.show_error("Create changelist failed", error.to_string());
                 return;
             }
-            match repo.move_hunks(&path, &hunks, Some(&target)) {
+            match repo.assign_hunks(&path, &hunks, Some(&target)) {
                 Ok(notices) => {
-                    // Stale hunks failed soft; the rest moved.
-                    let moved = hunks.len().saturating_sub(notices.len());
-                    if moved > 0 {
+                    // Stale hunks failed soft; the rest were assigned.
+                    let assigned = hunks.len().saturating_sub(notices.len());
+                    if assigned > 0 {
                         app.push_log(
                             Severity::Info,
-                            format!("moved {} — {path} → '{target}'", count_noun(moved, "hunk")),
+                            format!(
+                                "assigned {} — {path} → '{target}'",
+                                count_noun(assigned, "hunk")
+                            ),
                         );
                     }
                     app.push_notices(&notices);
                 }
-                Err(error) => app.show_error("Move failed", error.to_string()),
+                Err(error) => app.show_error("Assign failed", error.to_string()),
             }
         }
     }

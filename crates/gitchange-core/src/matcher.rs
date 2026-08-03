@@ -36,7 +36,7 @@ pub enum Notice {
         /// the degenerate hand-edited-state case where none is active.
         assigned_to: Option<String>,
     },
-    /// A stage/unstage/move acted on a snapshot hunk that no longer
+    /// A stage/unstage/assign acted on a snapshot hunk that no longer
     /// exists in the live tree (ADR 0005's stale-action rule): fail-soft,
     /// nothing was applied for that hunk.
     StaleHunk {

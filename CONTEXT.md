@@ -25,9 +25,9 @@ _Avoid_: current, selected, default
 
 **Unassigned**:
 The pseudo-changelist holding hunks no changelist owns: the dirty tree
-before any changelist exists, orphans of deleted changelists, and explicit
-moves. Rendered as a warning state. `unassigned` is a reserved name — user
-changelists cannot take it.
+before any changelist exists, orphans of deleted changelists, and hunks
+assigned to it by hand. Rendered as a warning state. `unassigned` is a
+reserved name — user changelists cannot take it.
 _Avoid_: unmanaged, inbox, unsorted
 
 **All**:
@@ -45,8 +45,8 @@ _Avoid_: file membership
 **Whole-file hunk**:
 The degenerate single hunk a changed binary file presents: one membership
 record spanning the file, anchored by a blob-OID pair instead of verbatim
-lines. Follows normal assignment/move rules; keeps membership by path
-continuity while the path stays binary-changed; `◐` unreachable, `◑` derives
+lines. Follows normal assign rules; keeps membership by path continuity
+while the path stays binary-changed; `◐` unreachable, `◑` derives
 by OID compare; hunk-mode entry is a polite no-op.
 _Avoid_: binary hunk, file-level membership (as a general mode)
 

@@ -30,7 +30,7 @@ pub struct MembershipRecord {
     pub new_start: u32,
     pub new_lines: u32,
     /// Owning changelist; `None` claims the hunk for unassigned (orphans
-    /// of deleted changelists, explicit moves).
+    /// of deleted changelists, explicit assignment to it).
     pub changelist: Option<String>,
     /// Verbatim hunk lines (`origin` + content), context included — the
     /// identity evidence for tier-1 exact matching. Empty for binary
@@ -192,12 +192,13 @@ impl State {
     }
 
     /// Point `path`'s records at `target` for the given fresh hunks —
-    /// the explicit move op (ticket #32). `target: None` claims them for
-    /// unassigned, the same sticky claim delete-orphans carry. Competing
-    /// claims are replaced: records anchor-matching a moved hunk, and
-    /// live records overlapping its HEAD-side range, are removed so
-    /// neither matching tier re-claims the hunk for its old owner.
-    pub(crate) fn move_records(
+    /// the explicit assign op (ticket #32). `target: None` claims them
+    /// for unassigned, the same sticky claim delete-orphans carry.
+    /// Competing claims are replaced: records anchor-matching an
+    /// assigned hunk, and live records overlapping its HEAD-side range,
+    /// are removed so neither matching tier re-claims the hunk for its
+    /// old owner.
+    pub(crate) fn assign_records(
         &mut self,
         path: &str,
         hunks: &[&Hunk],
