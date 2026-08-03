@@ -14,6 +14,15 @@ pub struct RepoFixture {
 
 impl RepoFixture {
     /// Init a fresh repo in a temp dir with a committing identity set.
+    ///
+    /// The pinned knobs below are the same set xtask's `Sandbox::init`
+    /// pins (crates/xtask/src/sandbox/builder.rs) — both exist so the
+    /// host's global config can't reach the repo. Add a knob here and add
+    /// it there too; a knob pinned on only one side leaves the other
+    /// silently inheriting the host. The two builders are otherwise
+    /// deliberately separate: this one drives libgit2 in-process and
+    /// panics, the sandbox shells out (mirroring ADR 0004) and returns
+    /// `anyhow` errors.
     pub fn new() -> Self {
         let dir = tempfile::tempdir().expect("create temp dir");
         // Pin the initial branch: plain `init` takes it from the host's

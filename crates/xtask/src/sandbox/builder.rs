@@ -21,8 +21,9 @@ pub struct Sandbox {
 }
 
 impl Sandbox {
-    /// Init a repo at `root` with pinned local config, mirroring
-    /// `RepoFixture` so global git config can't distort what's eyeballed.
+    /// Init a repo at `root` with a pinned initial branch and local
+    /// config, so no part of the developer's global git config reaches
+    /// what gets eyeballed.
     pub fn init(root: &Path) -> Result<Self> {
         fs::create_dir_all(root).with_context(|| format!("create {}", root.display()))?;
         let sandbox = Self {
@@ -30,6 +31,11 @@ impl Sandbox {
             commits: 0,
         };
         sandbox.git(&["init", "--quiet", "--initial-branch=main"])?;
+        // Same knobs as core's `RepoFixture` (tests/support/mod.rs),
+        // which pins them for the same reason and explains each. Add a
+        // knob here and add it there too: a knob pinned on only one side
+        // leaves the other silently inheriting the host. The identities
+        // differ on purpose — a stray sandbox commit is recognisable.
         for (key, value) in [
             ("user.name", "gitchange-sandbox"),
             ("user.email", "sandbox@gitchange.invalid"),
