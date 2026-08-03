@@ -17,9 +17,6 @@ use crate::vocabulary::{ARROW, UNASSIGNED, count_noun};
 /// Dormant records prune after 14 days (ADR 0002).
 const DORMANT_TTL_SECS: u64 = 14 * 24 * 60 * 60;
 
-/// A hunk's owning changelist; `None` is unassigned.
-type Owner = Option<String>;
-
 /// An automatic membership decision worth spot-checking, surfaced as
 /// data on the snapshot (rendered by the CLI as stderr lines, by the TUI
 /// Log panel later).
@@ -258,8 +255,11 @@ fn match_file(
     // Per-hunk replacement records, kept in hunk order so an unchanged
     // diff reproduces the stored order byte-for-byte (no-rewrite rule).
     let mut fresh: Vec<Option<MembershipRecord>> = vec![None; file.hunks.len()];
-    // Per-hunk decision: outer None = undecided, inner None = unassigned.
-    let mut owners: Vec<Option<Owner>> = vec![None; file.hunks.len()];
+    // Per-hunk decision, spelled out rather than hidden behind an alias
+    // because both levels of `None` carry meaning: the outer says no tier
+    // has claimed this hunk yet, the inner says a tier claimed it for
+    // unassigned. Only the outer is a real absence.
+    let mut owners: Vec<Option<Option<String>>> = vec![None; file.hunks.len()];
 
     // Tier 1: exact content-anchor match — live records first, then
     // dormant (revival). Position-independent: catches moved hunks.
