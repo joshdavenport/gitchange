@@ -19,7 +19,7 @@ pub use diff::{BinarySides, BlobInfo, ChangeKind, DiffHunk, FileDiff, HunkLine, 
 pub use engine::{Condition, Engine, EngineEvent};
 pub use error::Error;
 pub use matcher::Notice;
-pub use repo::Repo;
+pub use repo::{Repo, StageAllOutcome};
 pub use snapshot::{CommitInfo, GitOperation, Head, Snapshot};
 pub use state::{Changelist, MembershipRecord, OidAnchor, RESERVED_NAMES};
 pub use universe::{ChangedFile, FileStage, Hunk, HunkStage};

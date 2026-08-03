@@ -617,6 +617,56 @@ fn align_sets_index_to_worktree_for_the_changelists_stale_hunks() {
 }
 
 #[test]
+fn stage_all_stages_only_the_changelists_unstaged_hunks() {
+    let fixture = RepoFixture::new();
+    let head = numbered_lines(20);
+    fixture
+        .write("a.txt", &text(&head))
+        .write("b.txt", &text(&head))
+        .commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("one").unwrap();
+
+    // Both edits land in the active changelist; b.txt's hunk is then
+    // moved out to unassigned so stage_all must leave it behind.
+    let mut worktree_a = head.clone();
+    worktree_a[4] = "five-edited".into();
+    fixture.write("a.txt", &text(&worktree_a));
+    let mut worktree_b = head.clone();
+    worktree_b[9] = "ten-edited".into();
+    fixture.write("b.txt", &text(&worktree_b));
+    let snapshot = repo.refresh().unwrap();
+    let b_hunks = snapshot
+        .files
+        .iter()
+        .find(|file| file.path == "b.txt")
+        .unwrap()
+        .hunks
+        .clone();
+    repo.assign_hunks("b.txt", &b_hunks, None).unwrap();
+
+    let outcome = repo.stage_all(Some("one")).unwrap();
+    assert_eq!(outcome.staged, 1);
+    assert_eq!(outcome.notices, Vec::<Notice>::new());
+
+    assert_eq!(fixture.index_content("a.txt"), Some(text(&worktree_a)));
+    assert_eq!(
+        fixture.index_content("b.txt"),
+        Some(text(&head)),
+        "unassigned hunk left unstaged"
+    );
+
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(stages(&snapshot, "a.txt"), vec![HunkStage::Staged]);
+    assert_eq!(stages(&snapshot, "b.txt"), vec![HunkStage::Unstaged]);
+
+    assert!(matches!(
+        repo.stage_all(Some("missing")),
+        Err(Error::UnknownChangelist { .. })
+    ));
+}
+
+#[test]
 fn a_changelist_containing_a_binary_commits_it_whole() {
     // ADR 0009: the temp-index commit receives the staged blob
     // whole-file; other changelists' content stays behind.

@@ -15,6 +15,14 @@ use crate::universe::{self, ChangedFile, Hunk, HunkStage};
 /// lazygit-equivalent window, not a full history walk.
 const RECENT_COMMITS_LIMIT: usize = 300;
 
+/// What [`Repo::stage_all`] did: how many hunks it staged, plus the
+/// fail-soft notices for the ones it couldn't.
+#[derive(Debug)]
+pub struct StageAllOutcome {
+    pub staged: usize,
+    pub notices: Vec<Notice>,
+}
+
 /// A handle on one git repository, holding the backend behind the
 /// `GitBackend` seam. Frontends reach git only through this type.
 pub struct Repo {
@@ -305,6 +313,30 @@ impl Repo {
             }
         }
         Ok(notices)
+    }
+
+    /// The bulk stage op: set index := worktree for each of the
+    /// changelist's unstaged hunks — what the commit flow's stage-all
+    /// offer runs before opening the dialog. Fail-soft per hunk like
+    /// [`Repo::stage_hunk`]; returns how many hunks were staged plus
+    /// any stale-hunk notices.
+    pub fn stage_all(&self, changelist: Option<&str>) -> Result<StageAllOutcome, Error> {
+        let snapshot = self.refresh()?;
+        validate_changelist(&snapshot, changelist)?;
+        let mut staged = 0;
+        let mut notices = Vec::new();
+        for file in &snapshot.files {
+            for hunk in &file.hunks {
+                if hunk.changelist.as_deref() == changelist && hunk.stage == HunkStage::Unstaged {
+                    let hunk_notices = self.stage_hunk(&file.path, hunk)?;
+                    if hunk_notices.is_empty() {
+                        staged += 1;
+                    }
+                    notices.extend(hunk_notices);
+                }
+            }
+        }
+        Ok(StageAllOutcome { staged, notices })
     }
 
     /// Assign snapshot hunks of `path` to `target` (`None` =

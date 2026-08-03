@@ -10,9 +10,7 @@ pub mod ui;
 use std::time::Instant;
 
 use crossbeam_channel::{at, never, select, unbounded};
-use gitchange_core::{
-    CommitOptions, CommitOutcome, Condition, Engine, EngineEvent, HunkStage, Repo,
-};
+use gitchange_core::{CommitOptions, CommitOutcome, Condition, Engine, EngineEvent, Repo};
 use ratatui::crossterm::event::{DisableFocusChange, EnableFocusChange, Event, KeyEventKind};
 use ratatui::crossterm::execute;
 
@@ -250,34 +248,18 @@ fn run_commit_step(repo: &Repo, app: &mut App, step: CommitStep) {
     match step {
         CommitStep::Open { changelist } => open_commit_dialog(repo, app, changelist),
         CommitStep::StageAllAndOpen { changelist } => {
-            // Stage the changelist's unstaged hunks from a fresh
-            // snapshot, fail-soft per hunk, then fall into the dialog.
-            match repo.refresh() {
-                Ok(snapshot) => {
-                    let owner = changelist.as_deref();
-                    let mut staged = 0;
-                    for file in &snapshot.files {
-                        for hunk in &file.hunks {
-                            if hunk.changelist.as_deref() == owner
-                                && hunk.stage == HunkStage::Unstaged
-                            {
-                                match repo.stage_hunk(&file.path, hunk) {
-                                    Ok(notices) if notices.is_empty() => staged += 1,
-                                    Ok(notices) => app.push_notices(&notices),
-                                    Err(error) => {
-                                        app.show_error("Stage failed", error.to_string());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if staged > 0 {
-                        let label = owner.unwrap_or("unassigned");
+            // Stage the changelist's unstaged hunks (core's bulk op,
+            // fail-soft per hunk), then fall into the dialog.
+            match repo.stage_all(changelist.as_deref()) {
+                Ok(outcome) => {
+                    if outcome.staged > 0 {
+                        let label = changelist.as_deref().unwrap_or("unassigned");
                         app.push_log(
                             Severity::Info,
-                            format!("staged {} — '{label}'", count_noun(staged, "hunk")),
+                            format!("staged {} — '{label}'", count_noun(outcome.staged, "hunk")),
                         );
                     }
+                    app.push_notices(&outcome.notices);
                     open_commit_dialog(repo, app, changelist);
                 }
                 Err(error) => app.show_error("Commit failed", error.to_string()),
