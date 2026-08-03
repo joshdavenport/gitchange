@@ -81,6 +81,51 @@ fn an_externally_staged_untouched_hunk_is_staged() {
 }
 
 #[test]
+fn an_external_git_reset_is_absorbed_as_an_unstaged_hunk() {
+    // ADR 0003's absorption rule, `git reset` half (issue #60): the index
+    // is the only source of staged-ness, so an external unstage simply
+    // re-derives — no error, no confirmation flow. Membership comes from
+    // records instead, so it does not move with the index; a `git reset`
+    // that shed the owner would be the silent membership loss ADR 0001
+    // exists to prevent.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("a.txt", &numbered(&[]))
+        .commit_all("init")
+        .write("a.txt", &numbered(&[(10, "ten!")]))
+        .stage("a.txt");
+
+    let repo = Repo::discover(fixture.path()).unwrap();
+    repo.create_changelist("one").unwrap();
+    let staged = repo.refresh().unwrap();
+    assert_eq!(staged.files[0].hunks[0].stage, HunkStage::Staged);
+    assert_eq!(
+        staged.files[0].hunks[0].changelist.as_deref(),
+        Some("one"),
+        "the owned-and-staged starting state this test resets from"
+    );
+
+    // `git reset -- a.txt` in another terminal.
+    fixture.reset_path("a.txt");
+
+    let snapshot = repo.refresh().unwrap();
+    let file = &snapshot.files[0];
+    assert_eq!(file.kind, ChangeKind::Modified);
+    assert_eq!(file.stage(), FileStage::Unstaged);
+    assert_eq!((file.staged_hunks(), file.total_hunks()), (0, 1));
+    assert_eq!(file.hunks[0].stage, HunkStage::Unstaged);
+    assert_eq!(
+        file.hunks[0].changelist.as_deref(),
+        Some("one"),
+        "the reset is a staging event, not a membership one"
+    );
+    assert!(
+        snapshot.advisories.is_empty(),
+        "absorbed silently: nothing to spot-check, nothing to error over"
+    );
+}
+
+#[test]
 fn a_staged_then_edited_hunk_is_staged_stale() {
     let fixture = RepoFixture::new();
     fixture

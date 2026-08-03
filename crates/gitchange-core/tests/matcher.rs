@@ -8,7 +8,7 @@ mod support;
 
 use std::fs;
 
-use gitchange_core::{Advisory, Repo, Snapshot};
+use gitchange_core::{Advisory, HunkStage, Repo, Snapshot};
 use support::RepoFixture;
 
 /// `count` numbered lines, with `edits` as (1-based line, replacement).
@@ -454,6 +454,52 @@ fn new_hunks_capture_to_the_active_changelist() {
         .collect();
     assert_eq!(in_two, vec!["a.txt", "new.txt"]);
     assert!(snapshot.files_in(Some("one")).is_empty());
+}
+
+#[test]
+fn an_unowned_externally_staged_hunk_captures_to_active_with_an_advisory() {
+    // ADR 0003 routes unowned *staged* hunks through ADR 0001's assignment
+    // rules unchanged — the same capture the tests above drive with
+    // worktree-only hunks, reached the ordinary way: `git add` before
+    // gitchange ever saw the hunk (a pre-launch stage, `git add -p`, a
+    // hook). The capture must be as loud here as anywhere, and it must not
+    // disturb the derived staged state it arrives with.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("a.txt", &numbered(20, &[]))
+        .commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("one").unwrap();
+    repo.create_changelist("two").unwrap();
+    repo.switch("two").unwrap();
+
+    // Staged before any refresh could record it, so nothing owns it.
+    fixture
+        .write("a.txt", &numbered(20, &[(10, "ten!")]))
+        .stage("a.txt");
+
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(owners(&snapshot, "a.txt"), vec![Some("two".into())]);
+    assert_eq!(
+        snapshot.files[0].hunks[0].stage,
+        HunkStage::Staged,
+        "captured as it stands: the index is untouched by the capture"
+    );
+    assert_eq!(
+        snapshot.advisories,
+        vec![Advisory::AutoCaptured {
+            path: "a.txt".into(),
+            new_start: 7,
+            changelist: "two".into(),
+        }],
+        "a staged hunk's capture is announced like any other"
+    );
+
+    // And the record persisted, so the capture is a decision rather than a
+    // per-refresh re-guess.
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(owners(&snapshot, "a.txt"), vec![Some("two".into())]);
+    assert!(snapshot.advisories.is_empty());
 }
 
 #[test]

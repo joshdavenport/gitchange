@@ -262,6 +262,24 @@ impl RepoFixture {
         Some(index.get_path(Path::new(rel), 0)?.mode)
     }
 
+    /// How many objects the object database holds, loose and packed —
+    /// the ground truth for ADR 0002's "no git objects written". Counted
+    /// through a freshly opened handle: this fixture's own handle caches
+    /// its odb backends, and a cached pack listing could mask exactly the
+    /// write being asserted against.
+    #[allow(dead_code)]
+    pub fn odb_object_count(&self) -> usize {
+        let repo = git2::Repository::open(self.repo.path()).expect("reopen repo");
+        let odb = repo.odb().unwrap();
+        let mut count = 0;
+        odb.foreach(|_| {
+            count += 1;
+            true
+        })
+        .unwrap();
+        count
+    }
+
     /// Add a linked worktree named `name`, returning its path. Requires
     /// at least one commit (git refuses worktrees on unborn branches).
     #[allow(dead_code)]
@@ -377,6 +395,18 @@ impl RepoFixture {
         self
     }
 
+    /// `git reset -- <rel>`: unstage one path — index entry := HEAD's,
+    /// worktree untouched. The `git reset` half of ADR 0003's absorption
+    /// rule, and the exact inverse of [`RepoFixture::stage`].
+    #[allow(dead_code)]
+    pub fn reset_path(&self, rel: &str) -> &Self {
+        let head = self.repo.head().unwrap().peel_to_commit().unwrap();
+        self.repo
+            .reset_default(Some(head.as_object()), [rel])
+            .unwrap();
+        self
+    }
+
     /// `git merge <name>` that must conflict: leaves MERGE_HEAD, a
     /// conflicted index, and conflict markers in the worktree — the
     /// mid-merge state ADR 0007's guard and quarantine act on.
@@ -456,6 +486,24 @@ impl RepoFixture {
             "git {args:?} must stop mid-operation, but exited 0:\n{}",
             String::from_utf8_lossy(&output.stdout).trim()
         );
+    }
+
+    /// Switch to branch `name`, *carrying* dirty worktree changes across —
+    /// the branch switch ADR 0002's scope semantics are stated against.
+    /// Distinct from [`RepoFixture::checkout`], whose force flag would
+    /// discard the very hunks the switch is meant to carry.
+    ///
+    /// Shells out (ADR 0008's amendment) because libgit2's safe checkout
+    /// does not reproduce the switch: it updates the index but leaves the
+    /// departing branch's files in the worktree, where they then read as
+    /// untracked dirt and pollute the very snapshot under test. `checkout`
+    /// rather than `switch` keeps the fixture inside the documented git
+    /// floor (≥ 2.5; `switch` needs 2.23) — for a branch name the two are
+    /// the same operation.
+    #[allow(dead_code)]
+    pub fn switch_branch(&self, name: &str) -> &Self {
+        self.git(&["checkout", name]);
+        self
     }
 
     /// `git rebase <backend> <onto>` that must conflict, leaving a rebase

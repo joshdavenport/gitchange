@@ -25,7 +25,7 @@ free.
   they read well; they are an assertion style, not a fixture source, and
   no snapshot corpus is mandated.
 
-### In-progress operation states shell out to real git
+### States libgit2 can't reach faithfully shell out to real git
 
 Amends the fixture rule above (issue #57). The repository states ADR
 0007's commit guard reads cannot all be reached through libgit2: it has
@@ -36,6 +36,19 @@ rebase, cherry-pick, revert or `am` in progress therefore drive system
 git, with the host's global and system config cut out so the fixture
 stays as hermetic as the libgit2-built ones (which pin the same knobs in
 the repo's own config instead).
+
+The criterion is unreachability, not convenience: a state libgit2 builds
+faithfully is still built through libgit2, however tempting the command
+line is. One non-operation state has since met it (issue #60) — the
+**branch switch that carries dirty hunks across**, ADR 0002's scope
+semantics. libgit2's safe checkout updates the index but leaves the
+departing branch's files sitting in the worktree, where the hunk universe
+reads them as untracked dirt and pollutes the snapshot under test; real
+git removes them. Its sibling in the same ticket, an external `git reset`
+of one path, stayed on libgit2 (`reset_default`) precisely because
+libgit2 reaches it exactly. Fixtures shelling out stay inside the
+documented git floor where the choice is free: a branch `checkout` rather
+than `switch`, which needs 2.23.
 
 This qualifies **No git version matrix** below: system git is no longer
 only in the ADR 0004 commit shell-out, and the exact `RepositoryState`
