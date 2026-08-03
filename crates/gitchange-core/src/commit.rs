@@ -448,7 +448,7 @@ fn shifted(old_start: u32, committed: &[HunkHeader]) -> u32 {
     let delta: i64 = committed
         .iter()
         .filter(|hunk| ends_above(hunk, old_start))
-        .map(|&(_, old_lines, _, new_lines)| i64::from(new_lines) - i64::from(old_lines))
+        .map(|hunk| i64::from(hunk.new_lines) - i64::from(hunk.old_lines))
         .sum();
     u32::try_from(i64::from(old_start) + delta).unwrap_or(0)
 }
@@ -456,19 +456,19 @@ fn shifted(old_start: u32, committed: &[HunkHeader]) -> u32 {
 /// Whether a committed hunk sits entirely above `old_start`. A pure
 /// insertion (zero old lines) at line N inserts *after* N, so it is
 /// above only lines strictly below it.
-fn ends_above(&(start, lines, _, _): &HunkHeader, old_start: u32) -> bool {
-    if lines == 0 {
-        start < old_start
+fn ends_above(hunk: &HunkHeader, old_start: u32) -> bool {
+    if hunk.old_lines == 0 {
+        hunk.old_start < old_start
     } else {
-        start + lines <= old_start
+        hunk.old_start + hunk.old_lines <= old_start
     }
 }
 
 fn header(hunk: &DiffHunk) -> HunkHeader {
-    (
-        hunk.old_start,
-        hunk.old_lines,
-        hunk.new_start,
-        hunk.new_lines,
-    )
+    HunkHeader {
+        old_start: hunk.old_start,
+        old_lines: hunk.old_lines,
+        new_start: hunk.new_start,
+        new_lines: hunk.new_lines,
+    }
 }

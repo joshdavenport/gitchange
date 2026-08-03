@@ -404,7 +404,7 @@ impl Git2Backend {
             if let Some(missing) = spec.hunks.iter().find(|header| !fresh.contains(header)) {
                 return Err(index_moved(format_args!(
                     "{} hunk at old line {}",
-                    spec.path, missing.0
+                    spec.path, missing.old_start
                 )));
             }
             let headers = spec.hunks.clone();
@@ -507,12 +507,12 @@ impl Git2Backend {
 }
 
 fn hunk_header(hunk: &git2::DiffHunk) -> HunkHeader {
-    (
-        hunk.old_start(),
-        hunk.old_lines(),
-        hunk.new_start(),
-        hunk.new_lines(),
-    )
+    HunkHeader {
+        old_start: hunk.old_start(),
+        old_lines: hunk.old_lines(),
+        new_start: hunk.new_start(),
+        new_lines: hunk.new_lines(),
+    }
 }
 
 /// Every hunk header in `diff`, in diff order.

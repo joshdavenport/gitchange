@@ -5,9 +5,18 @@ use crate::diff::RepoDiffs;
 use crate::error::Error;
 use crate::snapshot::{CommitInfo, GitOperation, Head};
 
-/// A diff hunk's identity within one diff: (old_start, old_lines,
-/// new_start, new_lines). Unique per file because hunks never overlap.
-pub type HunkHeader = (u32, u32, u32, u32);
+/// A diff hunk's identity within one diff — unique per file, because
+/// hunks never overlap. Named fields rather than a `u32` quadruple: the
+/// commit path builds these from two sources and compares them for
+/// equality to prove the index hasn't moved (ADR 0004), and a transposed
+/// pair would pass that check while committing the wrong region.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HunkHeader {
+    pub old_start: u32,
+    pub old_lines: u32,
+    pub new_start: u32,
+    pub new_lines: u32,
+}
 
 /// The seam between core and any git implementation (ADR 0006). The git2
 /// adapter is the only implementor in v0.1; the planned shell-out fallback
