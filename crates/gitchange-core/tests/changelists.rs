@@ -5,7 +5,7 @@ mod support;
 
 use std::fs;
 
-use gitchange_core::{Error, Repo};
+use gitchange_core::{Error, RESERVED_NAMES, Repo};
 use support::RepoFixture;
 
 fn repo(fixture: &RepoFixture) -> Repo {
@@ -67,7 +67,13 @@ fn reserved_names_are_rejected_on_create_and_rename() {
     let repo = repo(&fixture);
     repo.create_changelist("feature").unwrap();
 
-    for reserved in ["all", "unassigned"] {
+    // Spelled out deliberately, not read from the const: this test pins
+    // the reserved set's contents, so growing or shrinking
+    // `RESERVED_NAMES` must fail here rather than silently redefine what
+    // is being tested. The loop below then covers every name in it.
+    assert_eq!(RESERVED_NAMES, ["all", "unassigned"]);
+
+    for reserved in RESERVED_NAMES {
         let err = repo.create_changelist(reserved).unwrap_err();
         assert!(
             matches!(&err, Error::ReservedName { name } if name == reserved),

@@ -4,12 +4,13 @@ use clap::{Parser, Subcommand};
 
 use gitchange_core::{ACTIVE_MARKER, ChangedFile, GroupKind, Repo};
 
+/// The prefix every diagnostic this binary writes to stderr carries, so
+/// output piped alongside git's own is attributable at a glance.
+const DIAG: &str = "gitchange:";
+
 #[derive(Parser)]
-#[command(
-    name = "gitchange",
-    version,
-    about = "Organise uncommitted changes into changelists"
-)]
+// `name` is left to clap, which takes it from the package name.
+#[command(version, about = "Organise uncommitted changes into changelists")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -37,7 +38,7 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("gitchange: {err:#}");
+            eprintln!("{DIAG} {err:#}");
             ExitCode::from(1)
         }
     }
@@ -49,7 +50,7 @@ fn status() -> anyhow::Result<()> {
     let repo = open_repo()?;
     let snapshot = repo.refresh()?;
     for advisory in &snapshot.advisories {
-        eprintln!("gitchange: notice: {}", advisory.message());
+        eprintln!("{DIAG} notice: {}", advisory.message());
     }
     for group in snapshot.groups() {
         match &group.kind {

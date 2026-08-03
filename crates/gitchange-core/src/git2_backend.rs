@@ -9,6 +9,12 @@ use crate::error::Error;
 use crate::snapshot::{CommitInfo, GitOperation, Head};
 use crate::universe::ranges_overlap;
 
+/// The state directory's name under the private git dir (ADR 0002).
+/// Deliberately its own constant rather than a shared program-name
+/// token: this is an on-disk identifier every existing repo already
+/// carries, so renaming the program must not silently orphan it.
+const STATE_DIR_NAME: &str = "gitchange";
+
 pub(crate) struct Git2Backend {
     repo: git2::Repository,
 }
@@ -86,7 +92,7 @@ impl GitBackend for Git2Backend {
         // `Repository::path()` is the private git dir — for a linked
         // worktree that is `.git/worktrees/<id>/`, matching git's
         // `--git-path gitchange` resolution (ADR 0002).
-        self.repo.path().join("gitchange")
+        self.repo.path().join(STATE_DIR_NAME)
     }
 
     fn workdir(&self) -> Option<PathBuf> {
@@ -365,13 +371,7 @@ impl Git2Backend {
                 let entry = live.get_path(Path::new(&spec.path), 0);
                 let live_oid = entry.as_ref().map(|entry| entry.id.to_string());
                 if live_oid != whole.staged_oid {
-                    return Err(Error::Backend(
-                        format!(
-                            "the index changed while committing ({} staged blob); retry",
-                            spec.path
-                        )
-                        .into(),
-                    ));
+                    return Err(index_moved(format_args!("{} staged blob", spec.path)));
                 }
                 match entry {
                     Some(entry) => temp.add(&entry).map_err(backend_error)?,
@@ -402,13 +402,10 @@ impl Git2Backend {
             // nothing (ADR 0004) — the caller retries via its guards.
             let fresh = diff_hunk_headers(&diff)?;
             if let Some(missing) = spec.hunks.iter().find(|header| !fresh.contains(header)) {
-                return Err(Error::Backend(
-                    format!(
-                        "the index changed while committing ({} hunk at old line {}); retry",
-                        spec.path, missing.0
-                    )
-                    .into(),
-                ));
+                return Err(index_moved(format_args!(
+                    "{} hunk at old line {}",
+                    spec.path, missing.0
+                )));
             }
             let headers = spec.hunks.clone();
             let mut apply_options = git2::ApplyOptions::new();
@@ -805,6 +802,14 @@ fn change_kind(status: git2::Delta) -> Option<ChangeKind> {
 fn short_id(commit: &git2::Commit<'_>) -> Result<String, Error> {
     let buf = commit.as_object().short_id().map_err(backend_error)?;
     Ok(buf.as_str().unwrap_or_default().to_owned())
+}
+
+/// The freshness-check refusal (ADR 0004): the live index moved between
+/// payload derivation and commit, so committing would substitute content
+/// the user never confirmed. `what` names the thing that moved — one
+/// sentence, whichever check caught it.
+fn index_moved(what: std::fmt::Arguments<'_>) -> Error {
+    Error::Backend(format!("the index changed while committing ({what}); retry").into())
 }
 
 fn backend_error(err: git2::Error) -> Error {
