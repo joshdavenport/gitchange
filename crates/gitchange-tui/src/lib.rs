@@ -47,10 +47,14 @@ pub fn run() -> Result<(), Error> {
     // Sync mutations run on this handle, never the Engine's (its Repo
     // belongs to the refresh thread).
     let repo = Repo::discover(&cwd)?;
-    let repo_name = engine
+    // Static context, read once off the sync handle — workdir is
+    // process-constant, so it is not the snapshot channel's to carry.
+    let repo_name = repo
         .workdir()
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
+        .and_then(|dir| {
+            dir.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
         .unwrap_or_else(|| "repository".to_owned());
 
     let mut terminal = ratatui::init();

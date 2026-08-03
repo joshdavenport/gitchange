@@ -111,7 +111,6 @@ impl SelfLoopFilter {
 pub struct Engine {
     requests: Sender<()>,
     events: Receiver<EngineEvent>,
-    workdir: PathBuf,
 }
 
 impl Engine {
@@ -139,7 +138,6 @@ impl Engine {
             Config::default(),
             degraded,
             watcher.map(|w| Box::new(w) as Box<dyn Send>),
-            workdir,
         ))
     }
 
@@ -157,12 +155,6 @@ impl Engine {
         let _ = self.requests.send(());
     }
 
-    /// The worktree root of the repository this Engine watches — panel
-    /// furniture (the Status panel's repo name) without a git edge in
-    /// the frontend (ADR 0006).
-    pub fn workdir(&self) -> &Path {
-        &self.workdir
-    }
 }
 
 /// Start the notify watcher over the worktree root (which includes
@@ -220,7 +212,6 @@ fn spawn_loops(
     // Dropped when the control loop exits — for the real Engine, the
     // notify watcher whose lifetime must track the loop's.
     watcher_keep_alive: Option<Box<dyn Send>>,
-    workdir: PathBuf,
 ) -> Engine {
     let (requests_tx, requests_rx) = unbounded();
     let (events_tx, events_rx) = unbounded();
@@ -248,7 +239,6 @@ fn spawn_loops(
     Engine {
         requests: requests_tx,
         events: events_rx,
-        workdir,
     }
 }
 
@@ -476,7 +466,6 @@ mod tests {
                 TEST_CONFIG,
                 false,
                 None,
-                PathBuf::from("/repo"),
             );
             Self {
                 engine,

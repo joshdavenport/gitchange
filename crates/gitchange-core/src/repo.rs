@@ -44,8 +44,12 @@ impl Repo {
         self.backend.state_dir()
     }
 
-    /// The worktree root the Engine watches; `None` for a bare repo.
-    pub(crate) fn workdir(&self) -> Option<std::path::PathBuf> {
+    /// The worktree root; `None` for a bare repo. The Engine's watch
+    /// root, and the frontends' panel furniture (the Status panel's repo
+    /// name, the CLI's headers) without a git edge outside core
+    /// (ADR 0006) — on the sync interface both frontends hold, where the
+    /// CLI (which never constructs an Engine) can reach it too.
+    pub fn workdir(&self) -> Option<std::path::PathBuf> {
         self.backend.workdir()
     }
 
