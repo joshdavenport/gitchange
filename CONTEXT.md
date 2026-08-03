@@ -50,6 +50,15 @@ continuity while the path stays binary-changed; `◐` unreachable, `◑` derives
 by OID compare; hunk-mode entry is a polite no-op.
 _Avoid_: binary hunk, file-level membership (as a general mode)
 
+**Assign**:
+Placing hunks under a changelist's ownership by hand — the manual
+counterpart to the active changelist's automatic capture. The target is any
+changelist or `unassigned`; there is no separate un-assign operation, since
+unassigned is a target like any other. Scope escalates in three steps: the
+selected hunk, a file's unassigned hunks, all of a file's hunks including
+those owned by other changelists.
+_Avoid_: move, add (git's `add` is staging), sort, tag
+
 **Membership record**:
 The persisted claim that a changelist owns a hunk: file path, line
 coordinates, owning changelist, and a content anchor.
