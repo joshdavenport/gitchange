@@ -305,7 +305,7 @@ impl Repo {
                 whole_file: path.whole_file.clone(),
             })
             .collect();
-        let oid = self
+        let committed = self
             .backend
             .commit_from_index_hunks(&specs, message, options)?;
 
@@ -322,11 +322,14 @@ impl Repo {
         // must not grow a state file just to hold a baseline stamp.
         if state != State::default() {
             commit::apply_aftermath(&mut state, &plan.paths, &residual);
-            state.baseline_head = Some(oid.clone());
+            state.baseline_head = Some(committed.oid.clone());
             state.orphan_records_of_unknown_changelists();
             state_file::save(&dir, &state)?;
         }
-        Ok(CommitOutcome::Committed { oid })
+        Ok(CommitOutcome::Committed {
+            oid: committed.oid,
+            short_id: committed.short_id,
+        })
     }
 
     /// The bulk align op (ADR 0004): set index := worktree for each of

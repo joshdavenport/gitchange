@@ -65,6 +65,11 @@ pub enum CommitOutcome {
     Committed {
         /// The new HEAD commit id.
         oid: String,
+        /// The same commit abbreviated as git would abbreviate it —
+        /// `core.abbrev` honoured, expanded for uniqueness. What the
+        /// frontends echo, so a post-commit line and the Commits panel
+        /// can't name one commit two different ways.
+        short_id: String,
     },
     /// The refresh-before-commit found the payload changed since it was
     /// confirmed (ADR 0004's freshness guard): nothing was committed;

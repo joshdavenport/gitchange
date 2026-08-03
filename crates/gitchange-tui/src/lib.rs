@@ -329,12 +329,11 @@ fn run_commit(repo: &Repo, app: &mut App, draft: CommitDraft) {
         &options,
         Some(&draft.payload),
     ) {
-        Ok(CommitOutcome::Committed { oid }) => {
+        Ok(CommitOutcome::Committed { short_id, .. }) => {
             app.push_log(Severity::Info, echo);
-            let short = oid.get(..7).unwrap_or(&oid);
             app.push_log(
                 Severity::Info,
-                format!("committed {short} \"{}\"", draft.message),
+                format!("committed {short_id} \"{}\"", draft.message),
             );
             app.commit_succeeded();
         }

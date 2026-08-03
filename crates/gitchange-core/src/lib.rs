@@ -12,7 +12,7 @@ mod state_file;
 mod universe;
 mod vocabulary;
 
-pub use backend::{CommitPathSpec, GitBackend, HunkHeader};
+pub use backend::{CommitPathSpec, CommittedId, GitBackend, HunkHeader};
 pub use commit::{
     AMEND_FLAG, CommitOptions, CommitOutcome, CommitPayload, NO_VERIFY_FLAG, PayloadFile,
     PayloadHunk, WholeFilePayload, commit_echo,

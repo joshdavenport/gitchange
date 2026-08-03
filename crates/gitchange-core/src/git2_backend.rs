@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::backend::{CommitPathSpec, GitBackend, HunkHeader};
+use crate::backend::{CommitPathSpec, CommittedId, GitBackend, HunkHeader};
 use crate::commit::CommitOptions;
 use crate::diff::{BinarySides, BlobInfo, ChangeKind, DiffHunk, FileDiff, HunkLine, RepoDiffs};
 use crate::error::Error;
@@ -24,11 +24,12 @@ impl Git2Backend {
         }
     }
 
-    /// HEAD's tree, or `None` — the empty tree — on an unborn branch
-    /// (fresh `git init`, ADR 0007).
-    fn head_tree(&self) -> Result<Option<git2::Tree<'_>>, Error> {
+    /// HEAD's commit, or `None` on an unborn branch (fresh `git init`,
+    /// ADR 0007) — the one place the unborn-HEAD error codes are spelled
+    /// out; `head_tree` and `head_oid` both read through it.
+    fn head_commit(&self) -> Result<Option<git2::Commit<'_>>, Error> {
         match self.repo.head() {
-            Ok(head) => head.peel_to_tree().map(Some).map_err(backend_error),
+            Ok(head) => head.peel_to_commit().map(Some).map_err(backend_error),
             Err(err)
                 if matches!(
                     err.code(),
@@ -38,6 +39,14 @@ impl Git2Backend {
                 Ok(None)
             }
             Err(err) => Err(backend_error(err)),
+        }
+    }
+
+    /// HEAD's tree, or `None` — the empty tree — on an unborn branch.
+    fn head_tree(&self) -> Result<Option<git2::Tree<'_>>, Error> {
+        match self.head_commit()? {
+            Some(commit) => commit.tree().map(Some).map_err(backend_error),
+            None => Ok(None),
         }
     }
 }
@@ -85,21 +94,7 @@ impl GitBackend for Git2Backend {
     }
 
     fn head_oid(&self) -> Result<Option<String>, Error> {
-        match self.repo.head() {
-            Ok(head) => {
-                let commit = head.peel_to_commit().map_err(backend_error)?;
-                Ok(Some(commit.id().to_string()))
-            }
-            Err(err)
-                if matches!(
-                    err.code(),
-                    git2::ErrorCode::UnbornBranch | git2::ErrorCode::NotFound
-                ) =>
-            {
-                Ok(None)
-            }
-            Err(err) => Err(backend_error(err)),
-        }
+        Ok(self.head_commit()?.map(|commit| commit.id().to_string()))
     }
 
     fn head(&self) -> Result<Head, Error> {
@@ -314,7 +309,7 @@ impl GitBackend for Git2Backend {
         payload: &[CommitPathSpec],
         message: &str,
         options: &CommitOptions,
-    ) -> Result<String, Error> {
+    ) -> Result<CommittedId, Error> {
         // Temp files live under $GIT_DIR/gitchange/ so the Engine's
         // self-loop filter drops their watcher events (ADR 0005).
         let dir = self.state_dir();
@@ -340,7 +335,7 @@ impl Git2Backend {
         payload: &[CommitPathSpec],
         message: &str,
         options: &CommitOptions,
-    ) -> Result<String, Error> {
+    ) -> Result<CommittedId, Error> {
         // A stale leftover (crashed earlier run) must not seed the index.
         let _ = fs::remove_file(index_path);
         // The empty tree stands in for an unborn HEAD (ADR 0007) — one
@@ -477,8 +472,16 @@ impl Git2Backend {
             }
             return Err(Error::HookRejected { stderr });
         }
-        self.head_oid()?
-            .ok_or_else(|| Error::Backend("HEAD unresolved after commit".into()))
+        // Both ids read off the new HEAD commit itself. The abbreviation
+        // is git's own — `core.abbrev` honoured, expanded for
+        // uniqueness — so no caller has to guess a prefix length.
+        let commit = self
+            .head_commit()?
+            .ok_or_else(|| Error::Backend("HEAD unresolved after commit".into()))?;
+        Ok(CommittedId {
+            oid: commit.id().to_string(),
+            short_id: short_id(&commit)?,
+        })
     }
 
     /// Apply `diff` to the live index, keeping only hunks whose change

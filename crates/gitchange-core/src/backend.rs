@@ -78,13 +78,25 @@ pub trait GitBackend: Send {
     /// shell-out with `GIT_INDEX_FILE`, so hooks run and see the true
     /// content (ADR 0004). The live index and worktree are never
     /// touched; every failure discards the temp file and changes
-    /// nothing. Returns the new HEAD commit id.
+    /// nothing.
     fn commit_from_index_hunks(
         &self,
         payload: &[CommitPathSpec],
         message: &str,
         options: &CommitOptions,
-    ) -> Result<String, Error>;
+    ) -> Result<CommittedId, Error>;
+}
+
+/// A commit as core and its frontends each need to name it: the full id
+/// for the baseline stamp (ADR 0012) and drift checks, the abbreviation
+/// for display. Both come from the backend together so display never
+/// re-derives one from the other — abbreviation is git's own, honouring
+/// `core.abbrev` and expanding for uniqueness, which a fixed-length
+/// prefix of `oid` would silently disagree with.
+#[derive(Debug, Clone)]
+pub struct CommittedId {
+    pub oid: String,
+    pub short_id: String,
 }
 
 /// One path's share of a commit payload: which diff(HEAD↔index) hunks
