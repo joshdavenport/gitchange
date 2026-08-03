@@ -196,9 +196,7 @@ fn draw_changelists(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             // and it persists while the panel is blurred.
             let mut spans = vec![cursor_span(selected, theme)];
             spans.extend(match &row.scope {
-                // Conflicts is a Files-row group, never a Changelists
-                // row; the arm exists for exhaustiveness.
-                Scope::All | Scope::Conflicts => vec![
+                Scope::All => vec![
                     Span::styled(format!("{} ", theme.glyphs.all), theme.colors.dim),
                     Span::raw(ALL),
                 ],

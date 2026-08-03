@@ -114,25 +114,25 @@ impl Panel {
 }
 
 /// One row of the Changelists panel — also the drill-down scope the
-/// Files and Diff panels render.
+/// Files and Diff panels render. Deliberately *not* the same type as
+/// [`Group`]: the two axes share two variants but neither is a subset of
+/// the other, and merging them meant every match carrying an arm for a
+/// state that axis can't reach.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Scope {
     /// The All pseudo-view: every changed file grouped by changelist.
     All,
-    /// The quarantine group (ADR 0007): a Files-row group only, never a
-    /// Changelists-panel row or drill scope.
-    Conflicts,
     Changelist(String),
     /// The unassigned pseudo-changelist, pinned last.
     Unassigned,
 }
 
 impl Scope {
-    /// The hunk owner this scope drills into; `None` for All (no owner —
-    /// nothing is foreign there) and Conflicts (no hunks at all).
+    /// The hunk owner this scope drills into; `None` for All — no owner,
+    /// so nothing is foreign there.
     fn owner(&self) -> Option<Option<&str>> {
         match self {
-            Scope::All | Scope::Conflicts => None,
+            Scope::All => None,
             Scope::Changelist(name) => Some(Some(name)),
             Scope::Unassigned => Some(None),
         }
@@ -141,9 +141,68 @@ impl Scope {
     pub fn title(&self) -> &str {
         match self {
             Scope::All => "all changelists",
-            Scope::Conflicts => CONFLICTS,
             Scope::Changelist(name) => name,
             Scope::Unassigned => UNASSIGNED,
+        }
+    }
+
+    /// The Files-row group a drilled scope renders as. `None` for All,
+    /// which is a view over every group rather than one of them.
+    fn as_group(&self) -> Option<Group> {
+        match self {
+            Scope::All => None,
+            Scope::Changelist(name) => Some(Group::Changelist(name.clone())),
+            Scope::Unassigned => Some(Group::Unassigned),
+        }
+    }
+}
+
+/// The group a Files row sits under — core's [`GroupKind`] as the TUI
+/// needs it. Distinct from [`Scope`]: `Conflicts` is a group but never a
+/// Changelists row, and `All` is a row but never a group.
+///
+/// Not `GroupKind` itself, whose `Changelist` variant carries `active` in
+/// its `PartialEq`; [`FileEntry`] is compared by equality to survive a
+/// refresh, so switching the active changelist would silently drop the
+/// file selection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Group {
+    /// The quarantine group (ADR 0007).
+    Conflicts,
+    Changelist(String),
+    /// The unassigned pseudo-changelist, pinned last.
+    Unassigned,
+}
+
+impl Group {
+    /// The hunk owner this group holds; `None` for Conflicts, which is
+    /// quarantined and has no hunks at all — that's what makes assign
+    /// refuse on a conflicted row (ADR 0007).
+    fn owner(&self) -> Option<Option<&str>> {
+        match self {
+            Group::Conflicts => None,
+            Group::Changelist(name) => Some(Some(name)),
+            Group::Unassigned => Some(None),
+        }
+    }
+
+    /// The group as user-facing text, matching [`GroupKind::label`] —
+    /// the same vocabulary the Files headers render (ADR 0006).
+    pub fn label(&self) -> &str {
+        match self {
+            Group::Conflicts => CONFLICTS,
+            Group::Changelist(name) => name,
+            Group::Unassigned => UNASSIGNED,
+        }
+    }
+}
+
+impl From<&GroupKind> for Group {
+    fn from(kind: &GroupKind) -> Self {
+        match kind {
+            GroupKind::Conflicts => Group::Conflicts,
+            GroupKind::Changelist { name, .. } => Group::Changelist(name.clone()),
+            GroupKind::Unassigned => Group::Unassigned,
         }
     }
 }
@@ -160,8 +219,8 @@ pub struct ChangelistRow {
 /// distinct selections.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileEntry {
-    /// The group the row sits under: `Scope::Changelist`/`Unassigned`.
-    pub group: Scope,
+    /// The group the row sits under.
+    pub group: Group,
     pub path: String,
 }
 
@@ -849,7 +908,7 @@ impl App {
                 // (ADR 0004) — commit needs one changelist scoped;
                 // unassigned is committable like any changelist.
                 match self.scope() {
-                    Scope::All | Scope::Conflicts => {
+                    Scope::All => {
                         self.push_log(
                             Severity::Info,
                             "select a changelist to commit — all is a view",
@@ -1194,7 +1253,7 @@ impl App {
         }
         match self.scope() {
             Scope::Changelist(name) => Some(name),
-            Scope::All | Scope::Conflicts | Scope::Unassigned => None,
+            Scope::All | Scope::Unassigned => None,
         }
     }
 
@@ -1295,7 +1354,7 @@ impl App {
         match payload {
             AssignPayload::FileRow(entry) => format!(
                 "no hunks in '{}' for {path} — nothing to assign",
-                entry.group.title(),
+                entry.group.label(),
             ),
             AssignPayload::UnassignedHunks { .. } => {
                 format!("no unassigned hunks in {path} — nothing to assign")
@@ -1474,36 +1533,26 @@ impl App {
                 // Conflicts first (ADR 0007), changelists in user order,
                 // unassigned last when non-empty.
                 for group in snapshot.groups() {
-                    let (group_scope, unassigned, conflicted, active) = match &group.kind {
-                        GroupKind::Conflicts => (Scope::Conflicts, false, true, false),
-                        GroupKind::Changelist { name, active } => {
-                            (Scope::Changelist(name.clone()), false, false, *active)
-                        }
-                        GroupKind::Unassigned => (Scope::Unassigned, true, false, false),
-                    };
+                    let active = matches!(group.kind, GroupKind::Changelist { active: true, .. });
                     rows.push(FilesRow::Header {
                         label: group.kind.label().to_owned(),
                         count: group.files.len(),
-                        unassigned,
-                        conflicted,
+                        unassigned: matches!(group.kind, GroupKind::Unassigned),
+                        conflicted: matches!(group.kind, GroupKind::Conflicts),
                         active,
                     });
+                    let group_kind = Group::from(&group.kind);
                     for file in group.files {
-                        rows.push(file_row(file, group_scope.clone(), true));
+                        rows.push(file_row(file, group_kind.clone(), true));
                     }
                 }
             }
             scope @ (Scope::Changelist(_) | Scope::Unassigned) => {
-                let name = match &scope {
-                    Scope::Changelist(name) => Some(name.as_str()),
-                    _ => None,
-                };
-                for file in snapshot.files_in(name) {
-                    rows.push(file_row(file, scope.clone(), false));
+                let group = scope.as_group().expect("a drilled scope is a group");
+                for file in snapshot.files_in(group.owner().flatten()) {
+                    rows.push(file_row(file, group.clone(), false));
                 }
             }
-            // Never a Changelists-panel row, so never a drill scope.
-            Scope::Conflicts => {}
         }
         rows
     }
@@ -1881,7 +1930,7 @@ pub fn advisory_entry(advisory: &Advisory) -> LogEntry {
     }
 }
 
-fn file_row(file: &ChangedFile, group: Scope, indent: bool) -> FilesRow {
+fn file_row(file: &ChangedFile, group: Group, indent: bool) -> FilesRow {
     FilesRow::File {
         entry: FileEntry {
             group,
@@ -2131,7 +2180,7 @@ mod tests {
         let sel = app.file_sel.clone().unwrap();
         assert_eq!(
             (sel.group, sel.path.as_str()),
-            (Scope::Changelist("chores".into()), "src/print.css"),
+            (Group::Changelist("chores".into()), "src/print.css"),
             "same path under the next group is a distinct row"
         );
         app.on_key(key(KeyCode::Char('j')));
@@ -2521,7 +2570,7 @@ mod tests {
             panic!("expected the conflicted file second");
         };
         assert_eq!(entry.path, "src/merge.ts");
-        assert_eq!(entry.group, Scope::Conflicts);
+        assert_eq!(entry.group, Group::Conflicts);
 
         // `space` on conflicted content politely refuses (info).
         app.on_key(key(KeyCode::Char('3')));
