@@ -4,8 +4,9 @@ gitchange confirms the brief's section-4 default — staging is a
 per-changelist step before commit (`space` stages a subset; `c` commits the
 changelist's staged hunks) — and implements it **on the real git index**.
 Staging a hunk performs a genuine apply-to-index on the live index
-(git2 `ApplyOptions::hunk_callback`, CLI shell-out fallback per the backend
-recommendation); unstaging reverse-applies. gitchange persists **no staged
+(git2 `ApplyOptions::hunk_callback`, with a CLI shell-out fallback per the
+backend recommendation — re-scoped to a conditional mitigation below);
+unstaging reverse-applies. gitchange persists **no staged
 bit**: staged state is derived at every refresh by matching
 diff(HEAD↔index) against membership records with the tier-1 exact
 content-anchor match from ADR 0001. The index is the single source of truth
@@ -41,6 +42,58 @@ a record derive that record's staged state; unowned staged hunks follow ADR
 when no changelists exist). There is no error or confirmation flow for
 externally staged state.
 
+## The shell-out apply fallback is conditional, not scheduled work
+
+This ADR named a CLI shell-out fallback for "apply edge cases" as
+belt-and-braces against libgit2's apply being less battle-hardened than
+git's own `apply.c`. **It is a contingency gated on evidence, not a
+deliverable** — v0.1 ships without it deliberately, and the trigger has
+never fired.
+
+Why the failure class it guards against has not appeared: gitchange never
+applies a *foreign* patch. `stage_worktree_range` computes
+diff(index↔worktree) from the live repo and immediately applies a subset
+of its own hunks back to the very index it was computed against;
+`unstage_head_range` mirrors that with diff(HEAD↔index), reversed. The
+dominant real cause of `git apply` failure — preimage mismatch, fuzz,
+context or whitespace drift — is structurally unreachable. libgit2 also
+computes every postimage before touching the index, so a refusal is
+already all-or-nothing, which is the guarantee this ADR wanted from the
+fallback. The apply corpus (ADR 0008's exit criterion, and this
+mitigation's certification suite) covers the seeded edge list — no
+trailing newline, CRLF, blank-line-only hunks, adjacent hunks, mode
+changes, create/delete, empty-file edges — and is green on Linux, macOS
+and Windows.
+
+Fixed now so the mitigation is one document away rather than one
+archaeology session away:
+
+- **The trigger exists**: `Error::ApplyFailed { path, detail }`, mapped
+  from the libgit2 `apply` call alone — not from the diff computation
+  around it, and not conflated with a locked index or a broken odb. It
+  is a **hard** error carrying libgit2's message verbatim into the
+  ADR 0007 modal, not a soft advisory: an unapplyable hunk is an
+  unexpected limitation whose full text *is* the evidence this
+  mitigation waits on, whereas advisories cover expected races (a hunk
+  that moved under the user). The message names `git add -p` as the
+  workaround, which gitchange then absorbs like any external staging.
+- **Its shape, if triggered**: a fallback *inside* an adapter's apply
+  methods — build the patch text for the selected hunks, pipe it to
+  `git apply --cached`. **Not a second `GitBackend` implementor.** Only
+  2 of the seam's methods apply anything; a second full adapter would
+  re-implement diffs, HEAD, log and operation state in shell-out for no
+  reason. This corrects ADR 0006 and ADR 0008, which both read the
+  fallback as a second adapter — consequently **ADR 0008's
+  "parameterize the whole suite across both adapters" clause does not
+  fire**; only the apply corpus would parameterize.
+- **The trigger condition, precisely**: an `ApplyFailed` reproducible in
+  a real repository where `git apply --cached` succeeds on the same hunk
+  selection. Absent that, building the fallback is net negative — it
+  replaces libgit2's postimage computation with hand-written unified
+  diff text (headers, post-filter line counts, `\ No newline at end of
+  file`), a *new* failure surface with an unknown error rate, in front
+  of a backstop with zero observed failures.
+
 ## Considered options
 
 - **Virtual staging (staged bit in `state.json`, live index untouched until
@@ -70,7 +123,7 @@ externally staged state.
   worktree diff, index diff).
 - Unstaging one hunk while the same file has other staged hunks requires
   reverse-apply on the index blob — well-trodden (`git add -p`, lazygit);
-  apply edge cases fall back to CLI shell-out.
+  apply edge cases would fall back to CLI shell-out, conditionally (above).
 - Commit mechanics (decided separately): write-through makes
   "unstage other changelists' hunks → commit the real index → restage"
   the natural default, so hooks see the truth; temp-tree synthesis becomes

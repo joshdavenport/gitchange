@@ -42,6 +42,25 @@ pub enum Error {
     #[error("nothing staged to commit")]
     NothingStaged,
 
+    /// A hunk-wise apply to the index was refused (ADR 0003). Nothing
+    /// was written — every postimage is computed before the index is
+    /// touched, so the apply is all-or-nothing.
+    ///
+    /// Distinct from [`Error::Backend`] because it is the one trigger
+    /// for ADR 0003's conditional CLI shell-out fallback: gitchange only
+    /// ever applies a diff it computed moments earlier against the very
+    /// state it applies to, so the usual causes (context drift, fuzz)
+    /// cannot arise and this has no known trigger. A report carrying
+    /// `detail` is the evidence that mitigation waits on — hence the
+    /// verbatim libgit2 message, and hence a hard error rather than a
+    /// soft advisory.
+    #[error(
+        "could not apply that hunk to the index for '{path}': {detail}\n\
+         staging the region with `git add -p -- {path}` works around it, \
+         and gitchange absorbs the result at the next refresh"
+    )]
+    ApplyFailed { path: String, detail: String },
+
     /// `git commit` exited nonzero with nothing committed. Usually a
     /// hook rejection (the dominant cause once gitchange builds the
     /// index itself), though anything git refuses lands here too — an

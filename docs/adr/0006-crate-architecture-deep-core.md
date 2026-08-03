@@ -15,9 +15,10 @@ dependency graph, not by convention.
 
 - **Core is the only crate that speaks git**: git2 appears in
   `gitchange-core`'s `Cargo.toml` and nowhere else. Frontends cannot reach
-  a repository except through core's interface. The planned CLI shell-out
-  fallback for apply edge cases (ticket 03) lives *inside* core, behind
-  the same `GitBackend` seam.
+  a repository except through core's interface. ADR 0003's conditional
+  CLI shell-out fallback for apply edge cases (ticket 03) lives *inside*
+  core — specifically inside an adapter's apply methods, not as a second
+  `GitBackend` implementor, per ADR 0003's re-scoping.
 - **No `gitchange-cli` lib crate, deliberately.** CLI parity means core's
   interface must cover everything, not that CLI code gets big. Handlers
   stay thin arg-mapping in the bin crate; when a subcommand needs real
@@ -49,12 +50,13 @@ dependency graph, not by convention.
 - Core's error type is a single `thiserror` enum whose variants are carved
   by **what the caller must do about them**: `HookRejected { stderr }`
   (ADR 0004: show hook output), `LockContention` (ADR 0002: fail fast),
-  `ApplyFailed` (may trigger shell-out fallback inside core),
+  `ApplyFailed` (ADR 0003's trigger for the conditional shell-out
+  fallback inside core; a hard error until that fallback exists),
   `Backend(source)` and `State(source)` as wrapped opaques. Core never
   uses `anyhow` — its errors are a contract, not a report.
 - **`git2::Error` never appears in core's public interface** — leaking it
-  through the `GitBackend` seam would make the shell-out adapter
-  second-class and glue frontends to a backend detail.
+  through the `GitBackend` seam would glue frontends to a backend detail
+  and make any second adapter second-class.
 - **Engine degradation is an event, not an error**: watcher death →
   polling fallback (ADR 0005) arrives on the engine channel
   (`WatcherDegraded`, alongside `RefreshComplete(Snapshot)`). Hard errors

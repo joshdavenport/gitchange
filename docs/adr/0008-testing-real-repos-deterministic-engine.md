@@ -4,10 +4,13 @@ gitchange's git-touching code is tested through **core's public sync
 operations against real temp-dir git repos**. The `GitBackend` seam is
 **not** a test surface in v0.1: a hand-written fake adapter would encode our
 assumptions about git — precisely what the tests exist to catch (libgit2's
-apply quirks live below the seam). When the shell-out fallback adapter
-lands (ticket 03's plan), the existing suite is parameterized across both
-adapters and the seam becomes a contract-test surface at that moment, not
-before. Every test through the sync ops exercises the git2 adapter for
+apply quirks live below the seam). Should a second real adapter ever land,
+the existing suite is parameterized across both and the seam becomes a
+contract-test surface at that moment, not before. **ADR 0003's shell-out
+apply fallback is not such an adapter** — it was re-scoped to a
+conditional fallback inside an adapter's apply methods, so it would
+parameterize only the apply corpus, not the whole suite. Every test
+through the sync ops exercises the git2 adapter for
 free.
 
 ## Fixtures
@@ -35,8 +38,10 @@ The corpus is a **v0.1 gate**, written into the spec's exit criteria
 alongside ticket 16's benchmark harness. Rationale: write-through staging
 (ADR 0003) and temp-index commits (ADR 0004) make apply correctness the
 product — a wrong hunk-apply silently commits content the user didn't
-select. The corpus later doubles as the certification suite a shell-out
-adapter must pass to be considered behaviorally equivalent.
+select. The corpus doubles as the certification suite ADR 0003's
+conditional shell-out apply fallback must pass, unchanged, to count as
+behaviorally equivalent — and, being green today, it is also the evidence
+that fallback is not needed.
 
 ## Engine: deterministic logic, one smoke test
 

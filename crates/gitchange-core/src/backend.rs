@@ -19,9 +19,11 @@ pub struct HunkHeader {
 }
 
 /// The seam between core and any git implementation (ADR 0006). The git2
-/// adapter is the only implementor in v0.1; the planned shell-out fallback
-/// lives behind this same trait. `Send` so the Engine's refresh worker can
-/// own a [`crate::Repo`] on its own thread (ADR 0005).
+/// adapter is the only implementor, and ADR 0003's conditional shell-out
+/// apply fallback would not add a second one: it lives *inside* an
+/// adapter's apply methods, reached when its own libgit2 apply returns
+/// [`Error::ApplyFailed`]. `Send` so the Engine's refresh worker can own
+/// a [`crate::Repo`] on its own thread (ADR 0005).
 pub trait GitBackend: Send {
     /// Both diffs the hunk universe is built from (ADR 0003):
     /// diff(HEAD↔worktree) including untracked content, and
@@ -66,7 +68,7 @@ pub trait GitBackend: Send {
     /// Set index := worktree within one file's worktree-side line range
     /// (start, lines): a real apply-to-index of the diff(index↔worktree)
     /// hunks overlapping it (ADR 0003). All-or-nothing — a failed apply
-    /// leaves the index untouched.
+    /// leaves the index untouched, and reports [`Error::ApplyFailed`].
     fn stage_worktree_range(&self, path: &str, new_range: (u32, u32)) -> Result<(), Error>;
 
     /// Set index := HEAD within one file's HEAD-side line range: a

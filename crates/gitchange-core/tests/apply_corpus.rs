@@ -3,10 +3,11 @@
 //! index bytes — materialized through `RepoFixture` into a fresh repo and
 //! run through the real sync ops. Adding a case requires only data.
 //!
-//! The corpus doubles as the certification suite any future `GitBackend`
-//! adapter (the shell-out fallback) must pass to count as behaviorally
-//! equivalent. The commit-mechanics ticket extends `Case` with
-//! commit-result expectations.
+//! The corpus doubles as the certification suite ADR 0003's conditional
+//! shell-out apply fallback must pass to count as behaviorally
+//! equivalent — and, green as it stands, is the standing evidence that
+//! fallback has no trigger. The commit-mechanics ticket extends `Case`
+//! with commit-result expectations.
 
 mod support;
 

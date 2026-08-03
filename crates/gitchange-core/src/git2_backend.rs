@@ -236,7 +236,7 @@ impl GitBackend for Git2Backend {
             .map_err(backend_error)?;
         // Both this diff's new side and the caller's range address the
         // same worktree file, so line numbers compare directly.
-        self.apply_to_index(&diff, new_range)
+        self.apply_to_index(path, &diff, new_range)
     }
 
     fn unstage_head_range(&self, path: &str, old_range: (u32, u32)) -> Result<(), Error> {
@@ -258,7 +258,7 @@ impl GitBackend for Git2Backend {
             .map_err(backend_error)?;
         // Reversed, so sides swap: the hunks' new side addresses HEAD —
         // the space the caller's range lives in.
-        self.apply_to_index(&diff, old_range)
+        self.apply_to_index(path, &diff, old_range)
     }
 
     fn stage_path(&self, path: &str) -> Result<(), Error> {
@@ -488,7 +488,19 @@ impl Git2Backend {
     /// brush a neighbouring universe hunk's region and over-apply.
     /// libgit2 computes every postimage before writing, so a failure
     /// changes nothing.
-    fn apply_to_index(&self, diff: &git2::Diff, target: (u32, u32)) -> Result<(), Error> {
+    ///
+    /// A refusal from the apply itself becomes [`Error::ApplyFailed`],
+    /// not an opaque [`Error::Backend`] — that variant is ADR 0003's
+    /// trigger for the conditional shell-out fallback, so it must be
+    /// distinguishable from a locked index or a broken odb. Only the
+    /// `apply` call is mapped that way; setting the call up is ordinary
+    /// backend work.
+    fn apply_to_index(
+        &self,
+        path: &str,
+        diff: &git2::Diff,
+        target: (u32, u32),
+    ) -> Result<(), Error> {
         let cores = hunk_change_cores(diff)?;
         let mut options = git2::ApplyOptions::new();
         options.hunk_callback(move |hunk| {
@@ -502,7 +514,10 @@ impl Git2Backend {
         });
         self.repo
             .apply(diff, git2::ApplyLocation::Index, Some(&mut options))
-            .map_err(backend_error)
+            .map_err(|error| Error::ApplyFailed {
+                path: path.to_owned(),
+                detail: error.message().to_owned(),
+            })
     }
 }
 
