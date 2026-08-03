@@ -5,7 +5,7 @@
 
 mod support;
 
-use gitchange_core::{Advisory, FileStage, HunkStage, Repo};
+use gitchange_core::{Advisory, Error, FileStage, HunkStage, Repo};
 use support::RepoFixture;
 
 /// Twenty numbered lines, with `edits` as (1-based line, replacement).
@@ -579,4 +579,50 @@ fn space_on_a_stale_binary_restages_the_worktree_blob() {
     assert!(hunk.index_only);
     repo.stage_hunk("blob.bin", &hunk).unwrap();
     assert_eq!(fixture.index_bytes("blob.bin").unwrap(), vec![0u8, 1]);
+}
+
+/// `ApplyFailed`'s contract, driven by the one refusal reachable without
+/// a test-only seam: an unwritable object store (issue #58). A
+/// mismatching payload cannot be it — the apply is handed a diff
+/// computed moments earlier from the very index it applies back to, so
+/// preimage drift, `git apply`'s dominant failure cause, is structurally
+/// unreachable here.
+///
+/// What that certifies is the variant, not a payload shape: the refusal
+/// is mapped rather than swallowed into `Backend`, names the path, and
+/// carries libgit2's message verbatim, and the index is untouched —
+/// the all-or-nothing guarantee ADR 0003's held shell-out fallback was
+/// to provide, now asserted rather than read off libgit2's source.
+///
+/// This is emphatically **not** that fallback's trigger (#55), which is
+/// an `ApplyFailed` where `git apply --cached` would have succeeded on
+/// the same selection. An odb nothing can write to fails both equally.
+/// What it does secure is the reporting path the trigger has to travel:
+/// were the mapping broken, a real refusal would arrive as an opaque
+/// `Backend` and the condition #55 waits on could never be observed.
+#[cfg(unix)]
+#[test]
+fn a_refused_apply_reports_apply_failed_and_stages_nothing() {
+    let fixture = two_hunk_fixture();
+    let repo = Repo::discover(fixture.path()).unwrap();
+    let snapshot = repo.refresh().unwrap();
+    let hunk = snapshot.files[0].hunks[0].clone();
+    let index_before = fixture.index_content("a.txt");
+
+    let _odb = fixture.unwritable_odb();
+    match repo.stage_hunk("a.txt", &hunk).unwrap_err() {
+        Error::ApplyFailed { path, detail } => {
+            assert_eq!(path, "a.txt", "the error names the file");
+            assert!(
+                detail.contains("Permission denied"),
+                "libgit2's own message, verbatim: {detail}"
+            );
+        }
+        other => panic!("expected ApplyFailed, got {other:?}"),
+    }
+    assert_eq!(
+        fixture.index_content("a.txt"),
+        index_before,
+        "a refused apply stages nothing"
+    );
 }

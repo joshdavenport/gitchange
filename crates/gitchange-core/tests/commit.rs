@@ -162,19 +162,29 @@ fn a_hook_sees_the_commits_true_content() {
     );
 }
 
+/// One staged hunk in changelist "one" — the starting point the three
+/// commit-failure tests below share. Shared rather than repeated so
+/// "same fixture, one difference" is structural: the `--no-verify`
+/// bypass is only evidence about the flag if the rejection it walks past
+/// is demonstrably the same rejection. Returns the worktree lines.
+fn one_staged_hunk_in_one(fixture: &RepoFixture) -> Vec<String> {
+    let head = numbered_lines(20);
+    fixture.write("a.txt", &text(&head)).commit_all("init");
+    let repo = repo(fixture);
+    repo.create_changelist("one").unwrap();
+    let mut worktree = head;
+    worktree[9] = "ten-one".into();
+    fixture.write("a.txt", &text(&worktree)).stage("a.txt");
+    repo.refresh().unwrap();
+    worktree
+}
+
 #[cfg(unix)]
 #[test]
 fn hook_rejection_changes_nothing() {
     let fixture = RepoFixture::new();
-    let head = numbered_lines(20);
-    fixture.write("a.txt", &text(&head)).commit_all("init");
+    let worktree = one_staged_hunk_in_one(&fixture);
     let repo = repo(&fixture);
-
-    repo.create_changelist("one").unwrap();
-    let mut worktree = head.clone();
-    worktree[9] = "ten-one".into();
-    fixture.write("a.txt", &text(&worktree)).stage("a.txt");
-    repo.refresh().unwrap();
 
     let state_before =
         fs::read_to_string(fixture.path().join(".git/gitchange/state.json")).unwrap();
@@ -201,6 +211,123 @@ fn hook_rejection_changes_nothing() {
         fs::read_to_string(fixture.path().join(".git/gitchange/state.json")).unwrap(),
         state_before,
         "state file untouched by the failed commit"
+    );
+    // The rejection lands *after* the temp index and message file are
+    // written, so this is where the discard-on-failure guarantee is
+    // actually exercised (ADR 0004).
+    assert_eq!(
+        fixture.state_dir_entries(),
+        vec!["state.json"],
+        "the temp index and message file are discarded"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn no_verify_commits_past_a_rejecting_hook() {
+    // The same fixture, hook and payload as the rejection above, with
+    // `no_verify` the only difference — the pair is what shows the flag
+    // is doing the work. What it produces is an ordinary commit, not a
+    // special case: HEAD moves, the payload lands, the record goes.
+    let fixture = RepoFixture::new();
+    let worktree = one_staged_hunk_in_one(&fixture);
+    let repo = repo(&fixture);
+
+    fixture.with_hook("pre-commit", "#!/bin/sh\necho nope >&2\nexit 1\n");
+    let outcome = repo
+        .commit(
+            Some("one"),
+            "one: ten",
+            &CommitOptions {
+                no_verify: true,
+                amend: false,
+            },
+            None,
+        )
+        .unwrap();
+    assert!(matches!(outcome, CommitOutcome::Committed { .. }));
+
+    assert_eq!(fixture.commit_count(), 2, "the commit was created");
+    assert_eq!(
+        fixture.head_bytes("a.txt"),
+        Some(text(&worktree).into_bytes()),
+        "the payload landed in HEAD"
+    );
+    assert_eq!(fixture.head_message(), "one: ten\n");
+
+    let snapshot = repo.refresh().unwrap();
+    assert!(
+        !snapshot.files.iter().any(|file| file.path == "a.txt"),
+        "the payload was fully consumed, so nothing is left changed"
+    );
+    assert!(snapshot.advisories.is_empty());
+    // Fully consumed: the record is removed outright, not left dormant.
+    assert!(
+        state_json(&fixture)["records"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "the consumed record is gone: {}",
+        state_json(&fixture)["records"]
+    );
+}
+
+/// ADR 0004's apply-failure abort: a refused temp-index apply aborts
+/// before any commit exists and changes nothing.
+///
+/// The refusal is forced by an unwritable object store, not by a
+/// mismatching payload — that shape is unreachable through the public
+/// ops, since the diff applied is computed from HEAD's tree against the
+/// live index and applied straight back to that tree (issue #58). Two
+/// consequences the failure shape decides: the error is
+/// [`Error::Backend`], not `ApplyFailed` — only the index apply maps to
+/// that variant — and the state dir stays clean because the abort
+/// precedes the temp index being written, so it is
+/// [`hook_rejection_changes_nothing`] that covers discarding files which
+/// do exist.
+#[cfg(unix)]
+#[test]
+fn a_refused_temp_index_apply_aborts_before_any_commit_exists() {
+    let fixture = RepoFixture::new();
+    let worktree = one_staged_hunk_in_one(&fixture);
+    let repo = repo(&fixture);
+
+    let state_before =
+        fs::read_to_string(fixture.path().join(".git/gitchange/state.json")).unwrap();
+    let index_before = fixture.index_content("a.txt");
+
+    let _odb = fixture.unwritable_odb();
+    let err = repo
+        .commit(Some("one"), "one: ten", &CommitOptions::default(), None)
+        .unwrap_err();
+    // Both halves matter: `Backend` is the catch-all for everything in
+    // the commit path, so the message is what pins the refusal to the
+    // apply rather than to some earlier step the same mode also breaks.
+    assert!(
+        matches!(err, Error::Backend(_)),
+        "the apply's refusal, unmapped: {err:?}"
+    );
+    assert!(
+        err.to_string().contains("Permission denied"),
+        "libgit2's own refusal, verbatim: {err}"
+    );
+
+    assert_eq!(fixture.commit_count(), 1, "no commit was created");
+    assert_eq!(fixture.index_content("a.txt"), index_before);
+    assert_eq!(
+        fs::read_to_string(fixture.path().join("a.txt")).unwrap(),
+        text(&worktree),
+        "the worktree is never touched"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.path().join(".git/gitchange/state.json")).unwrap(),
+        state_before,
+        "state file untouched by the aborted commit"
+    );
+    assert_eq!(
+        fixture.state_dir_entries(),
+        vec!["state.json"],
+        "no temp index left behind"
     );
 }
 

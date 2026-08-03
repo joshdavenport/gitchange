@@ -13,6 +13,21 @@ pub struct RepoFixture {
     repo: git2::Repository,
 }
 
+/// Holds the object store unwritable; restores the original mode on
+/// drop. See [`RepoFixture::unwritable_odb`].
+#[cfg(unix)]
+pub struct UnwritableOdb {
+    path: PathBuf,
+    original: fs::Permissions,
+}
+
+#[cfg(unix)]
+impl Drop for UnwritableOdb {
+    fn drop(&mut self) {
+        let _ = fs::set_permissions(&self.path, self.original.clone());
+    }
+}
+
 impl RepoFixture {
     /// Init a fresh repo in a temp dir with a committing identity set.
     ///
@@ -111,6 +126,67 @@ impl RepoFixture {
             fs::set_permissions(&path, perms).unwrap();
         }
         self
+    }
+
+    /// Make the object store unwritable until the returned guard drops —
+    /// the only condition found that makes a real libgit2 apply refuse
+    /// without a test-only seam (issue #58): an apply computes every
+    /// postimage blob into the odb before it writes anything else, so an
+    /// odb it cannot write to refuses the apply itself rather than
+    /// something around it.
+    ///
+    /// One mode on `objects/` is enough because libgit2 stages every new
+    /// object as a temp file in that directory before renaming it into
+    /// its fanout subdirectory — the write it is denied is always there,
+    /// whichever fanout dirs already exist.
+    ///
+    /// Panics where the mode fails to take — root in a container ignores
+    /// it — rather than skipping: a test that quietly asserts a refusal
+    /// over a perfectly successful apply is exactly the vacuous pass
+    /// ADR 0008 has builders panic to prevent.
+    ///
+    /// Restoring on drop matters twice over: a panicking assertion must
+    /// not leave the temp dir undeletable, and `TempDir`'s own teardown
+    /// needs the write bit back.
+    #[cfg(unix)]
+    #[allow(dead_code)]
+    pub fn unwritable_odb(&self) -> UnwritableOdb {
+        use std::os::unix::fs::PermissionsExt;
+        let path = self.repo.path().join("objects");
+        let original = fs::metadata(&path).unwrap().permissions();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o500)).unwrap();
+        // Built before the probe, so a panic below still restores.
+        let guard = UnwritableOdb {
+            path: path.clone(),
+            original,
+        };
+        let probe = path.join("write-probe");
+        if fs::write(&probe, b"probe").is_ok() {
+            let _ = fs::remove_file(&probe);
+            panic!(
+                "the object store is still writable at mode 0o500 — this \
+                 environment ignores directory permissions (running as \
+                 root?), and the apply under test would succeed"
+            );
+        }
+        guard
+    }
+
+    /// File names in the per-worktree gitchange state dir. ADR 0004's
+    /// "every failure discards a temp file" is an assertion about this
+    /// listing: the commit temp index and message file live here, and
+    /// nothing but `state.json` may outlive a commit attempt.
+    #[allow(dead_code)]
+    pub fn state_dir_entries(&self) -> Vec<String> {
+        let dir = self.repo.path().join("gitchange");
+        let Ok(entries) = fs::read_dir(dir) else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = entries
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
     }
 
     /// HEAD tree's blob bytes for a repo-relative path, `None` when the
