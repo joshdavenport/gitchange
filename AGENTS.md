@@ -19,3 +19,7 @@ Default canonical labels (`needs-triage`, `needs-info`, `ready-for-agent`, `read
 ### Domain docs
 
 Single-context: `CONTEXT.md` glossary at the repo root, ADRs in `docs/adr/`. See `docs/agents/domain.md`.
+
+### Documentation placement
+
+The repo carries normative documents only; process artifacts go to the issue tracker and prototypes are throwaway. Read before adding a document anywhere. See `docs/agents/documentation-placement.md`.

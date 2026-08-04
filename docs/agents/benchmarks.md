@@ -8,9 +8,10 @@ wall-clock. A v0.1 exit criterion (issue #29, resolved in issue #16): all
 four ADR 0005 mitigations (lazy per-file diff detail, capped diff
 context, skipping huge files, incremental matching) stay
 measurement-gated behind this harness's numbers, and the gate ticket
-(#36) commits a run's results as the v0.1 exit record. ADR 0009's
-binary-hashing refresh cost is likewise deferred here (no numeric
-target), via the binaries dimension.
+(#36) records a run's results as the v0.1 exit record — on the issue, per
+`documentation-placement.md`; only what `--out` writes lives in the tree.
+ADR 0009's binary-hashing refresh cost is likewise deferred here (no
+numeric target), via the binaries dimension.
 
 ## Commands
 
