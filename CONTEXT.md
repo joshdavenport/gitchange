@@ -173,6 +173,22 @@ that would be in a commit is visible in the TUI. Rename detection is off
 new, and membership does not follow it.
 _Avoid_: worktree diff, fresh diff (alone)
 
+**Keybar**:
+The always-visible bottom bar advertising the keys live in the current
+context. Honest in both directions: never shows a key that won't act,
+never omits one that will. Which keys it lists per context is editorial;
+whether each shows follows its disabled reason. The help overlay is the
+static full-keymap reference; the keybar is the live one.
+_Avoid_: status bar, options bar, hint line
+
+**Disabled reason**:
+The single answer to "why won't this key act right now" — one value per
+capability, consulted by dispatch and keybar alike: the keybar hides a
+disabled binding, pressing it logs the reason, an empty reason hides
+silently. Covers context guards (what the selection affords), not
+content no-ops, which keep their press-time explanations.
+_Avoid_: guard (alone), greyed out, disabled flag
+
 **Log panel**:
 The panel at the bottom of the right-hand pane collection: one
 chronological stream of executed git operations and event notices, with a
@@ -226,6 +242,7 @@ _Avoid_: edge-case tests, apply tests (alone)
 **Operation guard**:
 Commit disabled while any git operation is in progress (merge, rebase,
 cherry-pick, revert, am) — the next commit would conclude that operation
-with one changelist's content. One predicate, one pin, polite no-op on
-`c`. Applies to commit only; staging is never operation-guarded.
+with one changelist's content. One predicate, one pin; the keybar hides
+`c` while the guard holds and pressing it logs why. Applies to commit
+only; staging is never operation-guarded.
 _Avoid_: merge lock, commit block
