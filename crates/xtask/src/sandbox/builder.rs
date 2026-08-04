@@ -31,7 +31,7 @@ impl Sandbox {
             commits: 0,
         };
         sandbox.git(&["init", "--quiet", "--initial-branch=main"])?;
-        // Same knobs as core's `RepoFixture` (tests/support/mod.rs),
+        // Same knobs as `RepoFixture` (gitchange-test-support),
         // which pins them for the same reason and explains each. Add a
         // knob here and add it there too: a knob pinned on only one side
         // leaves the other silently inheriting the host. The identities
