@@ -347,6 +347,7 @@ version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
  "git2",
+ "gitchange-test-support",
  "notify",
  "serde",
  "serde_json",
@@ -355,11 +356,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "gitchange-test-support"
+version = "0.1.0"
+dependencies = [
+ "git2",
+ "tempfile",
+]
+
+[[package]]
 name = "gitchange-tui"
 version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
  "gitchange-core",
+ "gitchange-test-support",
  "ratatui",
  "thiserror",
 ]

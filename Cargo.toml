@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
   "crates/gitchange-core",
+  "crates/gitchange-test-support",
   "crates/gitchange-tui",
   "crates/gitchange",
   "crates/xtask",
@@ -15,7 +16,11 @@ repository = "https://github.com/joshdavenport/gitchange"
 
 [workspace.dependencies]
 gitchange-core = { path = "crates/gitchange-core" }
+gitchange-test-support = { path = "crates/gitchange-test-support" }
 gitchange-tui = { path = "crates/gitchange-tui" }
+# Shared so core and the fixture crate can never build repository states
+# through a different libgit2 than the code under test (ADR 0006/0008).
+git2 = { version = "0.20", default-features = false }
 thiserror = "2"
 crossbeam-channel = "0.5"
 ratatui = "0.29"

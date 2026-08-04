@@ -6,9 +6,11 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-# The only git2 edge in the workspace (ADR 0006): frontends reach git
-# solely through this crate's interface.
-git2 = { version = "0.20", default-features = false }
+# The only git2 edge in the *production* dependency graph (ADR 0006, as
+# amended): frontends reach git solely through this crate's interface.
+# The test-only `gitchange-test-support` carries git2 too — a
+# dev-dependency everywhere, which the wall is scoped to exclude.
+git2.workspace = true
 thiserror.workspace = true
 crossbeam-channel.workspace = true
 notify.workspace = true
@@ -16,4 +18,5 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+gitchange-test-support.workspace = true
 tempfile.workspace = true

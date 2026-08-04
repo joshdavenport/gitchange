@@ -10,3 +10,9 @@ gitchange-core.workspace = true
 crossbeam-channel.workspace = true
 ratatui.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+# The run-loop tests build real repos to run core's sync ops against
+# (ADR 0008). Dev-only: git2 stays out of this crate's production graph
+# (ADR 0006).
+gitchange-test-support.workspace = true

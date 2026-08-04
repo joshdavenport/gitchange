@@ -15,12 +15,17 @@ pub mod theme;
 #[doc(hidden)]
 pub mod ui;
 
+#[cfg(test)]
+mod tests;
+
 use std::time::Instant;
 
-use crossbeam_channel::{at, never, select, unbounded};
+use crossbeam_channel::{Receiver, at, never, select, unbounded};
 use gitchange_core::{
     CommitOptions, CommitOutcome, Condition, Engine, EngineEvent, OpOutcome, Repo, commit_echo,
 };
+use ratatui::Terminal;
+use ratatui::backend::Backend;
 use ratatui::crossterm::event::{DisableFocusChange, EnableFocusChange, Event, KeyEventKind};
 use ratatui::crossterm::execute;
 
@@ -70,20 +75,13 @@ pub fn run() -> Result<(), Error> {
     // modifier only that protocol reports (ADR 0013), so the flags would
     // be dead weight — and a standing invitation to bind against them.
     // Focus events are unaffected; they are not part of that protocol.
-    let result = event_loop(&mut terminal, &engine, &repo, App::new(repo_name));
-    let _ = execute!(std::io::stdout(), DisableFocusChange);
-    ratatui::restore();
-    result
-}
 
-fn event_loop(
-    terminal: &mut ratatui::DefaultTerminal,
-    engine: &Engine,
-    repo: &Repo,
-    mut app: App,
-) -> Result<(), Error> {
     // Terminal input on its own thread, bridged into the Select loop.
-    // It parks in a blocking read; process exit reaps it.
+    // It parks in a blocking read; process exit reaps it. It is spawned
+    // here rather than inside the loop so the loop can take any receiver
+    // (ADR 0008's seam) — but still after raw mode and focus reporting
+    // are on, so the first read sees the terminal in the same state it
+    // always did.
     let (input_tx, input_rx) = unbounded();
     std::thread::spawn(move || {
         while let Ok(event) = ratatui::crossterm::event::read() {
@@ -93,10 +91,38 @@ fn event_loop(
         }
     });
 
+    let mut app = App::new(repo_name);
+    let result = event_loop(
+        &mut terminal,
+        engine.events(),
+        &input_rx,
+        || engine.request_refresh(),
+        &repo,
+        &mut app,
+    );
+    let _ = execute!(std::io::stdout(), DisableFocusChange);
+    ratatui::restore();
+    result
+}
+
+/// The main loop, over everything it actually consumes rather than the
+/// concrete terminal and Engine `run()` hands it (ADR 0008): the backend
+/// is generic so tests drive a `TestBackend`, input arrives as a plain
+/// receiver, the Engine is decomposed into its event stream plus the
+/// refresh request it emits, and the app is borrowed so a test can read
+/// the state the loop left behind.
+fn event_loop<B: Backend>(
+    terminal: &mut Terminal<B>,
+    engine_events: &Receiver<EngineEvent>,
+    input: &Receiver<Event>,
+    request_refresh: impl Fn(),
+    repo: &Repo,
+    app: &mut App,
+) -> Result<(), Error> {
     let theme = Theme::default();
     loop {
         let now = Instant::now();
-        terminal.draw(|frame| ui::draw(frame, &app, &theme, now))?;
+        terminal.draw(|frame| ui::draw(frame, app, &theme, now))?;
 
         // Wake exactly when the deferred indicator becomes due.
         let timer = match app.indicator_deadline() {
@@ -105,7 +131,7 @@ fn event_loop(
         };
 
         select! {
-            recv(engine.events()) -> event => match event {
+            recv(engine_events) -> event => match event {
                 Ok(EngineEvent::RefreshStarted) => app.on_refresh_started(Instant::now()),
                 Ok(EngineEvent::RefreshComplete(snapshot)) => app.apply_snapshot(snapshot),
                 Ok(EngineEvent::RefreshFailed(error)) => app.on_refresh_failed(error.to_string()),
@@ -120,31 +146,31 @@ fn event_loop(
                 Ok(_) => {}
                 Err(_) => return Err(Error::EngineDied),
             },
-            recv(input_rx) -> event => match event {
+            recv(input) -> event => match event {
                 Ok(Event::Key(key)) if key.kind != KeyEventKind::Release => {
                     match app.on_key(key) {
                         Some(Action::Quit) => return Ok(()),
-                        Some(Action::Refresh) => engine.request_refresh(),
+                        Some(Action::Refresh) => request_refresh(),
                         Some(Action::Op(op)) => {
-                            run_op(repo, &mut app, op);
+                            run_op(repo, app, op);
                             // Mutation-triggered refresh: bypasses the
                             // debounce (ADR 0005).
-                            engine.request_refresh();
+                            request_refresh();
                         }
                         Some(Action::Commit(step)) => {
-                            run_commit_step(repo, &mut app, step);
+                            run_commit_step(repo, app, step);
                             // Every step mutates or synchronously
                             // refreshed the state file; the immediate
                             // request keeps the snapshot in step
                             // (ADR 0005).
-                            engine.request_refresh();
+                            request_refresh();
                         }
                         None => {}
                     }
                 }
                 // Catch up on whatever happened while we were unfocused
                 // (ADR 0005).
-                Ok(Event::FocusGained) => engine.request_refresh(),
+                Ok(Event::FocusGained) => request_refresh(),
                 Ok(_) => {}
                 Err(_) => return Ok(()),
             },

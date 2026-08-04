@@ -1,0 +1,798 @@
+//! Run-loop wiring (issue #66, ADR 0008's "real executors, recorded
+//! requests, one smoke test"). Three kinds of test live here:
+//!
+//! - **Executor tests** run [`run_op`] and [`run_commit_step`] against a
+//!   real repo built by `gitchange-test-support`, through core's public
+//!   sync ops. Nothing git-touching is faked.
+//! - **Loop-arm tests** drive [`event_loop`] over a `TestBackend` with
+//!   injected channels and a recording refresh closure. They contain no
+//!   sleep and no timeout: the engine channel stays connected and silent
+//!   so `select!` only ever has input ready, and dropping the input
+//!   sender after the script is the loop's ordinary end-of-input exit.
+//! - **One smoke test** drives a real `Engine` end to end.
+//!
+//! In-crate (`#[cfg(test)]`) on purpose: the executors and the loop stay
+//! private, so covering them adds nothing to the `#[doc(hidden)] pub`
+//! surface the render tests already forced (ADR 0006).
+
+use std::cell::Cell;
+use std::time::Duration;
+
+use gitchange_core::{CommitPayload, Snapshot};
+use gitchange_test_support::RepoFixture;
+use ratatui::backend::TestBackend;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+use super::*;
+use app::{LogEntry, Overlay};
+
+/// Wide enough that no panel renders degenerate — the same shape the
+/// render tests draw at.
+const WIDTH: u16 = 140;
+const HEIGHT: u16 = 40;
+
+/// A repo with one commit, plus the sync handle the loop mutates through.
+fn repo_with_commit() -> (RepoFixture, Repo) {
+    let fixture = RepoFixture::new();
+    fixture
+        .write("a.txt", "line 1\nline 2\nline 3\n")
+        .commit_all("init");
+    let repo = Repo::discover(fixture.path()).unwrap();
+    (fixture, repo)
+}
+
+fn char_key(c: char) -> Event {
+    Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
+}
+
+fn code_key(code: KeyCode) -> Event {
+    Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+}
+
+/// Type a name into an open text overlay, one key per character.
+fn typed(name: &str) -> Vec<Event> {
+    name.chars().map(char_key).collect()
+}
+
+/// A confirmed commit dialog's draft, as the loop would hand it to the
+/// commit executor.
+fn draft(changelist: Option<&str>, payload: CommitPayload, message: &str) -> CommitDraft {
+    CommitDraft {
+        changelist: changelist.map(str::to_owned),
+        payload,
+        message: message.to_owned(),
+        body: String::new(),
+        body_focus: false,
+        no_verify: false,
+        amend: false,
+    }
+}
+
+fn entries(app: &App, severity: Severity) -> Vec<&str> {
+    app.log
+        .iter()
+        .filter(|entry| entry.severity == severity)
+        .map(|entry| entry.text.as_str())
+        .collect()
+}
+
+/// Run [`event_loop`] over the two channels the caller supplies, counting
+/// the refresh requests it emits — the outbound half of every arm under
+/// test (ADR 0005's debounce bypass; the self-loop filter makes a dropped
+/// request *no* refresh, not a late one).
+///
+/// Exactly one of the two channels must be disconnected, and the other
+/// held open and empty: the disconnected one is the arm under test and
+/// the loop's exit, and the open one can never be ready, so `select!`
+/// has one choice at every step and the run is deterministic without a
+/// sleep or a timeout anywhere.
+fn run_loop(
+    repo: &Repo,
+    app: &mut App,
+    engine_events: &Receiver<EngineEvent>,
+    input: &Receiver<Event>,
+) -> (Result<(), Error>, usize) {
+    let refreshes = Cell::new(0usize);
+    let mut terminal = ratatui::Terminal::new(TestBackend::new(WIDTH, HEIGHT)).unwrap();
+    let result = event_loop(
+        &mut terminal,
+        engine_events,
+        input,
+        || refreshes.set(refreshes.get() + 1),
+        repo,
+        app,
+    );
+    (result, refreshes.get())
+}
+
+/// [`run_loop`] over a scripted input stream: the script is delivered,
+/// the input sender is dropped, and the end-of-input disconnect is the
+/// loop's ordinary exit.
+fn drive(repo: &Repo, app: &mut App, script: &[Event]) -> (Result<(), Error>, usize) {
+    let (_engine_tx, engine_rx) = unbounded::<EngineEvent>();
+    let (input_tx, input_rx) = unbounded();
+    for event in script {
+        input_tx.send(event.clone()).unwrap();
+    }
+    drop(input_tx);
+    run_loop(repo, app, &engine_rx, &input_rx)
+}
+
+/// [`run_loop`] over a scripted engine stream, the mirror of [`drive`]:
+/// input stays open and empty, and the engine disconnect after the
+/// script is what ends the run — the `EngineDied` arm.
+fn drive_engine(
+    repo: &Repo,
+    app: &mut App,
+    script: Vec<EngineEvent>,
+) -> (Result<(), Error>, usize) {
+    let (engine_tx, engine_rx) = unbounded();
+    let (_input_tx, input_rx) = unbounded();
+    for event in script {
+        engine_tx.send(event).unwrap();
+    }
+    drop(engine_tx);
+    run_loop(repo, app, &engine_rx, &input_rx)
+}
+
+// ── executors: op ───────────────────────────────────────────────────
+
+#[test]
+fn a_successful_op_echoes_cores_line_to_the_log_at_info() {
+    let (fixture, repo) = repo_with_commit();
+    fixture.write("a.txt", "line 1\nedited\nline 3\n");
+    let mut app = App::new("repo");
+
+    run_op(
+        &repo,
+        &mut app,
+        Op::StageFile {
+            path: "a.txt".into(),
+        },
+    );
+
+    // Core composed the line; this frontend's whole contribution is the
+    // channel it lands on (ADR 0006/0007). Pinned as the whole string
+    // rather than a substring, because that is the claim: a frontend
+    // that composed its own wording mentioning the path would pass a
+    // looser assertion. Core rewording `stage_file`'s echo is a one-line
+    // update here, and should be.
+    assert_eq!(
+        app.log,
+        vec![LogEntry {
+            severity: Severity::Info,
+            text: "staged file — a.txt".into(),
+        }]
+    );
+    assert!(app.error_modal.is_none());
+    // …and the op really ran: the index holds the worktree's bytes.
+    assert_eq!(
+        fixture.index_content("a.txt").as_deref(),
+        Some("line 1\nedited\nline 3\n")
+    );
+}
+
+#[test]
+fn a_hard_op_failure_takes_the_error_modal_and_logs_at_error() {
+    let (_fixture, repo) = repo_with_commit();
+    let mut app = App::new("repo");
+
+    run_op(
+        &repo,
+        &mut app,
+        Op::DeleteChangelist {
+            name: "never-existed".into(),
+        },
+    );
+
+    assert_eq!(
+        app.error_modal.as_ref().map(|modal| modal.title.as_str()),
+        Some("Delete changelist failed")
+    );
+    assert!(entries(&app, Severity::Info).is_empty());
+    assert_eq!(entries(&app, Severity::Error).len(), 1);
+}
+
+#[test]
+fn a_fail_soft_op_logs_its_advisories_at_notice_with_no_echo() {
+    let (fixture, repo) = repo_with_commit();
+    fixture.write("a.txt", "line 1\nedited\nline 3\n");
+    let stale = repo.refresh().unwrap().files[0].hunks[0].clone();
+    // The hunk leaves the universe before the op lands, so nothing
+    // applies and the whole outcome is one advisory.
+    fixture.write("a.txt", "line 1\nline 2\nline 3\n");
+    let mut app = App::new("repo");
+
+    run_op(
+        &repo,
+        &mut app,
+        Op::StageHunk {
+            path: "a.txt".into(),
+            hunk: stale,
+        },
+    );
+
+    assert!(app.error_modal.is_none(), "fail-soft, not a modal");
+    assert!(entries(&app, Severity::Info).is_empty(), "nothing applied");
+    assert_eq!(entries(&app, Severity::Notice).len(), 1);
+}
+
+#[test]
+fn assign_treats_an_existing_target_as_a_valid_target_rather_than_a_create_failure() {
+    let (fixture, repo) = repo_with_commit();
+    fixture.write("a.txt", "line 1\nedited\nline 3\n");
+    repo.create_changelist("wip").unwrap();
+    let hunks = repo.refresh().unwrap().files[0].hunks.clone();
+    let mut app = App::new("repo");
+
+    run_op(
+        &repo,
+        &mut app,
+        Op::Assign {
+            path: "a.txt".into(),
+            hunks,
+            target: "wip".into(),
+            create: true,
+        },
+    );
+
+    assert!(app.error_modal.is_none(), "the assign is not stranded");
+    assert_eq!(entries(&app, Severity::Info).len(), 1, "the assign echoed");
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(
+        snapshot.files[0].hunks[0].changelist.as_deref(),
+        Some("wip")
+    );
+}
+
+#[test]
+fn assign_stops_at_the_create_modal_when_the_target_name_is_refused() {
+    let (fixture, repo) = repo_with_commit();
+    fixture.write("a.txt", "line 1\nedited\nline 3\n");
+    let hunks = repo.refresh().unwrap().files[0].hunks.clone();
+    let mut app = App::new("repo");
+
+    run_op(
+        &repo,
+        &mut app,
+        Op::Assign {
+            path: "a.txt".into(),
+            hunks,
+            // A reserved name: the create refuses for a reason that is
+            // not "it already exists", so the assign must not run.
+            target: gitchange_core::UNASSIGNED.into(),
+            create: true,
+        },
+    );
+
+    assert_eq!(
+        app.error_modal.as_ref().map(|modal| modal.title.as_str()),
+        Some("Create changelist failed")
+    );
+    assert!(entries(&app, Severity::Info).is_empty());
+}
+
+// ── executors: the commit flow ──────────────────────────────────────
+
+#[test]
+fn opening_the_dialog_derives_the_payload_behind_a_sync_refresh() {
+    let (fixture, repo) = repo_with_commit();
+    fixture
+        .write("a.txt", "line 1\nedited\nline 3\n")
+        .stage("a.txt");
+    let mut app = App::new("repo");
+
+    run_commit_step(&repo, &mut app, CommitStep::Open { changelist: None });
+
+    let Some(Overlay::Commit(draft)) = &app.overlay else {
+        panic!("expected the commit dialog, got {:?}", app.overlay);
+    };
+    assert_eq!(draft.payload.staged_hunks(), 1);
+}
+
+#[test]
+fn an_empty_payload_routes_to_the_stage_all_offer_rather_than_the_dialog() {
+    let (fixture, repo) = repo_with_commit();
+    // Changed but unstaged: core never auto-stages (ADR 0004).
+    fixture.write("a.txt", "line 1\nedited\nline 3\n");
+    let mut app = App::new("repo");
+    app.apply_snapshot(repo.refresh().unwrap());
+
+    run_commit_step(&repo, &mut app, CommitStep::Open { changelist: None });
+
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::CommitStageAll { hunks: 1, .. })
+    ));
+}
+
+#[test]
+fn stage_all_and_open_stages_the_changelist_then_opens_the_dialog() {
+    let (fixture, repo) = repo_with_commit();
+    fixture.write("a.txt", "line 1\nedited\nline 3\n");
+    let mut app = App::new("repo");
+
+    run_commit_step(
+        &repo,
+        &mut app,
+        CommitStep::StageAllAndOpen { changelist: None },
+    );
+
+    assert_eq!(entries(&app, Severity::Info).len(), 1, "the bulk op echoed");
+    let Some(Overlay::Commit(draft)) = &app.overlay else {
+        panic!("expected the commit dialog, got {:?}", app.overlay);
+    };
+    assert_eq!(draft.payload.staged_hunks(), 1);
+    assert_eq!(
+        fixture.index_content("a.txt").as_deref(),
+        Some("line 1\nedited\nline 3\n")
+    );
+}
+
+#[test]
+fn a_confirmed_commit_echoes_the_command_and_the_new_commit_then_closes_the_flow() {
+    let (fixture, repo) = repo_with_commit();
+    fixture
+        .write("a.txt", "line 1\nedited\nline 3\n")
+        .stage("a.txt");
+    let payload = repo.commit_payload(None).unwrap();
+    let mut app = App::new("repo");
+
+    run_commit_step(
+        &repo,
+        &mut app,
+        CommitStep::Commit(draft(None, payload.clone(), "edit line 2")),
+    );
+
+    let expected = commit_echo(&CommitOptions::default(), None, &payload);
+    assert_eq!(entries(&app, Severity::Info).first(), Some(&&*expected));
+    assert!(app.error_modal.is_none());
+    assert!(app.overlay.is_none(), "success closes the flow");
+    assert_eq!(fixture.commit_count(), 2);
+    assert_eq!(
+        fixture.head_bytes("a.txt"),
+        Some(b"line 1\nedited\nline 3\n".to_vec())
+    );
+}
+
+/// The transparency echo records only commands git actually ran
+/// (ADR 0007). A hook rejection means `git commit` executed and refused,
+/// so the echo is pushed — and the modal carries the hook's own stderr
+/// verbatim, with the dialog restored exactly as it was confirmed.
+#[cfg(unix)]
+#[test]
+fn a_hook_rejection_echoes_the_command_and_carries_stderr_verbatim() {
+    let (fixture, repo) = repo_with_commit();
+    fixture
+        .write("a.txt", "line 1\nedited\nline 3\n")
+        .stage("a.txt");
+    fixture.with_hook(
+        "pre-commit",
+        "#!/bin/sh\nprintf 'lint: bad line\\nlint: fix it\\n' >&2\nexit 1\n",
+    );
+    let payload = repo.commit_payload(None).unwrap();
+    let confirmed = draft(None, payload.clone(), "edit line 2");
+    let mut app = App::new("repo");
+
+    run_commit_step(&repo, &mut app, CommitStep::Commit(confirmed.clone()));
+
+    let expected = commit_echo(&CommitOptions::default(), None, &payload);
+    assert!(
+        entries(&app, Severity::Info).contains(&&*expected),
+        "git ran, so the command is echoed: {:?}",
+        app.log
+    );
+    let modal = app.error_modal.as_ref().expect("the rejection modals");
+    assert_eq!(modal.title, "Commit failed");
+    // Verbatim means the hook's own bytes and nothing around them: the
+    // error's `Display` wraps the same stderr in a "commit rejected:"
+    // line, and that wrapper must not reach the modal (ADR 0007 — the
+    // detail is the user's own tooling talking to them).
+    assert_eq!(modal.detail, "lint: bad line\nlint: fix it\n");
+    assert_eq!(
+        app.overlay,
+        Some(Overlay::Commit(confirmed)),
+        "the dialog is restored exactly as confirmed"
+    );
+    assert_eq!(fixture.commit_count(), 1);
+    assert_eq!(
+        fixture.state_dir_entries(),
+        Vec::<String>::new(),
+        "the temp index and message file are discarded (ADR 0004)"
+    );
+}
+
+#[test]
+fn the_operation_guard_refuses_without_echoing_a_command_git_never_ran() {
+    let fixture = RepoFixture::new();
+    fixture.write("a.txt", "base\n").commit_all("init");
+    fixture
+        .branch("feature")
+        .checkout("feature")
+        .write("a.txt", "feature side\n")
+        .commit_all("feature edit");
+    fixture
+        .checkout("main")
+        .write("a.txt", "main side\n")
+        .commit_all("main edit");
+    let repo = Repo::discover(fixture.path()).unwrap();
+    // Clean tree: an empty payload, which the guard never gets past.
+    let payload = repo.commit_payload(None).unwrap();
+    fixture.merge_conflicting("feature");
+    let mut app = App::new("repo");
+
+    run_commit_step(
+        &repo,
+        &mut app,
+        CommitStep::Commit(draft(None, payload, "merge")),
+    );
+
+    assert!(
+        entries(&app, Severity::Info).is_empty(),
+        "git never ran, so nothing is echoed: {:?}",
+        app.log
+    );
+    assert_eq!(
+        app.error_modal.as_ref().map(|modal| modal.title.as_str()),
+        Some("Commit failed")
+    );
+    assert!(matches!(app.overlay, Some(Overlay::Commit(_))));
+}
+
+#[test]
+fn a_payload_failure_refuses_without_echoing_a_command_git_never_ran() {
+    let (_fixture, repo) = repo_with_commit();
+    let mut app = App::new("repo");
+
+    // Nothing staged: core reports it rather than committing an empty
+    // payload, and git was never reached.
+    let empty = repo.commit_payload(None).unwrap();
+    assert!(empty.is_empty(), "the fixture reaches an empty payload");
+    run_commit_step(
+        &repo,
+        &mut app,
+        CommitStep::Commit(draft(None, empty, "nothing")),
+    );
+
+    assert!(entries(&app, Severity::Info).is_empty());
+    assert_eq!(
+        app.error_modal.as_ref().map(|modal| modal.title.as_str()),
+        Some("Commit failed")
+    );
+}
+
+#[test]
+fn drift_routes_back_to_the_reconfirm_overlay_with_the_fresh_payload() {
+    let (fixture, repo) = repo_with_commit();
+    fixture
+        .write("a.txt", "line 1\nv1\nline 3\n")
+        .stage("a.txt");
+    let confirmed = repo.commit_payload(None).unwrap();
+    // The staged content moves between confirm and commit.
+    fixture
+        .write("a.txt", "line 1\nv2\nline 3\n")
+        .stage("a.txt");
+    let mut app = App::new("repo");
+
+    run_commit_step(
+        &repo,
+        &mut app,
+        CommitStep::Commit(draft(None, confirmed.clone(), "edit line 2")),
+    );
+
+    let Some(Overlay::CommitDrift { draft, previous }) = &app.overlay else {
+        panic!("expected the drift re-confirm, got {:?}", app.overlay);
+    };
+    assert_eq!(previous, &confirmed, "the dialog's confirmed payload");
+    assert_eq!(
+        draft.payload,
+        repo.commit_payload(None).unwrap(),
+        "re-confirm is against the fresh payload"
+    );
+    assert!(
+        app.error_modal.is_none(),
+        "drift is a re-confirm, not an error"
+    );
+    // Drift is not a command git ran either.
+    assert_eq!(fixture.commit_count(), 1);
+    assert_eq!(entries(&app, Severity::Info).len(), 1);
+    assert!(entries(&app, Severity::Info)[0].starts_with("nothing committed"));
+}
+
+/// ADR 0004's align option: index := worktree over the changelist's stale
+/// hunks, then commit what *that* produced — the payload is re-derived so
+/// the drift guard compares the aligned content, never the stale
+/// confirmation.
+#[test]
+fn align_and_commit_re_derives_the_payload_before_committing_it() {
+    let (fixture, repo) = repo_with_commit();
+    fixture
+        .write("a.txt", "line 1\nstaged\nline 3\n")
+        .stage("a.txt");
+    // Edited again after staging: the hunk is ◑, and the confirmed
+    // payload carries the staged bytes, not these.
+    fixture.write("a.txt", "line 1\naligned\nline 3\n");
+    let confirmed = repo.commit_payload(None).unwrap();
+    assert_eq!(confirmed.stale_hunks(), 1, "the fixture reaches ◑");
+    let mut app = App::new("repo");
+
+    run_commit_step(
+        &repo,
+        &mut app,
+        CommitStep::AlignAndCommit(draft(None, confirmed, "edit line 2")),
+    );
+
+    assert!(app.error_modal.is_none(), "no drift against the stale one");
+    assert!(app.overlay.is_none(), "the commit went through");
+    assert_eq!(fixture.commit_count(), 2);
+    assert_eq!(
+        fixture.head_bytes("a.txt"),
+        Some(b"line 1\naligned\nline 3\n".to_vec()),
+        "the worktree's bytes, aligned into the index and committed"
+    );
+    // Align's own echo, the command echo, and the committed line.
+    assert_eq!(entries(&app, Severity::Info).len(), 3);
+}
+
+#[test]
+fn an_align_failure_restores_the_dialog_under_the_modal_and_commits_nothing() {
+    let (fixture, repo) = repo_with_commit();
+    fixture
+        .write("a.txt", "line 1\nedited\nline 3\n")
+        .stage("a.txt");
+    let payload = repo.commit_payload(None).unwrap();
+    let confirmed = draft(Some("ghost"), payload, "edit line 2");
+    let mut app = App::new("repo");
+
+    run_commit_step(
+        &repo,
+        &mut app,
+        CommitStep::AlignAndCommit(confirmed.clone()),
+    );
+
+    assert_eq!(
+        app.error_modal.as_ref().map(|modal| modal.title.as_str()),
+        Some("Commit failed")
+    );
+    assert_eq!(app.overlay, Some(Overlay::Commit(confirmed)));
+    assert_eq!(fixture.commit_count(), 1);
+}
+
+// The align path's third branch — align succeeds, the re-derived payload
+// is *still* ◑, so the flow re-warns instead of committing — has no
+// deterministic fixture: `align` and `commit_payload` apply the same
+// predicate to the same changelist over back-to-back refreshes, so the
+// only way a ◑ hunk survives the first and reappears in the second is a
+// worktree edit landing between them. That is a real race the code is
+// written for (ADR 0004's never-silent rule) and not one a test can stage
+// without a seam inside the executor. What the branch *does* once taken
+// is covered where it lives: `app/tests.rs::a_stale_payload_routes_
+// through_the_warn_overlay` drives `reconfirm_stale`'s overlay, and
+// `render.rs::the_stale_warn_overlays_the_dialog_with_the_stale_files`
+// renders it. Only the loop's decision to call it is unasserted, and
+// recorded here rather than faked.
+
+// ── loop arms ───────────────────────────────────────────────────────
+
+#[test]
+fn the_quit_key_leaves_the_loop_without_asking_for_a_refresh() {
+    let (_fixture, repo) = repo_with_commit();
+    let mut app = App::new("repo");
+
+    // `R` sits behind `q` in the script and must never be reached.
+    let (result, refreshes) = drive(&repo, &mut app, &[char_key('q'), char_key('R')]);
+
+    assert!(result.is_ok());
+    assert_eq!(refreshes, 0);
+}
+
+#[test]
+fn the_manual_refresh_key_requests_a_refresh() {
+    let (_fixture, repo) = repo_with_commit();
+    let mut app = App::new("repo");
+
+    let (result, refreshes) = drive(&repo, &mut app, &[char_key('R'), char_key('R')]);
+
+    assert!(result.is_ok());
+    assert_eq!(refreshes, 2);
+}
+
+#[test]
+fn focus_gained_requests_a_refresh_to_catch_up() {
+    let (_fixture, repo) = repo_with_commit();
+    let mut app = App::new("repo");
+
+    let (result, refreshes) = drive(
+        &repo,
+        &mut app,
+        // The focus pair: only the regained half asks for a catch-up
+        // (ADR 0005).
+        &[Event::FocusLost, Event::FocusGained],
+    );
+
+    assert!(result.is_ok());
+    assert_eq!(refreshes, 1);
+}
+
+#[test]
+fn keys_that_produce_no_action_request_no_refresh() {
+    let (_fixture, repo) = repo_with_commit();
+    let mut app = App::new("repo");
+
+    let (result, refreshes) = drive(
+        &repo,
+        &mut app,
+        &[char_key('j'), char_key('k'), char_key('?')],
+    );
+
+    assert!(result.is_ok());
+    assert_eq!(refreshes, 0);
+}
+
+/// A mutation's follow-up request is not an optimization: ADR 0005's
+/// self-loop filter ignores gitchange's own writes, so a dropped request
+/// is *no* refresh, not a late one — the panel would keep showing
+/// pre-mutation state indefinitely.
+#[test]
+fn a_completed_mutation_requests_a_refresh() {
+    let (_fixture, repo) = repo_with_commit();
+    let mut app = App::new("repo");
+
+    let mut script = vec![char_key('n')];
+    script.extend(typed("wip"));
+    script.push(code_key(KeyCode::Enter));
+    let (result, refreshes) = drive(&repo, &mut app, &script);
+
+    assert!(result.is_ok());
+    assert_eq!(refreshes, 1);
+    // The op ran for real, through core's sync handle.
+    assert!(
+        repo.refresh()
+            .unwrap()
+            .changelists
+            .iter()
+            .any(|changelist| changelist.name == "wip")
+    );
+}
+
+/// Two steps through the one `Action::Commit` arm, because "every commit
+/// step" is what ADR 0005 asks the request of: `c` derives an empty
+/// payload and offers stage-all, `enter` confirms it into
+/// `StageAllAndOpen`. Each step's own work is an executor test above;
+/// what this pins is that the arm requests a refresh per step rather than
+/// once per dialog.
+#[test]
+fn every_commit_step_requests_a_refresh() {
+    let (fixture, repo) = repo_with_commit();
+    // Changed but unstaged, so `c`'s payload is empty and the flow needs
+    // a second step to reach the dialog.
+    fixture.write("a.txt", "line 1\nedited\nline 3\n");
+    let mut app = App::new("repo");
+    app.apply_snapshot(repo.refresh().unwrap());
+
+    // `j` scopes the unassigned row — committable like any changelist
+    // (ADR 0004).
+    let (result, refreshes) = drive(
+        &repo,
+        &mut app,
+        &[char_key('j'), char_key('c'), code_key(KeyCode::Enter)],
+    );
+
+    assert!(result.is_ok());
+    assert_eq!(refreshes, 2);
+    assert!(matches!(app.overlay, Some(Overlay::Commit(_))));
+}
+
+/// The disconnect is reached the way production would reach it: a real
+/// `Engine` is spawned, its receiver cloned, and the `Engine` dropped.
+/// Its threads shut down and release the sender, so what the loop sees is
+/// a genuinely dead engine rather than a channel the test closed by hand
+/// — a shutdown that leaked its sender would hang here.
+#[test]
+fn a_dead_engine_ends_the_loop_with_the_engine_died_error() {
+    let (fixture, repo) = repo_with_commit();
+    let engine = Engine::spawn(fixture.path()).unwrap();
+    let engine_rx = engine.events().clone();
+    drop(engine);
+    // Input stays connected and silent, so the engine arm is the only one
+    // that can fire.
+    let (_input_tx, input_rx) = unbounded();
+    let mut app = App::new("repo");
+
+    let (result, refreshes) = run_loop(&repo, &mut app, &engine_rx, &input_rx);
+
+    assert!(
+        matches!(result, Err(Error::EngineDied)),
+        "expected EngineDied, got {result:?}"
+    );
+    assert_eq!(refreshes, 0);
+}
+
+#[test]
+fn engine_events_reach_their_app_handlers() {
+    let (_fixture, repo) = repo_with_commit();
+    let mut app = App::new("repo");
+
+    let (result, refreshes) = drive_engine(
+        &repo,
+        &mut app,
+        vec![
+            EngineEvent::ConditionStarted(Condition::WatcherDegraded),
+            EngineEvent::RefreshFailed(gitchange_core::Error::NothingStaged),
+        ],
+    );
+
+    assert!(matches!(result, Err(Error::EngineDied)));
+    assert!(app.watcher_degraded, "the condition became a pin");
+    assert!(app.error_modal.is_some(), "the failure modalled");
+    assert_eq!(refreshes, 0, "engine events ask for nothing back");
+}
+
+// ── the smoke test ──────────────────────────────────────────────────
+
+/// The one end-to-end run (ADR 0008's ceiling rule): a real `Engine` over
+/// a real repo, a mutation driven in as keystrokes, the refresh it
+/// requests coming back as a real `RefreshComplete` and landing on the
+/// App. It proves the wiring the recording-closure tests abstract.
+///
+/// The forwarder thread is harness, not a fake — every event it passes
+/// on is the Engine's own. It exists so the run ends deterministically:
+/// dropping its sender after the snapshot under test is the loop's
+/// engine-disconnect exit, which needs no sleep and no quit key racing
+/// the event it is meant to follow. A forwarder that times out instead
+/// drops the sender with nothing forwarded, so a broken wiring fails the
+/// assertion below rather than hanging.
+#[test]
+fn a_mutation_key_drives_a_real_engine_refresh_onto_the_app() {
+    let (fixture, repo) = repo_with_commit();
+    let engine = Engine::spawn(fixture.path()).unwrap();
+
+    let (events_tx, events_rx) = unbounded();
+    let real = engine.events().clone();
+    let forwarder = std::thread::spawn(move || {
+        while let Ok(event) = real.recv_timeout(Duration::from_secs(30)) {
+            let done = matches!(&event, EngineEvent::RefreshComplete(snapshot)
+                if has_changelist(snapshot, "smoke"));
+            if events_tx.send(event).is_err() || done {
+                return;
+            }
+        }
+    });
+
+    let (input_tx, input_rx) = unbounded();
+    let mut script = vec![char_key('n')];
+    script.extend(typed("smoke"));
+    script.push(code_key(KeyCode::Enter));
+    for event in script {
+        input_tx.send(event).unwrap();
+    }
+
+    let mut app = App::new("repo");
+    let mut terminal = ratatui::Terminal::new(TestBackend::new(WIDTH, HEIGHT)).unwrap();
+    let result = event_loop(
+        &mut terminal,
+        &events_rx,
+        &input_rx,
+        || engine.request_refresh(),
+        &repo,
+        &mut app,
+    );
+    forwarder.join().unwrap();
+
+    assert!(
+        matches!(result, Err(Error::EngineDied)),
+        "the forwarder's disconnect is this run's exit, got {result:?}"
+    );
+    let snapshot = app.snapshot.as_ref().expect("a snapshot reached the App");
+    assert!(
+        has_changelist(snapshot, "smoke"),
+        "the keystroke's mutation came back through a real refresh"
+    );
+}
+
+fn has_changelist(snapshot: &Snapshot, name: &str) -> bool {
+    snapshot
+        .changelists
+        .iter()
+        .any(|changelist| changelist.name == name)
+}
