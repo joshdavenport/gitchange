@@ -29,6 +29,29 @@ dependency graph, not by convention.
   handlers in both directions and keeps incremental compiles local.
   Prior art: gitui's asyncgit/gitui split, with a dispatch bin on top.
 
+### The git2 wall is a production-graph fact (issue #59)
+
+Amends the first boundary above. `gitchange-test-support` — a
+`publish = false` workspace member holding the `RepoFixture` builder and
+its helpers (git2 + tempfile, no dependency on core) — joins the
+workspace as a **dev-dependency** of core and of the TUI crate, so git2
+now appears in a second `Cargo.toml`. The wall the boundary enforces is
+the **production** dependency graph, which is what it always meant:
+frontends still cannot reach a repository except through core's
+interface in any shipped artifact. Dev-dependencies are exempt because
+tests need to conjure repository states to point core at — that is the
+fixture's whole job, and ADR 0008 governs how it is used. The
+alternative (a feature-gated fixture module inside core) was rejected:
+it needs the self-dev-dependency trick, ships test code in the
+production crate, and would put git2 types (`git_state()` returns
+`git2::RepositoryState`) into core's public interface — a sharper
+violation of this ADR than a second test-only `Cargo.toml`.
+
+The TUI crate's contract stays **essentially `run()`**: its run-loop
+tests live in-crate (`#[cfg(test)]`), chosen precisely so no executor
+or loop function joins the `#[doc(hidden)] pub` surface the render
+tests already forced.
+
 ## Core's two-layer interface
 
 - **Sync operations** — blocking calls (`refresh() -> Snapshot`,

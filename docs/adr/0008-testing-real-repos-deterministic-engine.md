@@ -16,9 +16,14 @@ free.
 ## Fixtures
 
 - **Programmatically built temp repos per test**, via a shared
-  `RepoFixture` builder in core's test support: init → write files →
-  commit → edit worktree, plus a `with_hook()` helper that writes hook
-  scripts into the repo (exercises `HookRejected { stderr }`, ADR 0004).
+  `RepoFixture` builder: init → write files → commit → edit worktree,
+  plus a `with_hook()` helper that writes hook scripts into the repo
+  (exercises `HookRejected { stderr }`, ADR 0004). *Amended (issue
+  #59):* the builder lives in the `gitchange-test-support` workspace
+  crate (`publish = false`), not core's test target, so the TUI crate's
+  run-loop tests — and any future frontend's — build repos from the
+  same builder instead of growing a drifting copy. ADR 0006 records why
+  a test-only crate carrying git2 does not breach the git2 wall.
 - **No checked-in fixture repos** — a `.git` inside the repo needs
   renaming dances, is opaque in review, and drifts from what tests claim.
 - Snapshot assertions (insta-style) are allowed opportunistically where
@@ -98,6 +103,53 @@ that fallback is not needed.
 - **No test asserts on real debounce timing.** Timing assertions are the
   flake source, and the constant isn't the interesting logic. What a
   refresh *produces* is carried by the sync-op suite.
+
+## The TUI run loop: real executors, recorded requests, one smoke test
+
+Added by issue #59; qualifies **Scope** below, which kept TUI
+*rendering* outside this ADR — the run loop's wiring executes core's
+sync ops and requests refreshes, and its testing method is this ADR's
+to govern.
+
+The seam is parameterization, not extraction: the loop's dispatch stays
+a hand-written match (ADR 0014's precedent), and no intent type is
+introduced. `event_loop` is generic over the terminal backend
+(`TestBackend` in tests), takes the input receiver (the real
+crossterm-reader thread moves up into `run()`), takes the app by
+mutable reference, and takes the engine decomposed into what it
+actually consumes: the events `Receiver` plus a `request_refresh`
+closure that `run()` supplies as the real engine method. Cloning the
+receiver and dropping the Engine reaches the disconnect arm
+(`EngineDied`), so engine death is covered, not deviated.
+
+The method mirrors the Engine's own pattern above — deterministic logic
+tests plus one real smoke test:
+
+- **Executor tests are real-repo end-to-end**: the op and commit-step
+  executors run against a `RepoFixture` repo through core's public sync
+  ops, per this ADR's method. Nothing git-touching is faked.
+- **Loop-arm tests assert the outbound refresh request with a recording
+  closure** — deterministic, no timeouts. This is not a fake in this
+  ADR's sense: the frontend's entire contract at that arm is "emit the
+  request", and what the request *does* (debounce bypass,
+  last-request-wins) is Engine-test property. The stakes are real:
+  ADR 0005's self-loop filter ignores gitchange's own writes, so a
+  dropped request after a mutation is not a late refresh but **no
+  refresh at all**.
+- **One end-to-end smoke test** — real Engine over a fixture repo, a
+  mutation key through the loop, `RefreshComplete` applied — proves the
+  wiring the recording tests abstract, and earns its place under the
+  Engine section's ceiling rule: it covers wiring no other real test
+  reaches.
+
+**Accepted deviations, recorded here so they are not silent gaps:**
+`run()`'s process-edge glue (terminal init/restore, focus-change escape
+codes, `Engine::spawn`/`Repo::discover` wiring, spawning the real
+input-reader thread) and real terminal input/focus-event *capture*
+stay uncovered — they want a live terminal and a terminal emulator.
+Every behavior behind that edge is covered from the seam inward;
+`FocusGained` *handling* is tested by injecting the event, only its
+delivery is not.
 
 ## CI
 
