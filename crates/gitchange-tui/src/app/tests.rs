@@ -1783,6 +1783,27 @@ fn the_hunk_mode_bar_scopes_commit_like_everywhere_else() {
 }
 
 #[test]
+fn the_status_and_log_bars_match_verbatim() {
+    let mut app = app();
+    app.on_key(key(KeyCode::Char('1'))); // Status — nothing contextual
+    assert_eq!(
+        bar(&app),
+        ["0-5 panels", "R refresh", "? keybindings", "q quit"]
+    );
+    app.on_key(key(KeyCode::Char('5'))); // Log
+    assert_eq!(
+        bar(&app),
+        [
+            "j/k scroll",
+            "0-5 panels",
+            "R refresh",
+            "? keybindings",
+            "q quit",
+        ]
+    );
+}
+
+#[test]
 fn the_scroll_mode_diff_bar_advertises_the_file_scoped_assigns() {
     let mut app = app();
     app.on_key(key(KeyCode::Char('0')));
@@ -1881,14 +1902,34 @@ fn the_bar_hides_c_while_an_operation_is_in_progress() {
     busy.operation = Some(gitchange_core::GitOperation::Merge);
     app.apply_snapshot(busy);
     app.on_key(key(KeyCode::Char('j'))); // 'fixes' — otherwise committable
-    assert!(
-        !bar(&app).iter().any(|hint| hint == "c commit"),
-        "the bar and the operation pin tell one story"
+    // The bar and the operation pin tell one story: everything but
+    // commit stays, verbatim.
+    assert_eq!(
+        bar(&app),
+        [
+            "j/k move",
+            "enter files",
+            "n new",
+            "d delete",
+            "r rename",
+            "s switch active",
+            "0-5 panels",
+            "R refresh",
+            "? keybindings",
+            "q quit",
+        ]
     );
     app.on_key(key(KeyCode::Enter)); // files
     app.on_key(key(KeyCode::Enter)); // hunk mode
-    assert!(
-        !bar(&app).iter().any(|hint| hint.starts_with("c ")),
-        "the hunk-mode bar hides it too"
+    assert_eq!(
+        bar(&app),
+        [
+            "j/k next/prev hunk",
+            "space stage/unstage hunk",
+            "a/A/ctrl+a assign hunk / unassigned / all",
+            "esc back to files",
+            "? keybindings",
+        ],
+        "the hunk-mode bar hides commit too"
     );
 }
