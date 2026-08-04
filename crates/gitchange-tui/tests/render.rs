@@ -952,5 +952,37 @@ fn the_keybar_shows_staging_and_commit_hints() {
     app.on_key(key(KeyCode::Char('3')));
     let text = render(&app);
     assert!(text.contains("space stage file"), "{text}");
+    // 'all' is scoped: commit isn't afforded, so the bar doesn't lie
+    // about it (ADR 0014).
+    assert!(!text.contains("c commit"), "{text}");
+
+    app.on_key(key(KeyCode::Esc));
+    app.on_key(key(KeyCode::Char('j'))); // drill into 'fixes'
+    app.on_key(key(KeyCode::Enter));
+    let text = render(&app);
+    assert!(text.contains("space stage file"), "{text}");
     assert!(text.contains("c commit"));
+}
+
+#[test]
+fn the_help_overlay_derives_spellings_and_themes_its_arrows() {
+    let mut theme = Theme::default();
+    theme.glyphs.arrow = '»';
+    let mut app = App::new("repo");
+    app.apply_snapshot(snapshot());
+    app.on_key(key(KeyCode::Char('?')));
+    let text = text_of(&render_buffer_themed(&app, &theme));
+    // Derived spellings: the panel digits from the panel numbering, the
+    // movement pair with all its keys.
+    assert!(text.contains("1-5, 0"), "{text}");
+    assert!(text.contains("j/k, ↓/↑"), "{text}");
+    // The drill arrows take the theme's glyph — no `→` literals left.
+    assert!(
+        text.contains("drill in: changelist » files » hunk mode"),
+        "{text}"
+    );
+    assert!(
+        text.contains("back (diff » files » changelists » all)"),
+        "{text}"
+    );
 }

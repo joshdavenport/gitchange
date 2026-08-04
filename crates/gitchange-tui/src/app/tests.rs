@@ -1657,3 +1657,238 @@ fn space_on_a_stale_binary_restages_the_file() {
         }))
     );
 }
+
+// ── the binding core & its disabled reasons (ADR 0014, issue #65) ───
+
+/// The bar as the user reads it: `key label` per hint.
+fn bar(app: &App) -> Vec<String> {
+    app.key_hints()
+        .into_iter()
+        .map(|(key, label)| format!("{key} {label}"))
+        .collect()
+}
+
+#[test]
+fn the_changelists_bar_reflects_what_the_scoped_row_affords() {
+    let mut app = app(); // Changelists focus, 'all' selected
+    assert_eq!(
+        bar(&app),
+        [
+            "j/k move",
+            "enter files",
+            "n new",
+            "0-5 panels",
+            "R refresh",
+            "? keybindings",
+            "q quit",
+        ]
+    );
+    app.on_key(key(KeyCode::Char('j'))); // 'fixes'
+    assert_eq!(
+        bar(&app),
+        [
+            "j/k move",
+            "enter files",
+            "n new",
+            "d delete",
+            "r rename",
+            "s switch active",
+            "c commit",
+            "0-5 panels",
+            "R refresh",
+            "? keybindings",
+            "q quit",
+        ]
+    );
+}
+
+#[test]
+fn the_files_bar_reflects_what_the_scoped_row_affords() {
+    let mut app = app();
+    app.on_key(key(KeyCode::Char('3'))); // Files, 'all' scoped
+    assert_eq!(
+        bar(&app),
+        [
+            "j/k move",
+            "space stage file",
+            "enter hunks",
+            "a/A/ctrl+a assign group / unassigned / all",
+            "n new",
+            "esc back",
+            "0-5 panels",
+            "R refresh",
+            "? keybindings",
+            "q quit",
+        ]
+    );
+    app.on_key(key(KeyCode::Esc)); // back out to Changelists
+    app.on_key(key(KeyCode::Char('j'))); // 'fixes'
+    app.on_key(key(KeyCode::Enter)); // drill to Files
+    assert_eq!(
+        bar(&app),
+        [
+            "j/k move",
+            "space stage file",
+            "enter hunks",
+            "a/A/ctrl+a assign group / unassigned / all",
+            "c commit",
+            "n new",
+            "d delete",
+            "r rename",
+            "s switch active",
+            "esc back",
+            "0-5 panels",
+            "R refresh",
+            "? keybindings",
+            "q quit",
+        ]
+    );
+}
+
+#[test]
+fn the_hunk_mode_bar_scopes_commit_like_everywhere_else() {
+    // Drilled into 'fixes': the full hunk-mode bar, commit included.
+    let mut app = app();
+    app.on_key(key(KeyCode::Char('j')));
+    app.on_key(key(KeyCode::Enter)); // files
+    app.on_key(key(KeyCode::Enter)); // hunk mode
+    assert_eq!(
+        bar(&app),
+        [
+            "j/k next/prev hunk",
+            "space stage/unstage hunk",
+            "a/A/ctrl+a assign hunk / unassigned / all",
+            "c commit changelist",
+            "esc back to files",
+            "? keybindings",
+        ]
+    );
+
+    // Hunk mode under the All view: same bar without commit — the
+    // scoped row doesn't afford it.
+    let mut all_scoped = App::new("repo");
+    all_scoped.apply_snapshot(snapshot());
+    all_scoped.on_key(key(KeyCode::Char('3')));
+    all_scoped.on_key(key(KeyCode::Enter));
+    assert_eq!(
+        bar(&all_scoped),
+        [
+            "j/k next/prev hunk",
+            "space stage/unstage hunk",
+            "a/A/ctrl+a assign hunk / unassigned / all",
+            "esc back to files",
+            "? keybindings",
+        ]
+    );
+}
+
+#[test]
+fn the_scroll_mode_diff_bar_advertises_the_file_scoped_assigns() {
+    let mut app = app();
+    app.on_key(key(KeyCode::Char('0')));
+    assert_eq!(
+        bar(&app),
+        [
+            "j/k scroll",
+            "A/ctrl+a assign unassigned / all",
+            "esc back",
+            "0-5 panels",
+            "R refresh",
+            "? keybindings",
+            "q quit",
+        ]
+    );
+}
+
+#[test]
+fn a_blurred_hunk_advertises_and_serves_assign_in_any_panel() {
+    let mut app = app();
+    app.on_key(key(KeyCode::Char('3')));
+    app.on_key(key(KeyCode::Enter)); // hunk mode on print.css
+    app.on_key(key(KeyCode::Char('4'))); // blur to Commits — selection survives
+    assert_eq!(
+        bar(&app),
+        [
+            "j/k move",
+            "a/A/ctrl+a assign hunk / unassigned / all",
+            "0-5 panels",
+            "R refresh",
+            "? keybindings",
+            "q quit",
+        ]
+    );
+    // The advertised key acts: `a` assigns the blurred hunk from here.
+    assert_eq!(app.on_key(key(KeyCode::Char('a'))), None);
+    assert!(matches!(
+        &app.overlay,
+        Some(Overlay::Assign {
+            payload: AssignPayload::Hunk { .. },
+            ..
+        })
+    ));
+    app.on_key(key(KeyCode::Esc)); // close the popup
+
+    // Ending the selection ends the advertisement.
+    app.on_key(key(KeyCode::Char('0'))); // scroll-mode Diff resets it
+    app.on_key(key(KeyCode::Char('4')));
+    assert_eq!(
+        bar(&app),
+        [
+            "j/k move",
+            "0-5 panels",
+            "R refresh",
+            "? keybindings",
+            "q quit",
+        ]
+    );
+}
+
+#[test]
+fn pressing_an_ops_key_on_a_pseudo_row_logs_why() {
+    let mut app = app(); // 'all' selected
+    assert_eq!(app.on_key(key(KeyCode::Char('d'))), None);
+    assert!(app.overlay.is_none());
+    assert!(app.log.iter().any(|entry| {
+        entry.severity == Severity::Info && entry.text == "select a changelist — all is a view"
+    }));
+
+    app.on_key(key(KeyCode::Char('j')));
+    app.on_key(key(KeyCode::Char('j')));
+    app.on_key(key(KeyCode::Char('j'))); // 'unassigned'
+    assert_eq!(app.on_key(key(KeyCode::Char('s'))), None);
+    assert!(app.log.iter().any(|entry| {
+        entry.severity == Severity::Info
+            && entry.text == "select a changelist — unassigned is built-in"
+    }));
+}
+
+#[test]
+fn ops_keys_outside_their_panels_stay_silent() {
+    let mut app = app();
+    app.on_key(key(KeyCode::Char('4'))); // Commits — no changelist scope
+    let logged = app.log.len();
+    assert_eq!(app.on_key(key(KeyCode::Char('d'))), None);
+    assert_eq!(app.on_key(key(KeyCode::Char('r'))), None);
+    assert_eq!(app.on_key(key(KeyCode::Char('s'))), None);
+    assert!(app.overlay.is_none());
+    assert_eq!(app.log.len(), logged, "an empty reason stays off the log");
+}
+
+#[test]
+fn the_bar_hides_c_while_an_operation_is_in_progress() {
+    let mut app = app();
+    let mut busy = snapshot();
+    busy.operation = Some(gitchange_core::GitOperation::Merge);
+    app.apply_snapshot(busy);
+    app.on_key(key(KeyCode::Char('j'))); // 'fixes' — otherwise committable
+    assert!(
+        !bar(&app).iter().any(|hint| hint == "c commit"),
+        "the bar and the operation pin tell one story"
+    );
+    app.on_key(key(KeyCode::Enter)); // files
+    app.on_key(key(KeyCode::Enter)); // hunk mode
+    assert!(
+        !bar(&app).iter().any(|hint| hint.starts_with("c ")),
+        "the hunk-mode bar hides it too"
+    );
+}

@@ -15,7 +15,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 use crate::app::{
     App, AssignRow, CommitDraft, DiffLine, ErrorModal, FilesRow, InputKind, LogEntry, Overlay,
-    Panel, Scope, Severity, payload_counts,
+    Panel, Scope, Severity, help_rows, payload_counts,
 };
 use crate::theme::Theme;
 
@@ -1073,40 +1073,35 @@ fn draw_keybar(frame: &mut Frame, area: Rect, app: &App, theme: &Theme, now: Ins
 }
 
 fn draw_help(frame: &mut Frame, area: Rect, theme: &Theme) {
-    // The panel-level keymap, assign trio in escalating scope: every
-    // binding here is one a plain terminal can report (ADR 0013). Modal
-    // keys stay with their modals, which print their own hint lines.
-    const BINDINGS: &[(&str, &str)] = &[
-        ("1-5, 0", "focus panel (0 = diff)"),
-        ("j/k, ↓/↑", "move within panel / hunks / scroll diff"),
-        ("enter", "drill in: changelist → files → hunk mode"),
-        ("a", "assign hunk (files: the row's group)"),
-        ("A", "assign the file's unassigned hunks"),
-        ("ctrl+a", "assign every hunk of the file"),
-        ("space", "stage/unstage file (hunk mode: hunk)"),
-        ("c", "commit changelist"),
-        ("n", "new changelist"),
-        ("d", "delete changelist"),
-        ("r", "rename changelist"),
-        ("s", "switch active changelist"),
-        ("esc", "back (diff → files → changelists → all)"),
-        ("R", "refresh now"),
-        ("?", "toggle keybindings"),
-        ("q", "quit"),
-    ];
-    let width = 52.min(area.width);
-    let height = (BINDINGS.len() as u16 + 2).min(area.height);
+    // The panel-level keymap, straight from the binding core (ADR 0014)
+    // — built at runtime so the drill arrows take the theme's glyph.
+    // Every binding is one a plain terminal can report (ADR 0013);
+    // modal keys stay with their modals, which print their own hint
+    // lines. Sized to the content so no row clips.
+    let rows = help_rows(theme.glyphs.arrow);
+    let key_col = rows
+        .iter()
+        .map(|(key, _)| key.chars().count())
+        .max()
+        .unwrap_or(0);
+    let width = rows
+        .iter()
+        .map(|(_, label)| (key_col + 2 + label.chars().count()) as u16 + 2)
+        .max()
+        .unwrap_or(0)
+        .min(area.width);
+    let height = (rows.len() as u16 + 2).min(area.height);
     let popup = Rect {
         x: area.x + (area.width.saturating_sub(width)) / 2,
         y: area.y + (area.height.saturating_sub(height)) / 2,
         width,
         height,
     };
-    let lines: Vec<Line> = BINDINGS
+    let lines: Vec<Line> = rows
         .iter()
         .map(|(key, label)| {
             Line::from(vec![
-                Span::styled(format!("{key:>10}"), theme.colors.warn),
+                Span::styled(format!("{key:>key_col$}"), theme.colors.warn),
                 Span::styled(format!("  {label}"), theme.colors.text),
             ])
         })

@@ -48,7 +48,8 @@ pub struct Glyphs {
     pub refreshing: char,
     /// The Status panel's leading mark.
     pub ok: char,
-    /// The Status panel's repo → branch separator.
+    /// The Status panel's repo → branch separator, and the help
+    /// overlay's drill arrows.
     pub arrow: char,
     /// The inline separator between clauses in one-line summaries and
     /// hint lines (e.g. key hints, the ◑-stale payload tail).

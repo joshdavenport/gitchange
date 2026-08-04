@@ -437,12 +437,11 @@ impl App {
 
     /// The file the file-scoped assign keys (`A`, `ctrl+a`) act on: the
     /// Files selection, which is also what the Diff panel renders and
-    /// what hunk mode is drilled into. `None` from the panels that show
-    /// no file, unless a hunk selection is still live there (issue #45).
+    /// what hunk mode is drilled into. Whether the assign keys are live
+    /// at all is [`Capability::Assign`]'s answer (issue #45's blurred
+    /// selection included) — dispatch consults it before landing here,
+    /// so `None` means only "no file selected", a content no-op.
     pub(super) fn assign_file_path(&self) -> Option<String> {
-        if !matches!(self.focus, Panel::Files | Panel::Diff) && self.hunk_sel.is_none() {
-            return None;
-        }
         self.selected_file().map(|file| file.path.clone())
     }
 

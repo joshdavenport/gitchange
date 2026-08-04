@@ -7,6 +7,7 @@ use gitchange_core::{
     count_noun,
 };
 
+use super::keymap::{self, BindingId};
 use super::{App, Panel};
 
 /// One row of the Changelists panel — also the drill-down scope the
@@ -422,67 +423,80 @@ impl App {
             .position(|line| matches!(line, DiffLine::HunkHeader { selected: true, .. }))
     }
 
-    /// Contextual keybar hints for the focused panel (staging and commit
-    /// keys arrive with #33). Hunk mode swaps in its own bar (prototype
-    /// variant C). The assign trio is one hint with its three scopes in
-    /// key order — the bar has to match the keymap exactly (ADR 0013), and
-    /// three separate hints crowd out the rest of the bar.
-    pub fn key_hints(&self) -> Vec<(&'static str, &'static str)> {
-        if self.hunk_mode_focused() {
-            return vec![
-                ("j/k", "next/prev hunk"),
-                ("space", "stage/unstage hunk"),
-                ("a/A/ctrl+a", "assign hunk / unassigned / all"),
-                ("c", "commit changelist"),
-                ("esc", "back to files"),
-                ("?", "keybindings"),
-            ];
-        }
-        let mut hints: Vec<(&'static str, &'static str)> = match self.focus {
-            Panel::Changelists => vec![
-                ("j/k", "move"),
-                ("enter", "files"),
-                ("n", "new"),
-                ("d", "delete"),
-                ("r", "rename"),
-                ("s", "switch active"),
-                ("c", "commit"),
-            ],
-            Panel::Files => vec![
-                ("j/k", "move"),
-                ("space", "stage file"),
-                ("enter", "hunks"),
-                ("a/A/ctrl+a", "assign group / unassigned / all"),
-                ("c", "commit"),
-                ("n", "new"),
-                ("d", "delete"),
-                ("r", "rename"),
-                ("s", "switch active"),
-                ("esc", "back"),
-            ],
-            Panel::Diff => vec![
-                ("j/k", "scroll"),
-                ("A/ctrl+a", "assign unassigned / all"),
-                ("esc", "back"),
-            ],
-            Panel::Commits => vec![("j/k", "move")],
-            Panel::Log => vec![("j/k", "scroll")],
-            Panel::Status => Vec::new(),
+    /// Contextual keybar hints for the focused panel: editorial arms —
+    /// which bindings, in what order, under what short label — with
+    /// spellings and liveness derived from the binding core (ADR 0014).
+    /// A mention whose capability is disabled drops out, which is what
+    /// keeps the bar honest in both directions (ADR 0013 extended) and
+    /// what lets every arm mention the assign trio for the blurred-hunk
+    /// reach (issue #45) without a hand-written special case. The trio
+    /// is one hint with its three scopes in key order — three separate
+    /// hints crowd out the rest of the bar. Hunk mode swaps in its own
+    /// arm (prototype variant C).
+    pub fn key_hints(&self) -> Vec<(String, &'static str)> {
+        use BindingId::*;
+        const JK: &[BindingId] = &[MoveDown, MoveUp];
+        const ASSIGN_TRIO: &[BindingId] = &[AssignSelected, AssignUnassigned, AssignAll];
+        const ASSIGN_HUNK: &str = "assign hunk / unassigned / all";
+        let arm: Vec<(&'static [BindingId], &'static str)> = if self.hunk_mode_focused() {
+            vec![
+                (JK, "next/prev hunk"),
+                (&[StageToggle], "stage/unstage hunk"),
+                (ASSIGN_TRIO, ASSIGN_HUNK),
+                (&[Commit], "commit changelist"),
+                (&[Back], "back to files"),
+                (&[Help], "keybindings"),
+            ]
+        } else {
+            let mut arm: Vec<(&'static [BindingId], &'static str)> = match self.focus {
+                Panel::Changelists => vec![
+                    (JK, "move"),
+                    (&[DrillIn], "files"),
+                    (&[NewChangelist], "new"),
+                    (&[DeleteChangelist], "delete"),
+                    (&[RenameChangelist], "rename"),
+                    (&[SwitchActive], "switch active"),
+                    (&[Commit], "commit"),
+                    (ASSIGN_TRIO, ASSIGN_HUNK),
+                ],
+                Panel::Files => vec![
+                    (JK, "move"),
+                    (&[StageToggle], "stage file"),
+                    (&[DrillIn], "hunks"),
+                    (ASSIGN_TRIO, "assign group / unassigned / all"),
+                    (&[Commit], "commit"),
+                    (&[NewChangelist], "new"),
+                    (&[DeleteChangelist], "delete"),
+                    (&[RenameChangelist], "rename"),
+                    (&[SwitchActive], "switch active"),
+                    (&[Back], "back"),
+                ],
+                Panel::Diff => vec![
+                    (JK, "scroll"),
+                    (&[AssignUnassigned, AssignAll], "assign unassigned / all"),
+                    (&[Back], "back"),
+                ],
+                Panel::Commits => vec![(JK, "move"), (ASSIGN_TRIO, ASSIGN_HUNK)],
+                Panel::Log => vec![(JK, "scroll"), (ASSIGN_TRIO, ASSIGN_HUNK)],
+                Panel::Status => vec![(ASSIGN_TRIO, ASSIGN_HUNK)],
+            };
+            arm.extend([
+                (&[FocusPanel] as &[BindingId], "panels"),
+                (&[Refresh], "refresh"),
+                (&[Help], "keybindings"),
+                (&[Quit], "quit"),
+            ]);
+            arm
         };
-        // A hunk selection that survived a blur (issue #45) keeps the
-        // assign keys live in whatever panel now holds focus, so the bar
-        // has to say so there too — an advertised keymap that omits a live
-        // key is the same dishonesty ADR 0013 bars in the other direction.
-        if self.hunk_sel.is_some() && !matches!(self.focus, Panel::Files | Panel::Diff) {
-            hints.push(("a/A/ctrl+a", "assign hunk / unassigned / all"));
-        }
-        hints.extend([
-            ("0-5", "panels"),
-            ("R", "refresh"),
-            ("?", "keybindings"),
-            ("q", "quit"),
-        ]);
-        hints
+        arm.into_iter()
+            .filter(|(ids, _)| {
+                ids.iter().all(|&id| {
+                    self.disabled_reason(keymap::binding(id).capability)
+                        .is_none()
+                })
+            })
+            .map(|(ids, label)| (keymap::bar_spelling(ids), label))
+            .collect()
     }
 }
 

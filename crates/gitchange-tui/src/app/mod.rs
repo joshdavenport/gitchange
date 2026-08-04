@@ -4,6 +4,7 @@
 //! draws. No terminal, no git — everything here is unit-testable with
 //! synthetic snapshots (ADR 0008).
 
+mod keymap;
 mod overlay;
 mod selection;
 mod status;
@@ -11,9 +12,12 @@ mod status;
 mod tests;
 mod view;
 
+pub use keymap::help_rows;
 pub use overlay::{AssignPayload, AssignRow, CommitDraft, InputKind, Overlay, payload_counts};
 pub use status::{ErrorModal, INDICATOR_DELAY, LogEntry, Severity, advisory_entry};
 pub use view::{ChangelistRow, DiffLine, FileEntry, FilesRow, Group, HunkTag, Scope};
+
+use keymap::{BindingId, Capability};
 
 use std::time::Instant;
 
@@ -256,51 +260,63 @@ impl App {
         if self.overlay.is_some() {
             return self.on_overlay_key(key);
         }
-        match key.code {
-            KeyCode::Char('q') => return Some(Action::Quit),
-            KeyCode::Char('R') => return Some(Action::Refresh),
-            KeyCode::Char('?') => self.help_open = true,
-            KeyCode::Char(c) if Panel::from_number(c).is_some() => {
+        // The binding core (ADR 0014): resolve the key to its record,
+        // then consult the same disabled-reason the keybar hides by — a
+        // non-empty reason logs on the press (ADR 0007's channel), an
+        // empty one drops it silently.
+        let binding = keymap::binding_for(key)?;
+        if let Some(reason) = self.disabled_reason(binding.capability) {
+            if !reason.is_empty() {
+                self.push_log(Severity::Info, reason);
+            }
+            return None;
+        }
+        match binding.id {
+            BindingId::Quit => return Some(Action::Quit),
+            BindingId::Refresh => return Some(Action::Refresh),
+            BindingId::Help => self.help_open = true,
+            BindingId::FocusPanel => {
                 // Explicit Diff focus is scroll mode; hunk mode only
                 // enters through `enter` on a file.
-                match Panel::from_number(c).expect("guard checked") {
-                    Panel::Files => self.focus_files(),
-                    panel => self.set_focus(panel),
+                if let KeyCode::Char(c) = key.code {
+                    match Panel::from_number(c).expect("PanelDigit matched") {
+                        Panel::Files => self.focus_files(),
+                        panel => self.set_focus(panel),
+                    }
                 }
             }
-            KeyCode::Char('j') | KeyCode::Down => self.move_selection(1),
-            KeyCode::Char('k') | KeyCode::Up => self.move_selection(-1),
-            KeyCode::Char('n') => {
+            BindingId::MoveDown => self.move_selection(1),
+            BindingId::MoveUp => self.move_selection(-1),
+            BindingId::NewChangelist => {
                 self.overlay = Some(Overlay::Input {
                     kind: InputKind::NewChangelist,
                     value: String::new(),
                 });
             }
-            // The assign keymap (ADR 0013), scope escalating with
-            // keypress difficulty. `ctrl+a` is matched shift-agnostically
-            // so `ctrl+shift+a` — which most terminals cannot tell apart
-            // from it — does the same thing rather than something else.
-            KeyCode::Char('a' | 'A') if ctrl => {
-                if let Some(path) = self.assign_file_path() {
-                    self.open_assign(AssignPayload::AllHunks { path });
-                }
-            }
-            KeyCode::Char('a') => {
+            // The assign trio (ADR 0013), scope escalating with keypress
+            // difficulty. Empty payloads stay press-time no-ops inside
+            // the helpers — content, not context (ADR 0014).
+            BindingId::AssignSelected => {
                 if let Some(payload) = self.selected_assign_payload() {
                     self.open_assign(payload);
                 }
             }
-            KeyCode::Char('A') => {
+            BindingId::AssignUnassigned => {
                 if let Some(path) = self.assign_file_path() {
                     self.open_assign(AssignPayload::UnassignedHunks { path });
                 }
             }
-            KeyCode::Char('s') => {
+            BindingId::AssignAll => {
+                if let Some(path) = self.assign_file_path() {
+                    self.open_assign(AssignPayload::AllHunks { path });
+                }
+            }
+            BindingId::SwitchActive => {
                 if let Some(name) = self.scoped_changelist() {
                     return Some(Action::Op(Op::SetActive { name }));
                 }
             }
-            KeyCode::Char('r') => {
+            BindingId::RenameChangelist => {
                 if let Some(name) = self.scoped_changelist() {
                     self.overlay = Some(Overlay::Input {
                         kind: InputKind::Rename { from: name.clone() },
@@ -308,41 +324,26 @@ impl App {
                     });
                 }
             }
-            KeyCode::Char('d') => {
+            BindingId::DeleteChangelist => {
                 if let Some(name) = self.scoped_changelist() {
                     self.overlay = Some(Overlay::ConfirmDelete { name });
                 }
             }
-            KeyCode::Char(' ') => return self.stage_toggle(),
-            KeyCode::Char('c') => {
-                // The operation guard (ADR 0007): while a git operation
-                // is in progress `c` is a soft no-op — the pin names the
-                // operation, this line says why nothing opened.
-                if let Some(operation) = self.snapshot.as_ref().and_then(|s| s.operation) {
-                    self.push_log(Severity::Info, operation.in_progress_message());
-                    return None;
+            BindingId::StageToggle => return self.stage_toggle(),
+            BindingId::Commit => match self.scope() {
+                // Unreachable: the Commit capability disabled All above.
+                Scope::All => {}
+                Scope::Changelist(name) => {
+                    return Some(Action::Commit(CommitStep::Open {
+                        changelist: Some(name),
+                    }));
                 }
-                // `c` on the All view is a polite no-op with a message
-                // (ADR 0004) — commit needs one changelist scoped;
-                // unassigned is committable like any changelist.
-                match self.scope() {
-                    Scope::All => {
-                        self.push_log(
-                            Severity::Info,
-                            "select a changelist to commit — all is a view",
-                        );
-                    }
-                    Scope::Changelist(name) => {
-                        return Some(Action::Commit(CommitStep::Open {
-                            changelist: Some(name),
-                        }));
-                    }
-                    Scope::Unassigned => {
-                        return Some(Action::Commit(CommitStep::Open { changelist: None }));
-                    }
+                // Unassigned is committable like any changelist (ADR 0004).
+                Scope::Unassigned => {
+                    return Some(Action::Commit(CommitStep::Open { changelist: None }));
                 }
-            }
-            KeyCode::Enter => match self.focus {
+            },
+            BindingId::DrillIn => match self.focus {
                 // Drill-down only: 2 → select changelist → 3 → files →
                 // hunk mode. `enter` assigns nothing anywhere — the Diff
                 // panel is the end of the drill, and the key it used to
@@ -352,7 +353,7 @@ impl App {
                 Panel::Diff => {}
                 _ => {}
             },
-            KeyCode::Esc => match self.focus {
+            BindingId::Back => match self.focus {
                 Panel::Diff => {
                     self.hunk_sel = None;
                     self.focus = Panel::Files;
@@ -361,9 +362,52 @@ impl App {
                 Panel::Changelists => self.select_changelist_row(0),
                 _ => {}
             },
-            _ => {}
         }
         None
+    }
+
+    /// The shared disabled-reason predicate (ADR 0014): why a
+    /// capability's keys won't act right now, one answer consulted by
+    /// dispatch and the keybar alike. `None` means live; `Some("")`
+    /// hides silently (the wrong panel — nothing worth logging); a
+    /// non-empty reason hides the binding from the bar and logs when the
+    /// key is pressed anyway. Context guards only — cheap reads of
+    /// already-loaded state, derived per frame by the bar.
+    fn disabled_reason(&self, capability: Capability) -> Option<String> {
+        match capability {
+            Capability::Always => None,
+            Capability::ChangelistOps => {
+                if !matches!(self.focus, Panel::Changelists | Panel::Files) {
+                    return Some(String::new());
+                }
+                match self.scope() {
+                    Scope::Changelist(_) => None,
+                    Scope::All => Some("select a changelist — all is a view".into()),
+                    Scope::Unassigned => {
+                        Some("select a changelist — unassigned is built-in".into())
+                    }
+                }
+            }
+            Capability::Assign => {
+                let live =
+                    matches!(self.focus, Panel::Files | Panel::Diff) || self.hunk_sel.is_some();
+                (!live).then(String::new)
+            }
+            Capability::Commit => {
+                // The operation guard (ADR 0007): the next commit would
+                // conclude the operation — the pin names it, pressing
+                // `c` logs why nothing opened.
+                if let Some(operation) = self.snapshot.as_ref().and_then(|s| s.operation) {
+                    return Some(operation.in_progress_message());
+                }
+                // Commit needs one changelist scoped (ADR 0004); All is
+                // a view over many.
+                match self.scope() {
+                    Scope::All => Some("select a changelist to commit — all is a view".into()),
+                    Scope::Changelist(_) | Scope::Unassigned => None,
+                }
+            }
+        }
     }
 
     /// Move panel focus. Hunk mode survives a blur to another panel —
@@ -405,12 +449,11 @@ impl App {
         }
     }
 
-    /// The changelist the ops keys (`d`/`r`/`s`) act on: the selected
-    /// Changelists row while it names one, from the panels that show it.
+    /// The changelist the ops keys (`d`/`r`/`s`) act on: the scoped
+    /// row's name. Whether the keys are live at all is
+    /// [`Capability::ChangelistOps`]'s answer — dispatch consults it
+    /// before landing here, so this is extraction, not a guard.
     fn scoped_changelist(&self) -> Option<String> {
-        if !matches!(self.focus, Panel::Changelists | Panel::Files) {
-            return None;
-        }
         match self.scope() {
             Scope::Changelist(name) => Some(name),
             Scope::All | Scope::Unassigned => None,
