@@ -1865,6 +1865,28 @@ fn a_blurred_hunk_advertises_and_serves_assign_in_any_panel() {
 }
 
 #[test]
+fn a_char_binding_never_fires_with_control_held() {
+    // The keymap is explicit: `ctrl+<letter>` is its own binding space
+    // (ADR 0013), so a plain-char binding is not an accidental alias
+    // for its ctrl form. An alias, if ever wanted, is a second spelling
+    // on the record — never a fallthrough.
+    let mut app = app();
+    app.on_key(key(KeyCode::Char('j'))); // 'fixes' — d/r/s/c all live
+    let logged = app.log.len();
+    // `ctrl+c` stays out: it is the protocol-level quit above the keymap.
+    for c in ['q', 'd', 'r', 's', 'j'] {
+        assert_eq!(
+            app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)),
+            None,
+            "ctrl+{c} fired a plain-char binding"
+        );
+    }
+    assert!(app.overlay.is_none());
+    assert_eq!(app.changelist_row, 1, "ctrl+j did not move the selection");
+    assert_eq!(app.log.len(), logged, "unbound ctrl chords stay silent");
+}
+
+#[test]
 fn pressing_an_ops_key_on_a_pseudo_row_logs_why() {
     let mut app = app(); // 'all' selected
     assert_eq!(app.on_key(key(KeyCode::Char('d'))), None);
