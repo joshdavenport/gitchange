@@ -20,7 +20,7 @@ cargo xbench                      # full matrix → markdown report on stdout
 cargo xbench > report.md          # progress goes to stderr, so this records a run
 cargo xbench --out docs/perf      # also write report.md + results.csv
 cargo xbench --quick              # truncated scales: validates the harness, not a measurement
-cargo xbench --dimension records  # one dimension: files | hunks | records | huge-file
+cargo xbench --dimension records  # one dimension: see Dimensions below
 cargo xbench --iterations 9       # timed refreshes per case (default 5, or 3 under --quick)
 ```
 

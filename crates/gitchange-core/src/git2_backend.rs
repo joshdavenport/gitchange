@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::backend::{CommitPathSpec, CommittedId, GitBackend, HunkHeader};
-use crate::commit::CommitOptions;
+use crate::commit::{AMEND_FLAG, CommitOptions, NO_VERIFY_FLAG};
 use crate::diff::{BinarySides, BlobInfo, ChangeKind, DiffHunk, FileDiff, HunkLine, RepoDiffs};
 use crate::error::Error;
 use crate::snapshot::{CommitInfo, GitOperation, Head};
@@ -450,10 +450,10 @@ impl Git2Backend {
             .arg("-F")
             .arg(message_path);
         if options.no_verify {
-            command.arg("--no-verify");
+            command.arg(NO_VERIFY_FLAG);
         }
         if options.amend {
-            command.arg("--amend");
+            command.arg(AMEND_FLAG);
         }
         let output = command.output().map_err(io_error)?;
         if !output.status.success() {

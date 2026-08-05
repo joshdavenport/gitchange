@@ -21,9 +21,10 @@ pub struct CommitOptions {
     pub amend: bool,
 }
 
-/// The git flag [`CommitOptions::no_verify`] drives — the commit
-/// dialog's checkbox label and the shelled-out command echo name it
-/// identically (ADR 0006).
+/// The git flag [`CommitOptions::no_verify`] drives — the shelled-out
+/// `git commit` invocation, the transparency echo that reports it, and
+/// the commit dialog's checkbox label all name it from here (ADR 0006),
+/// so the echo can't come to describe a command git didn't run.
 pub const NO_VERIFY_FLAG: &str = "--no-verify";
 
 /// The git flag [`CommitOptions::amend`] drives. See [`NO_VERIFY_FLAG`].
