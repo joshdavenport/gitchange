@@ -144,6 +144,12 @@ impl RepoFixture {
 
     /// Install a git hook (e.g. `pre-commit`) with the given script body,
     /// marked executable — the `with_hook` fixture ADR 0008 promised.
+    ///
+    /// The executable bit is set on unix only because it exists on unix
+    /// only: git-for-Windows decides a hook is runnable from the script
+    /// itself and runs it through its bundled `sh`, so a `#!/bin/sh` hook
+    /// fires on all three platforms from the same fixture. Hook tests are
+    /// therefore ungated (ADR 0008, issue #63).
     pub fn with_hook(&self, name: &str, script: &str) -> &Self {
         let dir = self.repo.path().join("hooks");
         fs::create_dir_all(&dir).unwrap();

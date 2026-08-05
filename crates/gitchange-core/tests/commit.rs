@@ -127,7 +127,6 @@ fn commit_writes_only_the_changelists_staged_hunks() {
     assert!(snapshot.changelists.iter().any(|cl| cl.name == "one"));
 }
 
-#[cfg(unix)]
 #[test]
 fn a_hook_sees_the_commits_true_content() {
     let fixture = RepoFixture::new();
@@ -154,7 +153,11 @@ fn a_hook_sees_the_commits_true_content() {
     );
     commit(&repo, Some("one"), "one: ten");
 
-    let saw = fs::read_to_string(fixture.path().join(".git/hook-saw.diff")).unwrap();
+    // A missing file means git never executed the hook at all, which is a
+    // different failure from a hook that saw the wrong content — and the
+    // one a platform without a usable `sh` would produce.
+    let saw = fs::read_to_string(fixture.path().join(".git/hook-saw.diff"))
+        .expect("the pre-commit hook ran and wrote its capture");
     assert!(saw.contains("ten-one"), "hook sees the payload: {saw}");
     assert!(
         !saw.contains("twenty-two"),
@@ -179,7 +182,6 @@ fn one_staged_hunk_in_one(fixture: &RepoFixture) -> Vec<String> {
     worktree
 }
 
-#[cfg(unix)]
 #[test]
 fn hook_rejection_changes_nothing() {
     let fixture = RepoFixture::new();
@@ -222,7 +224,6 @@ fn hook_rejection_changes_nothing() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn no_verify_commits_past_a_rejecting_hook() {
     // The same fixture, hook and payload as the rejection above, with
@@ -285,6 +286,8 @@ fn no_verify_commits_past_a_rejecting_hook() {
 /// precedes the temp index being written, so it is
 /// [`hook_rejection_changes_nothing`] that covers discarding files which
 /// do exist.
+// Unix-only by necessity: no Windows equivalent of a 0o500 directory, so
+// the refusal has no way to happen there (ADR 0008).
 #[cfg(unix)]
 #[test]
 fn a_refused_temp_index_apply_aborts_before_any_commit_exists() {

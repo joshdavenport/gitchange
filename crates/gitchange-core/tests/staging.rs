@@ -5,8 +5,12 @@
 
 mod support;
 
-use gitchange_core::{Advisory, Error, FileStage, HunkStage, Repo};
+use gitchange_core::{Advisory, FileStage, HunkStage, Repo};
 use support::RepoFixture;
+
+// Gated with its only user below, so Windows builds this file clean.
+#[cfg(unix)]
+use gitchange_core::Error;
 
 /// Twenty numbered lines, with `edits` as (1-based line, replacement).
 fn numbered(edits: &[(usize, &str)]) -> String {
@@ -600,6 +604,8 @@ fn space_on_a_stale_binary_restages_the_worktree_blob() {
 /// What it does secure is the reporting path the trigger has to travel:
 /// were the mapping broken, a real refusal would arrive as an opaque
 /// `Backend` and the condition #55 waits on could never be observed.
+// Unix-only by necessity: no Windows equivalent of a 0o500 directory, so
+// the refusal has no way to happen there (ADR 0008).
 #[cfg(unix)]
 #[test]
 fn a_refused_apply_reports_apply_failed_and_stages_nothing() {

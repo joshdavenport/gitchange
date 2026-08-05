@@ -161,7 +161,16 @@ delivery is not.
   decades-stable interface. Runners' preinstalled git suffices; a minimum
   git version is documented, not matrixed.
 - **Hooks are per-test fixtures, not CI setup** — `with_hook()` writes
-  them; git-for-Windows runs hook scripts via its bundled sh.
+  them; git-for-Windows runs hook scripts via its bundled sh, so the hook
+  tests are ungated and cover all three platforms. A `#!/bin/sh` hook
+  spawns, sees the temp index through `GIT_INDEX_FILE`, and its stderr
+  reaches `HookRejected` (issue #63).
+- **Two test families are unix-only by necessity**, which qualifies the OS
+  matrix above. Neither has a Windows meaning to test: `core.fileMode` is
+  off there, so the corpus's mode-change cases would assert nothing; and a
+  directory mode of `0o500` has no equivalent, so `unwritable_odb` cannot
+  deny the write its tests turn on. They are the whole of what the matrix
+  does not reach.
 
 ## Scope
 
