@@ -8,6 +8,10 @@ publish = false
 
 [dependencies]
 gitchange-core = { workspace = true }
+# For `HOST_ISOLATION_KNOBS` only — the sandbox builder pins the same git
+# config as the test fixture and must not drift from it. Both crates are
+# `publish = false`, so this edge stays out of the production graph.
+gitchange-test-support = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }

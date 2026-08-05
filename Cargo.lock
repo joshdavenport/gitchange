@@ -1368,6 +1368,7 @@ dependencies = [
  "anyhow",
  "clap",
  "gitchange-core",
+ "gitchange-test-support",
  "libc",
  "serde",
  "serde_json",

@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
 use gitchange_core::{Hunk, Repo, Snapshot};
+use gitchange_test_support::HOST_ISOLATION_KNOBS;
 
 use super::git;
 
@@ -23,7 +24,10 @@ pub struct Sandbox {
 impl Sandbox {
     /// Init a repo at `root` with a pinned initial branch and local
     /// config, so no part of the developer's global git config reaches
-    /// what gets eyeballed.
+    /// what gets eyeballed. Only the knobs in
+    /// [`HOST_ISOLATION_KNOBS`] are pinned: a sandbox repo is otherwise
+    /// meant to behave like the user's own, config and all, which is why
+    /// the fixture's env-based cut-out is not mirrored here.
     pub fn init(root: &Path) -> Result<Self> {
         fs::create_dir_all(root).with_context(|| format!("create {}", root.display()))?;
         let sandbox = Self {
@@ -31,18 +35,17 @@ impl Sandbox {
             commits: 0,
         };
         sandbox.git(&["init", "--quiet", "--initial-branch=main"])?;
-        // Same knobs as `RepoFixture` (gitchange-test-support),
-        // which pins them for the same reason and explains each. Add a
-        // knob here and add it there too: a knob pinned on only one side
-        // leaves the other silently inheriting the host. The identities
-        // differ on purpose — a stray sandbox commit is recognisable.
+        // The identity differs from `RepoFixture`'s on purpose — a stray
+        // sandbox commit is recognisable as one.
         for (key, value) in [
             ("user.name", "gitchange-sandbox"),
             ("user.email", "sandbox@gitchange.invalid"),
-            ("commit.gpgsign", "false"),
-            ("core.hooksPath", ".git/hooks"),
-            ("core.autocrlf", "false"),
         ] {
+            sandbox.git(&["config", key, value])?;
+        }
+        // The isolation knobs come from the one list both repo builders
+        // read, so neither can end up pinning a knob the other doesn't.
+        for (key, value) in HOST_ISOLATION_KNOBS {
             sandbox.git(&["config", key, value])?;
         }
         Ok(sandbox)

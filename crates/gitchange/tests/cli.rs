@@ -13,10 +13,23 @@ fn gitchange(dir: &Path, args: &[&str]) -> Output {
         .expect("run gitchange")
 }
 
+/// Real git in the fixture repo, with the host's global and system config
+/// cut out (a nonexistent path reads as empty config) — the same cut
+/// `RepoFixture::git_output` makes, and for the same reason: a developer
+/// with a global `commit.gpgsign` or `core.hooksPath` would otherwise see
+/// the fixture's own commit below fail on their machine and never in CI.
+///
+/// The cut-out is used instead of pinning individual knobs because it is
+/// strictly stronger, and because it needs nothing from
+/// `gitchange-test-support` — these fixtures stay on the git CLI so git2
+/// is no direct dependency of this crate (ADR 0006).
 fn git(dir: &Path, args: &[&str]) -> String {
+    let absent = dir.join(".git/absent-config");
     let output = Command::new("git")
         .current_dir(dir)
         .args(args)
+        .env("GIT_CONFIG_GLOBAL", &absent)
+        .env("GIT_CONFIG_SYSTEM", &absent)
         .output()
         .expect("run git");
     assert!(
@@ -31,7 +44,10 @@ fn git(dir: &Path, args: &[&str]) -> String {
 /// file, worktree clean — the stem both fixtures below grow from.
 fn committed_repo() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
-    git(dir.path(), &["init", "-q"]);
+    // Pin the initial branch for the same reason the other two builders
+    // do: plain `init` takes it from `init.defaultBranch`, which the
+    // cut-out above now removes rather than inherits.
+    git(dir.path(), &["init", "-q", "--initial-branch=main"]);
     git(dir.path(), &["config", "user.name", "gitchange-tests"]);
     git(
         dir.path(),

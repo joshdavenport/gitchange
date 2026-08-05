@@ -29,6 +29,28 @@ pub struct RepoFixture {
 /// [`RepoFixture::commit_adding_raw_path`].
 pub const NON_UTF8_PATH: &[u8] = b"bad-\xff-path.txt";
 
+/// Git config knobs that keep the host's global config out of a built
+/// repo. [`RepoFixture::new`] pins them through libgit2; xtask's
+/// `Sandbox::init` pins them by shelling out to `git config`. One list,
+/// two mechanisms — a knob added here reaches both, which is why this is
+/// a const and not a pair of lists with a comment between them.
+///
+/// - `core.autocrlf` pins the libgit2 default explicitly: a runner's
+///   global `autocrlf=true` (git-for-Windows) would normalize the
+///   corpus's byte-exact CRLF assertions away on checkin.
+/// - `commit.gpgsign` and `core.hooksPath` guard the commit shell-out
+///   (ADR 0004), which inherits real git config — a developer's global
+///   signing key or hooks directory would otherwise reach the commit
+///   under test.
+///
+/// The committing identity is deliberately absent: each builder sets its
+/// own, so a stray sandbox commit is recognisable as one.
+pub const HOST_ISOLATION_KNOBS: &[(&str, &str)] = &[
+    ("commit.gpgsign", "false"),
+    ("core.hooksPath", ".git/hooks"),
+    ("core.autocrlf", "false"),
+];
+
 /// Holds the object store unwritable; restores the original mode on
 /// drop. See [`RepoFixture::unwritable_odb`].
 #[cfg(unix)]
@@ -45,16 +67,13 @@ impl Drop for UnwritableOdb {
 }
 
 impl RepoFixture {
-    /// Init a fresh repo in a temp dir with a committing identity set.
+    /// Init a fresh repo in a temp dir with a committing identity set and
+    /// [`HOST_ISOLATION_KNOBS`] pinned.
     ///
-    /// The pinned knobs below are the same set xtask's `Sandbox::init`
-    /// pins (crates/xtask/src/sandbox/builder.rs) — both exist so the
-    /// host's global config can't reach the repo. Add a knob here and add
-    /// it there too; a knob pinned on only one side leaves the other
-    /// silently inheriting the host. The two builders are otherwise
-    /// deliberately separate: this one builds through libgit2 in-process
-    /// and panics, the sandbox shells out throughout (mirroring ADR 0004)
-    /// and returns `anyhow` errors.
+    /// xtask's `Sandbox::init` pins that same list from that same const.
+    /// The two builders are otherwise deliberately separate: this one
+    /// builds through libgit2 in-process and panics, the sandbox shells
+    /// out throughout (mirroring ADR 0004) and returns `anyhow` errors.
     ///
     /// The exception is `git_output` below, which shells out for the
     /// in-progress operation states libgit2 can't produce and cuts the
@@ -80,14 +99,9 @@ impl RepoFixture {
             config
                 .set_str("user.email", "tests@gitchange.invalid")
                 .unwrap();
-            // Pin the libgit2 default explicitly: a runner's global
-            // `autocrlf=true` (git-for-Windows) would normalize the
-            // corpus's byte-exact CRLF assertions away on checkin.
-            config.set_bool("core.autocrlf", false).unwrap();
-            // The commit shell-out (ADR 0004) inherits real git config:
-            // pin the knobs a developer's global config could leak in.
-            config.set_bool("commit.gpgsign", false).unwrap();
-            config.set_str("core.hooksPath", ".git/hooks").unwrap();
+            for (key, value) in HOST_ISOLATION_KNOBS {
+                config.set_str(key, value).unwrap();
+            }
         }
         Self { dir, repo }
     }
