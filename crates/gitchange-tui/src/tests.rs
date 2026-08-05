@@ -359,7 +359,6 @@ fn a_confirmed_commit_echoes_the_command_and_the_new_commit_then_closes_the_flow
 /// (ADR 0007). A hook rejection means `git commit` executed and refused,
 /// so the echo is pushed — and the modal carries the hook's own stderr
 /// verbatim, with the dialog restored exactly as it was confirmed.
-#[cfg(unix)]
 #[test]
 fn a_hook_rejection_echoes_the_command_and_carries_stderr_verbatim() {
     let (fixture, repo) = repo_with_commit();
