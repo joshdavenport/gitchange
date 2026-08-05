@@ -9,8 +9,8 @@ use std::io::{BufWriter, Write as _};
 use std::path::Path;
 use std::time::Instant;
 
-use anyhow::{Context, Result, bail, ensure};
-use gitchange_core::Snapshot;
+use anyhow::{Context, Result, anyhow, bail, ensure};
+use gitchange_core::{Repo, Snapshot};
 use serde::{Deserialize, Serialize};
 
 use super::memory;
@@ -414,7 +414,9 @@ fn generate_binaries(sandbox: &mut Sandbox, root: &Path, spec: &CaseSpec) -> Res
 /// introspection via generic JSON — a benchmark of the wrong shape must
 /// fail loudly, not report plausible numbers.
 fn record_counts(root: &Path) -> Result<(usize, usize)> {
-    let path = root.join(".git/gitchange/state.json");
+    let path = Repo::discover(root)
+        .map_err(|err| anyhow!("open repo via core: {err}"))?
+        .state_file_path();
     if !path.exists() {
         return Ok((0, 0));
     }

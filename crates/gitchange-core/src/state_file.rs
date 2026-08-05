@@ -15,7 +15,7 @@ use crate::state::{SCHEMA_VERSION, State};
 /// old stem.
 macro_rules! state_file_names {
     ($stem:literal) => {
-        const STATE_FILE: &str = $stem;
+        pub(crate) const STATE_FILE: &str = $stem;
         const LOCK_FILE: &str = concat!($stem, ".lock");
         const TMP_FILE: &str = concat!($stem, ".tmp");
     };

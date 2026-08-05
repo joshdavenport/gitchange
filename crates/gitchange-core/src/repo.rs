@@ -56,6 +56,18 @@ impl Repo {
         self.backend.state_dir()
     }
 
+    /// Absolute path to this worktree's state file.
+    ///
+    /// Public for tooling that inspects a repo's gitchange state from
+    /// outside the app — xtask's sandbox fingerprints, the benchmark
+    /// harness's shape verification — so it reads the path from the one
+    /// place that defines it. Spelling `.git/gitchange/state.json` by
+    /// hand is also wrong for a linked worktree, where the private git
+    /// dir is `.git/worktrees/<id>/` (ADR 0002).
+    pub fn state_file_path(&self) -> std::path::PathBuf {
+        self.state_dir().join(state_file::STATE_FILE)
+    }
+
     /// The worktree root; `None` for a bare repo. The Engine's watch
     /// root, and the frontends' panel furniture (the Status panel's repo
     /// name, the CLI's headers) without a git edge outside core

@@ -6,7 +6,8 @@ use std::fs;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
+use gitchange_core::Repo;
 use serde::{Deserialize, Serialize};
 
 use super::git;
@@ -58,7 +59,13 @@ pub fn capture(repo_dir: &Path, scenario: &str) -> Result<Fingerprint> {
         git::run(repo_dir, &["ls-files", "--unmerged"])?,
     ]
     .join("\0");
-    let state_path = repo_dir.join(".git/gitchange/state.json");
+    // Ask core where the state file is. A hand-spelled path that misses
+    // reads as `absent` below, which is indistinguishable from a scenario
+    // that legitimately has no state — so `status` would call the
+    // gitchange-state layer pristine forever.
+    let state_path = Repo::discover(repo_dir)
+        .map_err(|err| anyhow!("open repo via core: {err}"))?
+        .state_file_path();
     let state_digest = match fs::read(&state_path) {
         Ok(bytes) => fnv1a64(&bytes),
         Err(_) => "absent".to_string(),
