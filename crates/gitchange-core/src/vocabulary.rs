@@ -1,11 +1,41 @@
-//! Shared presentation vocabulary that isn't attached to a domain type
+//! Shared presentation vocabulary that isn't attached to one domain type
 //! (ADR 0006: one phrasing, sunk into core, so the TUI and CLI can't
-//! drift). Enum-attached vocabulary — `HunkStage::glyph`,
-//! `FileStage::glyph`, `ChangeKind::sigil`, `GitOperation::label`,
-//! `GroupKind::label` — stays with its enum; this module holds the
-//! free-standing tokens and phrasing helpers that have no enum to live
-//! on, including `UNASSIGNED`/`ALL` below, which several enums' arms
-//! (and `state`'s non-enum `RESERVED_NAMES`) all point back to.
+//! drift). Enum-attached vocabulary — `ChangeKind::sigil`,
+//! `GitOperation::label`, `GroupKind::label` — stays with its enum. This
+//! module holds the tokens and phrasing helpers that no single enum owns,
+//! of two kinds: those with no enum to live on, and those *more than one*
+//! enum's arms point back to. `UNASSIGNED`/`ALL` are the latter (with
+//! `state`'s non-enum `RESERVED_NAMES`), and so is the staging set below,
+//! which `HunkStage::glyph` and `FileStage::glyph` both project onto.
+//!
+//! ## The staging set
+//!
+//! Four tokens mark how much of a change is staged: `○ ● ◐ ◑`. They name
+//! a staged-ness, not a level — `●` means the same thing on a hunk row
+//! and a file row, which is why one set serves both and why the TUI can
+//! theme `staged` once (ADR 0003: per-file markers *stay* `●◐○`).
+//!
+//! The level decides only which tokens are reachable. `PARTIALLY_STAGED`
+//! needs parts, so it is per-file; `STAGED_STALE` is a property of one
+//! hunk's index copy, so it is per-hunk and rolls up into
+//! `PARTIALLY_STAGED` on the file. Neither enum can spell a token itself,
+//! so a per-hunk `●` and a per-file `●` cannot drift apart.
+
+/// Staging set: nothing staged. Reachable at both levels.
+pub const UNSTAGED: char = '○';
+
+/// Staging set: fully staged. Reachable at both levels.
+pub const STAGED: char = '●';
+
+/// Staging set: some of a file's hunks staged — per-file only, since a
+/// hunk is atomic. Staged-stale hunks count toward it (ADR 0003).
+/// Unreachable for a binary file, whose one whole-file hunk leaves it
+/// all-or-nothing (ADR 0009).
+pub const PARTIALLY_STAGED: char = '◐';
+
+/// Staging set: staged, then the index and worktree diverged — per-hunk
+/// only. Derives by OID compare on a whole-file hunk (ADR 0009).
+pub const STAGED_STALE: char = '◑';
 
 /// The from→to / repo→branch separator shared by advisories, log echoes and
 /// the Status line.

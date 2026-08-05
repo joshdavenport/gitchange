@@ -28,6 +28,16 @@ dependency graph, not by convention.
 - **`gitchange-tui` as a separate lib** walls TUI internals off from CLI
   handlers in both directions and keeps incremental compiles local.
   Prior art: gitui's asyncgit/gitui split, with a dispatch bin on top.
+- **Shared presentation vocabulary sinks into core as well** — the
+  boundary above applied to what frontends *say*. Where the TUI and CLI
+  would each spell the same user-visible token or phrase, the one spelling
+  lives in core: `Advisory::message`, the staging set, `ChangeKind::sigil`,
+  the reserved names. It rides on a domain type where exactly one owns it,
+  and in core's `vocabulary` module where none does — or where two types
+  share it, as `HunkStage` and `FileStage` share `○` and `●`. Frontends
+  own the dressing (colour, channel, severity, theme overrides), never the
+  wording. Leaving two types to spell a shared token each produces drift
+  no test catches, because both spellings compile.
 
 ### The git2 wall is a production-graph fact (issue #59)
 

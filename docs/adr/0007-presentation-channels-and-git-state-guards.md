@@ -15,7 +15,7 @@ and buys history for free.
   (the lazygit-style transparency echo — gitchange's index surgery earns
   trust by showing its work) and event notices.
 - **Three severities**, each with its own tokenised glyph, distinct from
-  the staging set (`○●◑` mean staging states and nothing else):
+  the staging set (`○●◐◑` mean staging states and nothing else):
   `·` **info** (dim — command echo, routine events), `!` **notice**
   (warning tint — automatic membership decisions the user should be able
   to spot-check), `✗` **error** (also modalled; logged for the record).

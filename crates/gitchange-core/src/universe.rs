@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 
 use crate::diff::{BinarySides, ChangeKind, DiffHunk, FileDiff, HunkLine, RepoDiffs};
 use crate::state::OidAnchor;
+use crate::vocabulary;
 
 /// One file in the hunk universe, staging derived.
 #[derive(Debug, Clone)]
@@ -175,14 +176,15 @@ pub enum HunkStage {
 }
 
 impl HunkStage {
-    /// The canonical staging glyph (ADR 0006: shared presentation
-    /// vocabulary lives in core). The TUI theme's defaults; frontends
-    /// without theming use it directly.
+    /// This state's token from the staging set (ADR 0006: one spelling,
+    /// sunk into core). The TUI renders hunks through replaceable theme
+    /// fields seeded from the same set, so the two levels cannot
+    /// disagree about `○` and `●`.
     pub fn glyph(&self) -> char {
         match self {
-            HunkStage::Unstaged => '○',
-            HunkStage::Staged => '●',
-            HunkStage::StagedStale => '◑',
+            HunkStage::Unstaged => vocabulary::UNSTAGED,
+            HunkStage::Staged => vocabulary::STAGED,
+            HunkStage::StagedStale => vocabulary::STAGED_STALE,
         }
     }
 }
@@ -199,12 +201,13 @@ pub enum FileStage {
 }
 
 impl FileStage {
-    /// The canonical staging glyph (ADR 0006), as [`HunkStage::glyph`].
+    /// This state's token from the staging set, as [`HunkStage::glyph`].
+    /// The CLI's file list prints it directly.
     pub fn glyph(&self) -> char {
         match self {
-            FileStage::Unstaged => '○',
-            FileStage::PartiallyStaged => '◐',
-            FileStage::Staged => '●',
+            FileStage::Unstaged => vocabulary::UNSTAGED,
+            FileStage::PartiallyStaged => vocabulary::PARTIALLY_STAGED,
+            FileStage::Staged => vocabulary::STAGED,
         }
     }
 }

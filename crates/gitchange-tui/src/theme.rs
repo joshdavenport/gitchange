@@ -2,7 +2,9 @@
 //! theme). Defaults stick to the terminal's own ANSI palette; swapping a
 //! theme means swapping this struct, never touching the renderer.
 
-use gitchange_core::{ACTIVE_MARKER, ARROW, FileStage, HunkStage, SEPARATOR};
+use gitchange_core::{
+    ACTIVE_MARKER, ARROW, PARTIALLY_STAGED, SEPARATOR, STAGED, STAGED_STALE, UNSTAGED,
+};
 use ratatui::style::Color;
 
 pub struct Theme {
@@ -105,13 +107,16 @@ impl Default for Theme {
                 cursor: Color::Cyan,
             },
             glyphs: Glyphs {
-                // Staging defaults, the active marker, the arrow and the
+                // The staging set, the active marker, the arrow and the
                 // inline separator come from core (ADR 0006) so the CLI
-                // and TUI can't drift; a theme may still override.
-                staged: FileStage::Staged.glyph(),
-                partially_staged: FileStage::PartiallyStaged.glyph(),
-                unstaged: FileStage::Unstaged.glyph(),
-                staged_stale: HunkStage::StagedStale.glyph(),
+                // and TUI can't drift; a theme may still override. One
+                // field per token, not per level: `staged` dresses both a
+                // staged hunk and a fully staged file, which is why core
+                // holds the set rather than each stage enum.
+                staged: STAGED,
+                partially_staged: PARTIALLY_STAGED,
+                unstaged: UNSTAGED,
+                staged_stale: STAGED_STALE,
                 active: ACTIVE_MARKER,
                 all: '≡',
                 unassigned: '!',

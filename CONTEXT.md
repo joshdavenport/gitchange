@@ -94,10 +94,21 @@ holding changelists, the active marker, and membership records. Plain text,
 atomic rename, lockfile-guarded, schema-versioned. Strictly local.
 _Avoid_: database, metadata store
 
+**Staging set**:
+The four tokens marking how much of a change is staged: `●` fully staged,
+`◐` partially staged, `○` unstaged, `◑` staged-stale. Each names a
+staged-ness, not a level — `●` means the same thing on a hunk row and on a
+file row. The level decides only which are reachable: `◐` is per-file
+alone (a hunk is atomic), `◑` per-hunk alone (it rolls up into `◐`). One
+replaceable set, shared by both levels so they cannot spell a shared token
+two ways. Severity glyphs are never part of it.
+_Avoid_: staging glyphs (as a per-level set), staged icons
+
 **Staged / partially staged / unstaged**:
-Per-file staging states, marked `●` (fully staged), `◐` (partially staged),
-`○` (unstaged), with `stagedHunks/totalHunks` counts per file. Staged-stale
-hunks count toward `◐`.
+A file's staged-ness: `●` all its hunks staged, `◐` some of them, `○` none,
+with `stagedHunks/totalHunks` counts alongside. Staged-stale hunks count
+toward `◐`. Derived from the file's hunks, never stored. `●` and `○` are
+the same tokens a hunk carries; only `◐` is exclusively per-file.
 _Avoid_: added, indexed
 
 **Derived staged state**:
