@@ -3,6 +3,7 @@
 //! say *what* changed — that's what nuke-and-rebuild is for.
 
 use std::fs;
+use std::io::ErrorKind;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -68,7 +69,13 @@ pub fn capture(repo_dir: &Path, scenario: &str) -> Result<Fingerprint> {
         .state_file_path();
     let state_digest = match fs::read(&state_path) {
         Ok(bytes) => fnv1a64(&bytes),
-        Err(_) => "absent".to_string(),
+        // Only a missing file means "this scenario has no gitchange
+        // state". Any other read failure digested as `absent` would
+        // report the layer pristine because we couldn't read it.
+        Err(err) if err.kind() == ErrorKind::NotFound => "absent".to_string(),
+        Err(err) => {
+            return Err(err).with_context(|| format!("read {}", state_path.display()));
+        }
     };
     Ok(Fingerprint {
         schema: 1,
