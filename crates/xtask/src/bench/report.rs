@@ -351,8 +351,8 @@ pub fn render_markdown(results: &[CaseResult], meta: &Meta) -> String {
         out,
         "\n## Caveats\n\n\
          - Synthetic repos carry a single baseline commit, so the constant\n\
-         \x20 recent-commits window (300) is under-represented; it doesn't\n\
-         \x20 affect per-dimension shape.\n\
+         \x20 recent-commits window is under-represented; it doesn't affect\n\
+         \x20 per-dimension shape.\n\
          - Dormant records accrue on vanished paths (the stash/revert\n\
          \x20 reality); live-path tier-1 scan cost is exercised by the hunks\n\
          \x20 dimension instead.\n\
@@ -410,7 +410,69 @@ pub fn render_csv(results: &[CaseResult]) -> String {
 #[cfg(test)]
 mod tests {
     use super::super::case::CaseSpec;
+    use super::super::{Args, DIMENSIONS, matrix};
     use super::*;
+
+    fn full_args() -> Args {
+        Args {
+            quick: false,
+            iterations: None,
+            warmup: 2,
+            dimension: None,
+            out: None,
+            allow_debug: true,
+        }
+    }
+
+    /// `blurb` restates in prose what the matrix holds fixed, and that
+    /// prose goes verbatim into every report `--out` writes — the
+    /// committed artifacts an ADR 0005 un-gating decision is supposed to
+    /// cite. Changing a spec without the blurb would leave a run
+    /// misdescribing the configuration its exponents were measured under,
+    /// and nothing else would notice: the numbers appear in the report and
+    /// nowhere in the code that produced it.
+    ///
+    /// Each fragment is composed from the spec the matrix actually
+    /// generates, so the assertion fails whichever side moves. Only
+    /// held-fixed values are checked — the value a dimension varies is in
+    /// its table, not its blurb.
+    #[test]
+    fn blurbs_state_the_values_the_matrix_holds_fixed() {
+        let specs = matrix(&full_args());
+        for dimension in DIMENSIONS {
+            let spec = specs
+                .iter()
+                .find(|spec| spec.dimension == dimension && spec.contrast_of.is_none())
+                .unwrap_or_else(|| panic!("the matrix generates no graduated `{dimension}` case"));
+            let required: Vec<String> = match dimension {
+                "files" => vec![
+                    format!("{} hunks each", spec.hunks_per_file),
+                    format!("across {} changelists", spec.changelists),
+                ],
+                "hunks" => vec![
+                    format!("across {} changed files", spec.files),
+                    format!("across {} changelists", spec.changelists),
+                ],
+                "records" => vec![
+                    format!("{}-file × {}-hunk diff", spec.files, spec.hunks_per_file),
+                    format!("({} live records)", spec.files * spec.hunks_per_file),
+                ],
+                "binaries" => vec![format!("{} MiB binary files", spec.binary_kib / 1024)],
+                // Holds nothing fixed worth a number: the blurb names the
+                // rewrite and the probe, and the scale is the table's.
+                "huge-file" => Vec::new(),
+                other => panic!("dimension `{other}` has no blurb expectations here"),
+            };
+            let text = blurb(dimension);
+            for fragment in &required {
+                assert!(
+                    text.contains(fragment.as_str()),
+                    "the `{dimension}` blurb doesn't state `{fragment}`, which the \
+                     matrix holds fixed:\n  {text}"
+                );
+            }
+        }
+    }
 
     /// The spec fields are scenery here — these tests exercise the fit
     /// and formatting maths over `times_ms`.
