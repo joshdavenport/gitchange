@@ -32,6 +32,32 @@ the active changelist or stays where it was sorted, never vanishing, and
 the matcher (ticket 25) and whole-file hunks (ticket 35) inherit this as a
 stated baseline they may later improve on.
 
+## Accepted test deviation: log-side detection is not asserted
+
+No test stages and commits both halves of a rename and asserts that git
+reports one (issue #75). What such a test would pin is git's own
+`--find-renames` similarity scoring: gitchange enables no detection, sets
+no threshold, and passes no `-M`. That is ADR 0008's method holding — the
+suite covers gitchange's behaviour through real repos, not third-party
+behaviour gitchange never invokes.
+
+The gitchange-owned half of the opening claim — the commit tree really
+carries the removal at the old path and byte-identical content at the new
+one — is pinned by the apply corpus (`commit_a_staged_new_file`,
+`commit_a_staged_deletion_removes_the_path`). Committing both in one
+changelist composes two covered halves and asserts nothing new about
+gitchange. It would also fail ambiguously: git changing its heuristic and
+gitchange mangling the new path's bytes are indistinguishable at the
+assertion, and the byte-fidelity reading is pinned unambiguously by the
+corpus.
+
+Log-side detection is a property of whole halves committed together, not
+of every rename gitchange presents. Hunk-level staging can commit part of
+the new file, whose similarity to the deleted original legitimately falls
+short of git's threshold — no rename in the log, and correctly so. The
+opening claim is a floor on what remains recoverable when the user
+commits the rename entire, not a guarantee attached to the presentation.
+
 ## Considered options
 
 - **Enable `find_similar` on both diffs** — deferred, not rejected:
