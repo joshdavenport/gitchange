@@ -488,6 +488,35 @@ fn with_no_changelists_hunks_are_unassigned_and_no_state_file_is_written() {
 }
 
 #[test]
+fn with_no_changelists_a_binary_hunk_is_unassigned_too() {
+    // ADR 0009: the unassigned-with-no-changelists rule holds for
+    // whole-file (binary) hunks. The rule is uniform in code — the
+    // matcher iterates hunks of either flavour — so this test is a
+    // regression pin against a later binary-specific early return.
+    let fixture = RepoFixture::new();
+    fixture
+        .write_bytes("logo.png", &[0u8, 1, 2, 3])
+        .commit_all("init")
+        .write_bytes("logo.png", &[0u8, 9, 9]);
+
+    let repo = repo(&fixture);
+    let snapshot = repo.refresh().unwrap();
+
+    let file = snapshot
+        .files
+        .iter()
+        .find(|file| file.path == "logo.png")
+        .expect("logo.png in snapshot");
+    assert!(file.binary, "fixture must produce a binary diff");
+    assert_eq!(owners(&snapshot, "logo.png"), vec![None]);
+    assert!(snapshot.advisories.is_empty());
+    assert!(
+        !fixture.path().join(".git/gitchange").exists(),
+        "a changelist-less refresh must not grow a state file"
+    );
+}
+
+#[test]
 fn refresh_does_not_rewrite_the_state_file_when_records_are_unchanged() {
     let fixture = RepoFixture::new();
     fixture
