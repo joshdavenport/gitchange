@@ -40,8 +40,12 @@ and buys history for free.
   decisions. Hunks that return *changed* don't revive (exact-match only)
   and auto-capture instead, which emits its own notice — the failure mode
   needs no extra machinery.
-- **info**: going-dormant, 14-day prune, soft no-ops (`c` on the all
-  view, `space` on a conflicted file), watcher recovery.
+- **info**: soft no-ops (`c` on the all view, `space` on a conflicted
+  file), watcher recovery. *Amended (issue #34):* a record going
+  dormant and the 14-day prune emit nothing — going dormant is routine
+  bookkeeping, and the prune fires 14 days after the content vanished.
+  Only dormancy that loses membership earns a line, which the HEAD-move
+  dormancy advisory (ADR 0012) already covers at notice.
 - **error**: anything that produced an error modal.
 
 ## The error-modal contract
@@ -52,8 +56,12 @@ failed"), body is the **detail verbatim and scrollable** — hook stderr is
 the user's own tooling talking to them; truncating it would be hostile.
 Internal errors show our message, never a `git2` debug string (ADR 0006).
 Dismiss with `esc`/`enter`; no inline actions in v0.1 — resolution
-happens in the world, not the dialog. Every modal is also logged at `✗`
-so the record survives dismissal.
+happens in the world, not the dialog. Every modal is also logged at
+`✗`. *Amended (issue #34):* the `✗` line carries the title and the
+first non-empty line of detail; the full detail lives in the modal only
+and does not survive dismissal. The Log panel is one line per event and
+shares its stream with the command echo — a multi-line dump would swamp
+the history the panel exists to keep.
 
 **One exception: hook rejection returns to the commit dialog with the
 message intact.** Losing a composed message to a linter complaint is
