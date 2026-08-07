@@ -68,18 +68,28 @@ and Windows.
 Fixed now so the mitigation is one document away rather than one
 archaeology session away:
 
-- **The trigger exists**: `Error::ApplyFailed { path, detail }`, mapped
-  from the libgit2 `apply` call alone — not from the diff computation
-  around it, and not conflated with a locked index or a broken odb. It
-  is a **hard** error carrying libgit2's message verbatim into the
-  ADR 0007 modal, not a soft advisory: an unapplyable hunk is an
-  unexpected limitation whose full text *is* the evidence this
-  mitigation waits on, whereas advisories cover expected races (a hunk
-  that moved under the user). The message names `git add -p` as the
-  workaround, which gitchange then absorbs like any external staging.
+- **The trigger exists**: `Error::ApplyFailed { path, detail, site }` —
+  the apply tripwire — mapped from the two libgit2 apply calls alone:
+  staging's apply-to-index, and commit's payload apply against HEAD's
+  tree while the temp index is assembled (ADR 0004). Never mapped from
+  the diff computation or index plumbing around them; an environmental
+  failure striking inside an apply call (a broken odb) still maps, and
+  the trigger condition below is the filter. It is a **hard** error
+  carrying libgit2's message verbatim into the ADR 0007 modal, not a
+  soft advisory: an unapplyable hunk is an unexpected limitation whose
+  full text *is* the evidence this mitigation waits on, whereas
+  advisories cover expected races (a hunk that moved under the user).
+  The staging site's message names `git add -p` as the workaround — a
+  direct route to the same end state, which gitchange then absorbs like
+  any external staging. The commit site's message offers no workaround
+  and states ADR 0004's abort guarantee (nothing was committed)
+  instead: no direct route to a partial commit exists, and `git commit`
+  would commit every changelist's staged hunks at once.
 - **Its shape, if triggered**: a fallback *inside* an adapter's apply
-  methods — build the patch text for the selected hunks, pipe it to
-  `git apply --cached`. **Not a second `GitBackend` implementor.** Only
+  methods — build the patch text for the selected hunks and pipe it to
+  git's own apply: `git apply --cached` at the staging site, the same
+  with `GIT_INDEX_FILE` pointed at the temp index at the commit site.
+  **Not a second `GitBackend` implementor.** Only
   2 of the seam's methods apply anything; a second full adapter would
   re-implement diffs, HEAD, log and operation state in shell-out for no
   reason. This corrects ADR 0006 and ADR 0008, which both read the
@@ -87,8 +97,10 @@ archaeology session away:
   "parameterize the whole suite across both adapters" clause does not
   fire**; only the apply corpus would parameterize.
 - **The trigger condition, precisely**: an `ApplyFailed` reproducible in
-  a real repository where `git apply --cached` succeeds on the same hunk
-  selection. Absent that, building the fallback is net negative — it
+  a real repository where git's own apply succeeds on the same hunk
+  selection against the same base (`git apply --cached`; at the commit
+  site with `GIT_INDEX_FILE` pointed at the temp index). Absent that,
+  building the fallback is net negative — it
   replaces libgit2's postimage computation with hand-written unified
   diff text (headers, post-filter line counts, `\ No newline at end of
   file`), a *new* failure surface with an unknown error rate, in front

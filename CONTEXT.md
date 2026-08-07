@@ -250,6 +250,15 @@ criterion; also the certification suite any future `GitBackend` adapter
 must pass.
 _Avoid_: edge-case tests, apply tests (alone)
 
+**Tripwire**:
+An error mapping whose firing is the evidence a held decision waits on —
+the report, not the recovery, is the variant's point. Sole instance
+today: the *apply tripwire*, `ApplyFailed` mapped from both libgit2
+apply calls (staging's write-through to the index, commit's payload
+apply while the temp index is assembled), whose verbatim detail is the
+trigger for ADR 0003's held shell-out fallback.
+_Avoid_: sensor, canary
+
 **Operation guard**:
 Commit disabled while any git operation is in progress (merge, rebase,
 cherry-pick, revert, am) — the next commit would conclude that operation

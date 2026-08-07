@@ -97,7 +97,8 @@ to guard. Keybinding/UI is ticket 10's.
   (read-tree), apply the payload hunks `--cached` against it, run
   `git commit` (shell-out, `GIT_INDEX_FILE` env, message via `-F`,
   optional `--no-verify`/`--amend`), delete the temp file. Apply failures
-  abort cleanly before any commit exists.
+  map to `ApplyFailed` — the commit site of ADR 0003's apply tripwire —
+  and abort cleanly before any commit exists.
 - GPG signing, commit templates, and prepare-commit-msg/commit-msg hooks
   work for free via inherited git config.
 - Hooks that rewrite files (formatters) leave worktree edits that surface
