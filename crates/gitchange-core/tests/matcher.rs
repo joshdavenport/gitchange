@@ -661,6 +661,102 @@ fn dormant_revival_notices_with_a_per_changelist_count() {
 }
 
 #[test]
+fn a_changed_return_hunk_notices_its_auto_capture() {
+    // ADR 0007: a hunk returning *changed* at a dormant record's lines
+    // doesn't revive (exact-match only) — it auto-captures to active,
+    // and that capture emits its own notice.
+    let mut fixture = RepoFixture::new();
+    fixture
+        .write("a.txt", &numbered(20, &[]))
+        .commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("one").unwrap();
+
+    fixture.write("a.txt", &numbered(20, &[(10, "ten-stashed")]));
+    repo.refresh().unwrap();
+    fixture.stash();
+    repo.refresh().unwrap();
+    assert!(
+        record_at(&state_json(&fixture), "a.txt")["dormant_since"].is_u64(),
+        "precondition: the record is dormant"
+    );
+
+    // A different edit at the dormant record's lines, under a second
+    // active changelist.
+    repo.create_changelist("two").unwrap();
+    repo.switch("two").unwrap();
+    fixture.write("a.txt", &numbered(20, &[(10, "ten-different")]));
+
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(
+        owners(&snapshot, "a.txt"),
+        vec![Some("two".into())],
+        "changed-return captures to active, never to the dormant owner"
+    );
+    assert_eq!(
+        snapshot.advisories,
+        vec![Advisory::AutoCaptured {
+            path: "a.txt".into(),
+            new_start: 7,
+            changelist: "two".into(),
+        }],
+        "the changed-return capture is visible, never silent"
+    );
+
+    // The decision became a record: the next refresh is quiet.
+    let snapshot = repo.refresh().unwrap();
+    assert!(snapshot.advisories.is_empty());
+}
+
+#[test]
+fn a_changed_return_binary_notices_its_auto_capture() {
+    // The binary flavour of the same contract: different bytes at a
+    // path with a dormant whole-file record are a fresh capture (ADR
+    // 0009 revival needs the exact changed-side OID), with its notice.
+    let fixture = RepoFixture::new();
+    fixture
+        .write_bytes("logo.png", &[0u8, 1, 2, 3])
+        .commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("art").unwrap();
+    fixture.write_bytes("logo.png", &[0u8, 9, 9]);
+    repo.refresh().unwrap();
+
+    // Revert on disk: the diff vanishes, the record goes dormant.
+    fixture.write_bytes("logo.png", &[0u8, 1, 2, 3]);
+    repo.refresh().unwrap();
+    assert!(
+        record_at(&state_json(&fixture), "logo.png")["dormant_since"].is_u64(),
+        "precondition: the record is dormant"
+    );
+
+    // Different content at the path, under a second active changelist.
+    repo.create_changelist("other").unwrap();
+    repo.switch("other").unwrap();
+    fixture.write_bytes("logo.png", &[0u8, 5, 5, 5]);
+
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(
+        owners(&snapshot, "logo.png"),
+        vec![Some("other".into())],
+        "changed-return captures to active, never to the dormant owner"
+    );
+    assert_eq!(
+        snapshot.advisories,
+        vec![Advisory::AutoCaptured {
+            path: "logo.png".into(),
+            new_start: 0,
+            changelist: "other".into(),
+        }],
+        "the changed-return capture is visible, never silent"
+    );
+
+    // The decision became a record: the next refresh is quiet.
+    let snapshot = repo.refresh().unwrap();
+    assert!(snapshot.advisories.is_empty());
+}
+
+#[test]
 fn a_reexported_binary_keeps_its_changelist_via_path_continuity() {
     // ADR 0009 tier 2: same path, still binary-changed, different
     // content — membership holds and the anchor updates. The whole file
