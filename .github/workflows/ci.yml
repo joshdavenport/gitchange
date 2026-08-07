@@ -23,14 +23,31 @@ jobs:
       - run: cargo test --workspace --all-targets
       - run: cargo test --workspace --doc
 
-  lint:
-    name: fmt + clippy
+  # Formatting is platform-independent and compiles nothing, so this job
+  # restores no build cache: a restore would be pure latency (ADR 0008, CI).
+  rustfmt:
+    name: rustfmt (ubuntu-latest)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+          components: rustfmt
       - run: cargo fmt --all --check
+
+  # Clippy runs the full OS matrix because a warning reachable only under a
+  # platform gate is unreachable from a single runner (ADR 0008, CI).
+  clippy:
+    name: clippy (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets -- -D warnings
