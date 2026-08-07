@@ -162,8 +162,9 @@ impl App {
     }
 
     /// The error-modal contract (ADR 0007): title names the operation,
-    /// detail is verbatim and scrollable; every modal is also logged at
-    /// `✗` so the record survives dismissal.
+    /// detail is verbatim and scrollable; the `✗` log line carries the
+    /// title and the first non-empty line of detail — the full detail
+    /// lives in the modal only and does not survive dismissal.
     pub fn show_error(&mut self, title: impl Into<String>, detail: impl Into<String>) {
         let title = title.into();
         let detail = detail.into();
