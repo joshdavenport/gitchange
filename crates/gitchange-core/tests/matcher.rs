@@ -382,6 +382,44 @@ fn records_naming_an_unknown_changelist_get_delete_semantics() {
 }
 
 #[test]
+fn deleting_a_changelist_prunes_its_dormant_records() {
+    // The delete-time half of the ADR 0002 dormant prune. Without it,
+    // the record would survive the delete as an unassigned dormant
+    // ghost and later revive its hunk to unassigned instead of the
+    // active changelist capturing it.
+    let mut fixture = RepoFixture::new();
+    fixture
+        .write("a.txt", &numbered(20, &[]))
+        .commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("one").unwrap();
+
+    fixture.write("a.txt", &numbered(20, &[(10, "ten!")]));
+    repo.refresh().unwrap();
+
+    // Real dormancy: the assigned hunk vanishes from the diff.
+    fixture.stash();
+    repo.refresh().unwrap();
+    let json = state_json(&fixture);
+    assert_eq!(json["records"][0]["changelist"], "one");
+    assert!(json["records"][0]["dormant_since"].is_u64());
+
+    // A survivor is active when "one" dies, as in the orphan test: the
+    // prune must not depend on the delete promoting a new active.
+    repo.create_changelist("two").unwrap();
+    repo.switch("two").unwrap();
+    repo.delete_changelist("one").unwrap();
+
+    // Pruned outright — not orphaned to unassigned like a live record.
+    let json = state_json(&fixture);
+    assert_eq!(
+        json["records"].as_array().unwrap().len(),
+        0,
+        "the deleted changelist's dormant record is pruned"
+    );
+}
+
+#[test]
 fn deleting_a_changelist_orphans_its_hunks_to_unassigned() {
     let fixture = RepoFixture::new();
     fixture
