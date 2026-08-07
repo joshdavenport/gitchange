@@ -24,7 +24,7 @@ jobs:
       - run: cargo test --workspace --doc
 
   # Formatting is platform-independent and compiles nothing, so this job
-  # restores no build cache: a cache restore would be pure latency.
+  # restores no build cache: a restore would be pure latency (ADR 0008, CI).
   rustfmt:
     name: rustfmt (ubuntu-latest)
     runs-on: ubuntu-latest
