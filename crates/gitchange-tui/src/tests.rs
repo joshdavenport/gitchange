@@ -16,7 +16,7 @@
 //! surface the render tests already forced (ADR 0006).
 
 use std::cell::Cell;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gitchange_core::{CommitPayload, Snapshot};
 use gitchange_test_support::RepoFixture;
@@ -24,7 +24,7 @@ use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::*;
-use app::{LogEntry, Overlay};
+use app::{INDICATOR_DELAY, LogEntry, Overlay};
 
 /// Wide enough that no panel renders degenerate — the same shape the
 /// render tests draw at.
@@ -682,6 +682,56 @@ fn every_commit_step_requests_a_refresh() {
     assert!(matches!(app.overlay, Some(Overlay::Commit(_))));
 }
 
+/// ADR 0005's mid-refresh half: panels keep the last snapshot and the
+/// loop stays fully interactive while a refresh is in flight. The
+/// in-flight state is set directly rather than driven through the engine
+/// channel — `engine_events_reach_their_app_handlers` pins that the
+/// engine arm calls `on_refresh_started`, and the one-ready-arm rule
+/// bars a script with both channels live. `RefreshStarted` carries no snapshot, so with the
+/// engine silent the App's snapshot can only change if a key path
+/// mutates it.
+#[test]
+fn keys_still_act_while_a_refresh_is_in_flight() {
+    let (fixture, repo) = repo_with_commit();
+    fixture.write("a.txt", "line 1\nedited\nline 3\n");
+    let mut app = App::new("repo");
+    // The snapshot the panels hold before the keys: one changed file,
+    // no changelists. `apply_snapshot` clears the in-flight marker, so
+    // the refresh starts after it lands.
+    app.apply_snapshot(repo.refresh().unwrap());
+    let started = Instant::now();
+    app.on_refresh_started(started);
+
+    // Navigation, then a real mutation: `j` moves the changelist
+    // cursor, `n`+name+enter creates a changelist through core's sync
+    // ops.
+    let mut script = vec![char_key('j'), char_key('n')];
+    script.extend(typed("wip"));
+    script.push(code_key(KeyCode::Enter));
+    let (result, refreshes) = drive(&repo, &mut app, &script);
+
+    assert!(result.is_ok());
+    assert_eq!(app.changelist_row, 1, "navigation moved the selection");
+    assert!(
+        repo.refresh()
+            .unwrap()
+            .changelists
+            .iter()
+            .any(|changelist| changelist.name == "wip"),
+        "the mutation ran for real"
+    );
+    assert_eq!(refreshes, 1, "the mutation requested its refresh");
+    // The panels still hold the pre-key snapshot: the changelist the
+    // mutation created is in the repo (asserted above) but not here —
+    // only a refresh completing may swap it in.
+    let snapshot = app.snapshot.as_ref().expect("the snapshot survives");
+    assert!(snapshot.changelists.is_empty());
+    assert_eq!(snapshot.files.len(), 1);
+    // No key path clears the in-flight marker. Both instants are the
+    // test's own, so this is arithmetic, not timing.
+    assert!(app.indicator_visible(started + INDICATOR_DELAY));
+}
+
 /// The disconnect is reached the way production would reach it: a real
 /// `Engine` is spawned, its receiver cloned, and the `Engine` dropped.
 /// Its threads shut down and release the sender, so what the loop sees is
@@ -712,18 +762,25 @@ fn engine_events_reach_their_app_handlers() {
     let (_fixture, repo) = repo_with_commit();
     let mut app = App::new("repo");
 
+    // `RefreshStarted` last: `RefreshFailed` clears the in-flight
+    // marker, so the order is what lets one run assert all three.
     let (result, refreshes) = drive_engine(
         &repo,
         &mut app,
         vec![
             EngineEvent::ConditionStarted(Condition::WatcherDegraded),
             EngineEvent::RefreshFailed(gitchange_core::Error::NothingStaged),
+            EngineEvent::RefreshStarted,
         ],
     );
 
     assert!(matches!(result, Err(Error::EngineDied)));
     assert!(app.watcher_degraded, "the condition became a pin");
     assert!(app.error_modal.is_some(), "the failure modalled");
+    assert!(
+        app.indicator_deadline().is_some(),
+        "the refresh is in flight"
+    );
     assert_eq!(refreshes, 0, "engine events ask for nothing back");
 }
 

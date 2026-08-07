@@ -237,6 +237,12 @@ fn the_deferred_indicator_appears_past_the_threshold() {
     app.on_refresh_started(Instant::now() - INDICATOR_DELAY - Duration::from_millis(1));
     let text = render(&app);
     assert!(text.contains("refreshing…"));
+    // Mid-refresh, nothing clears (ADR 0005): the frame still carries
+    // the snapshot's changelists, files, and commits alongside the
+    // indicator.
+    assert!(text.contains("▾ fixes *"));
+    assert!(text.contains("src/print.css"));
+    assert!(text.contains("fix: viewport sizing"));
 }
 
 #[test]
