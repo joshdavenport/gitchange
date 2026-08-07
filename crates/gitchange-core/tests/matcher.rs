@@ -7,6 +7,7 @@
 mod support;
 
 use std::fs;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use gitchange_core::{Advisory, HunkStage, Repo, Snapshot};
 use support::RepoFixture;
@@ -332,6 +333,68 @@ fn dormant_records_prune_after_fourteen_days() {
 
     let json = state_json(&fixture);
     assert_eq!(json["records"].as_array().unwrap().len(), 0);
+    // The changelist itself is untouched by the prune.
+    assert_eq!(json["changelists"][0]["name"], "one");
+}
+
+#[test]
+fn whole_file_dormant_records_share_the_fourteen_day_prune() {
+    // ADR 0009: dormancy and the 14-day prune apply to whole-file
+    // records unchanged. The expired record must drop and the fresh one
+    // must survive with its OID anchor intact — without the survivor,
+    // the prune assertion could pass by dropping every dormant record.
+    let fixture = RepoFixture::new();
+    fixture.write("a.txt", &numbered(5, &[])).commit_all("init");
+    // One day dormant: safely inside the 14-day TTL. The prune reads the
+    // real clock, so the survivor needs a genuinely recent timestamp.
+    let one_day = 24 * 60 * 60;
+    let recent = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        - one_day;
+    let dir = fixture.path().join(".git/gitchange");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("state.json"),
+        r#"{
+  "version": 1,
+  "active": "one",
+  "changelists": [{ "name": "one" }],
+  "records": [
+    {
+      "path": "old.png", "old_start": 0, "old_lines": 0,
+      "new_start": 0, "new_lines": 0, "changelist": "one",
+      "anchor": [],
+      "oid_anchor": { "head": "aaaa1111", "changed": "bbbb2222" },
+      "dormant_since": 1
+    },
+    {
+      "path": "new.png", "old_start": 0, "old_lines": 0,
+      "new_start": 0, "new_lines": 0, "changelist": "one",
+      "anchor": [],
+      "oid_anchor": { "head": "cccc3333", "changed": "dddd4444" },
+      "dormant_since": RECENT
+    }
+  ]
+}"#
+        .replace("RECENT", &recent.to_string()),
+    )
+    .unwrap();
+
+    let repo = repo(&fixture);
+    repo.refresh().unwrap();
+
+    let json = state_json(&fixture);
+    assert_eq!(
+        json["records"].as_array().unwrap().len(),
+        1,
+        "the expired whole-file record is pruned"
+    );
+    let survivor = record_at(&json, "new.png");
+    assert_eq!(survivor["dormant_since"], recent, "still dormant, same age");
+    assert_eq!(survivor["oid_anchor"]["head"], "cccc3333");
+    assert_eq!(survivor["oid_anchor"]["changed"], "dddd4444");
     // The changelist itself is untouched by the prune.
     assert_eq!(json["changelists"][0]["name"], "one");
 }
