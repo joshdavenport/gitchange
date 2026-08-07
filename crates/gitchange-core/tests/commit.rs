@@ -9,9 +9,10 @@ mod support;
 
 use std::fs;
 
-use gitchange_core::{
-    Advisory, ApplySite, CommitOptions, CommitOutcome, Error, HunkStage, Repo, Snapshot,
-};
+use gitchange_core::{Advisory, CommitOptions, CommitOutcome, Error, HunkStage, Repo, Snapshot};
+// Gated with its only user below, so Windows builds this file clean.
+#[cfg(unix)]
+use gitchange_core::ApplySite;
 use support::RepoFixture;
 
 /// Lines `line 1`..=`line count`, as a vec for splicing edits into.
