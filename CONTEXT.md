@@ -65,8 +65,9 @@ coordinates, owning changelist, and a content anchor.
 _Avoid_: tag, assignment entry
 
 **Content anchor**:
-The verbatim hunk lines (plus surrounding context) stored in a membership
-record — the identity evidence hunks are matched against on refresh.
+The verbatim hunk lines (plus three context lines each side) stored in a
+membership record — the identity evidence hunks are matched against on
+refresh. The width is fixed, not incidental: see ADR 0001.
 _Avoid_: hunk hash, fingerprint
 
 **Drift**:

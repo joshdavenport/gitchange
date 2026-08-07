@@ -61,6 +61,79 @@ fn record_at(json: &serde_json::Value, path: &str) -> serde_json::Value {
     found[0].clone()
 }
 
+/// The stored anchor for `path`, in the shape the matcher's tier 1
+/// compares — read off the persisted record, like [`record_at`].
+fn stored_anchor(json: &serde_json::Value, path: &str) -> Vec<String> {
+    serde_json::from_value(record_at(json, path)["anchor"].clone()).unwrap()
+}
+
+/// What `numbered(20, &[(10, "ten!")])` anchors to at libgit2's default
+/// context width: the change plus three verbatim context lines each side.
+const ANCHOR_AT_CONTEXT_THREE: [&str; 8] = [
+    " line 7\n",
+    " line 8\n",
+    " line 9\n",
+    "-line 10\n",
+    "+ten!\n",
+    " line 11\n",
+    " line 12\n",
+    " line 13\n",
+];
+
+#[test]
+fn a_worktree_hunks_stored_anchor_carries_three_context_lines() {
+    // ADR 0001, "The anchor's context width": three lines each side,
+    // taken from libgit2's default — `Git2Backend::diffs` sets none. Pin
+    // it where the matcher reads it, the persisted record. This half
+    // covers the HEAD↔worktree diff.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("a.txt", &numbered(20, &[]))
+        .commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("one").unwrap();
+
+    fixture.write("a.txt", &numbered(20, &[(10, "ten!")]));
+    repo.refresh().unwrap();
+
+    assert_eq!(
+        stored_anchor(&state_json(&fixture), "a.txt"),
+        ANCHOR_AT_CONTEXT_THREE
+    );
+}
+
+#[test]
+fn an_index_only_hunks_stored_anchor_carries_three_context_lines() {
+    // `diffs()`'s other half: an index-only hunk (staged, then reverted
+    // in the worktree) never reaches the worktree diff, so its anchor
+    // comes from HEAD↔index. Narrowing that diff alone would leave the
+    // sibling above passing.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("a.txt", &numbered(20, &[]))
+        .commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("one").unwrap();
+
+    // Staged and reverted before the first refresh, so no worktree-side
+    // record exists for tier 1 to carry forward: the anchor under test
+    // can only have come from the index diff.
+    fixture
+        .write("a.txt", &numbered(20, &[(10, "ten!")]))
+        .stage("a.txt")
+        .write("a.txt", &numbered(20, &[]));
+
+    let snapshot = repo.refresh().unwrap();
+    assert!(
+        snapshot.files[0].hunks[0].index_only,
+        "the index-only path is the one under test"
+    );
+    assert_eq!(
+        stored_anchor(&state_json(&fixture), "a.txt"),
+        ANCHOR_AT_CONTEXT_THREE
+    );
+}
+
 #[test]
 fn a_moved_hunk_keeps_membership_via_exact_anchor_match() {
     let fixture = RepoFixture::new();

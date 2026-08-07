@@ -4,7 +4,7 @@ gitchange must keep per-hunk changelist membership stable while the working
 tree is edited by anything — editors, scripts, git itself — including while
 gitchange isn't running. We persist a **membership record** per owned hunk
 (path, old/new line coordinates, owning changelist, and a verbatim content
-anchor: the hunk's added/removed lines plus ~3 context lines each side,
+anchor: the hunk's added/removed lines plus three context lines each side,
 stored as plain text — amended by ADR 0002, which supersedes this ADR's
 original "compressed") and re-derive membership on every refresh by matching the fresh
 diff against stored records. There is no resident tracking layer: the matcher
@@ -22,6 +22,26 @@ Two tiers, in order:
    overlapping exactly one changelist's shifted region inherits its
    membership. Splits inherit the parent's changelist. Editing your own hunk
    never sheds membership.
+
+### The anchor's context width
+
+Three lines each side, fewer only where the file ends. Both of the hunk
+universe's diffs (HEAD↔worktree and HEAD↔index) take that width from
+libgit2's default and set none explicitly, and neither may narrow it. The
+width is load-bearing twice:
+
+- Tier 1 compares a stored anchor against a fresh one byte for byte, so a
+  narrower diff invalidates every anchor already on disk at once. Nothing
+  errors — membership drops to the overlap tier repo-wide and stays there.
+- Per-hunk staging pairs the two diffs by comparing their hunk lines, so
+  widths that differ *from each other* derive every staged hunk as
+  staged-stale.
+
+The two apply diffs narrow to one context line, and that decision does not
+transfer here: their base is the index rather than HEAD, and the narrowing
+keeps an all-or-nothing apply inside the region the user picked (ADR 0003).
+Core's matcher suite pins each universe diff's width on its own, so
+narrowing either one fails a test naming that diff (issue #68).
 
 ## Assignment rules
 
