@@ -156,6 +156,16 @@ delivery is not.
 - **Linux + macOS + Windows on stable Rust.** The OS matrix is where the
   real risk lives (notify backends, CRLF cases in the corpus, path
   handling) and is cheap on hosted runners.
+- **Clippy denies warnings on the same OS matrix**, as its own job.
+  `cargo clippy --workspace --all-targets -- -D warnings` type-checks every
+  target and denies rustc's own lints alongside clippy's, while `cargo test`
+  prints warnings and exits 0 — so clippy is the only job a diagnostic can
+  fail, and it must compile each `cfg` the matrix claims to cover. A warning
+  reachable only under `cfg(windows)` or `cfg(target_os = "macos")` is
+  otherwise unreachable, which is what leaves a platform gate's dead code
+  invisible. The test steps carry no `-D warnings`; matrixed clippy makes it
+  redundant. Formatting compiles nothing and is platform-independent, so
+  `cargo fmt --all --check` is a separate ubuntu-only job with no build cache.
 - **No git version matrix.** git2 vendors libgit2, so system git enters
   the tested path only via the ADR 0004 `git commit` shell-out — a
   decades-stable interface. Runners' preinstalled git suffices; a minimum
@@ -170,7 +180,9 @@ delivery is not.
   off there, so the corpus's mode-change cases would assert nothing; and a
   directory mode of `0o500` has no equivalent, so `unwritable_odb` cannot
   deny the write its tests turn on. They are the whole of what the matrix
-  does not reach.
+  does not reach. What each gate leaves behind is checked, not just
+  recorded: the clippy job compiles the non-unix side on Windows, where a
+  helper or an import the gate strips of its last user fails the build.
 
 ## Scope
 
