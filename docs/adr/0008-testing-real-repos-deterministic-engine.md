@@ -166,6 +166,22 @@ delivery is not.
   invisible. The test steps carry no `-D warnings`; matrixed clippy makes it
   redundant. Formatting compiles nothing and is platform-independent, so
   `cargo fmt --all --check` is a separate ubuntu-only job with no build cache.
+- **Rustdoc denies warnings on ubuntu only** (issue #81), as its own job.
+  `cargo doc --no-deps --document-private-items --workspace` under
+  `RUSTDOCFLAGS: -D warnings` is the only step that reaches rustdoc's lints:
+  neither `RUSTFLAGS` nor `cargo clippy --all-targets` does, so a broken
+  intra-doc link survives a green clippy matrix. Private items are documented
+  because gitchange is an application, not a published library — its doc
+  comments exist for maintainers and agents, and most of the prose sits on
+  internal items. One runner, not clippy's matrix — but the gap is real, not
+  absent: an item behind `cfg(windows)` or `cfg(not(unix))` takes its doc
+  comment out of ubuntu's reach, and `peak_rss_bytes` in `xtask` is already
+  such an item. It carries no doc comment today, which is what makes one
+  runner enough today. The gap is accepted because the risk it leaves is
+  bounded by how little non-unix code this workspace has, and the failure it
+  catches is otherwise silent: a doc comment naming a mechanism nothing
+  answers to goes unnoticed until someone looks for an API that no longer
+  exists.
 - **No git version matrix.** git2 vendors libgit2, so system git enters
   the tested path only via the ADR 0004 `git commit` shell-out — a
   decades-stable interface. Runners' preinstalled git suffices; a minimum

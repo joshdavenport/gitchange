@@ -92,8 +92,10 @@ pub enum Action {
 }
 
 /// One synchronous repo mutation (ticket #32). The main loop executes
-/// it and hands failures and fail-soft notices back through
-/// [`App::push_feedback`].
+/// it and hands the outcome back on the presentation channels
+/// (ADR 0007): a hard failure through [`App::show_error`], fail-soft
+/// advisories through [`App::push_advisories`], and core's echo for
+/// the work that applied through [`App::push_log`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Op {
     CreateChangelist {
