@@ -35,7 +35,7 @@ impl App {
             );
         }
 
-        // The refresh echo (variant E): quiet when nothing moved, so a
+        // The refresh echo: quiet when nothing moved, so a
         // degraded engine's polling ticks don't flood the stream.
         let hunks: usize = snapshot.files.iter().map(ChangedFile::total_hunks).sum();
         let conflicted = snapshot.conflicted_files().len();

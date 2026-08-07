@@ -104,7 +104,6 @@ impl App {
     /// (ADR 0007): condition-bound, self-clearing, never dismissable.
     pub fn pins(&self) -> Vec<String> {
         let mut pins = Vec::new();
-        // Operation first, watcher second — prototype variant E's order.
         if let Some(snapshot) = &self.snapshot
             && let Some(operation) = snapshot.operation
         {

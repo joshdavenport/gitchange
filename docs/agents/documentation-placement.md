@@ -44,16 +44,15 @@ in the repo, and the matrix rotted twice because tickets treated it as living
 and edited its rows beside their tests. #67 preserved both on #36, swept their
 open verdicts into issues, and deleted them.
 
-## Prototypes are throwaway
+## Prototypes live on branches, out of main
 
 A prototype answers one design question and then stops being true. The
-**conclusion** goes into the ADR that cites it. The **code** goes to a gist or
-a dead branch, linked from the issue that commissioned it. Never link a
-prototype from the tree as though it were a live reference — that makes a
-throwaway artifact load-bearing for reading the code.
-
-(`docs/prototypes/` and `crates/gitchange-tui/src/ui.rs`'s citation of it
-predate this rule and are unresolved: #76.)
+**conclusion** goes into the ADR that cites it. The **prototype itself** is
+runnable evidence: preserve it on a `prototype/<name>` branch, kept out of
+main's future history, with a pointer on the issue that commissioned it.
+Main carries no prototype file. Never link a prototype from the tree as though it were a live
+reference — that makes a throwaway artifact load-bearing for reading the
+code.
 
 ## The link direction is repo → tracker
 
@@ -72,7 +71,8 @@ Decide which kind it is before choosing a path:
   kind of file.
 - Is it a record of what you found or did? → a comment on the issue, with the
   commit it reflects and a not-maintained note.
-- Is it a prototype? → conclusion to the ADR, code to a gist.
+- Is it a prototype? → conclusion to the ADR, code to a `prototype/<name>`
+  branch linked from the issue.
 - Is it a file a documented command regenerates? → wherever that command
   writes it, and nowhere else.
 

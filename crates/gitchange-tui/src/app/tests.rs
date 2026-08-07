@@ -632,7 +632,7 @@ fn files_count_is_position_of_total() {
     assert_eq!(app.files_count(), (2, 4));
 }
 
-// ── hunk mode (ticket #32, prototype variant C) ─────────────────
+// ── hunk mode (ticket #32) ──────────────────────────────────────
 
 /// Focus Files with print.css (3 hunks) selected and enter hunk mode.
 fn hunk_mode_app() -> App {
@@ -725,7 +725,7 @@ fn a_vanished_hunk_selection_clamps_and_an_empty_file_exits_hunk_mode() {
     assert_eq!(app.focus, Panel::Files, "nothing selectable ends hunk mode");
 }
 
-// ── assign flow (tickets #32/#41, prototype variant D) ──────────
+// ── assign flow (tickets #32/#41) ───────────────────────────────
 
 /// The shared fixture owns every print.css hunk; this one leaves the
 /// middle one unassigned so the `A` scope has something to find and
@@ -1185,7 +1185,7 @@ fn space_outside_files_and_hunk_mode_does_nothing() {
     assert_eq!(app.on_key(key(KeyCode::Char(' '))), None);
 }
 
-// ── commit flow (ticket #33, commit-flow prototype A–D) ─────────
+// ── commit flow (ticket #33) ────────────────────────────────────
 
 fn payload(staged: usize, stale: usize) -> CommitPayload {
     CommitPayload {
@@ -1422,7 +1422,7 @@ fn a_failed_commit_restores_the_dialog_and_success_closes_it() {
 }
 
 #[test]
-fn payload_counts_wording_matches_the_prototype() {
+fn payload_counts_pluralizes_hunks_and_files() {
     let mut multi = payload(4, 1);
     multi.files.push(PayloadFile {
         path: "src/a.ts".into(),

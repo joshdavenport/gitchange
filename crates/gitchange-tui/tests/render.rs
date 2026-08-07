@@ -425,7 +425,7 @@ fn focused_panel_number_keys_move_the_border_highlight() {
     render(&app); // must not panic
 }
 
-// ── commit flow overlays (ticket #33, commit-flow prototype A–D) ────
+// ── commit flow overlays (ticket #33) ───────────────────────────────
 
 fn payload(staged: usize, stale: usize) -> gitchange_core::CommitPayload {
     gitchange_core::CommitPayload {

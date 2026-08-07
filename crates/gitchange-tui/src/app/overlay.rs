@@ -9,7 +9,7 @@ use super::selection::step;
 use super::view::{FileEntry, owned_hunks, owns};
 use super::{Action, App, CommitStep, Op, Panel, Severity};
 
-/// Everything the commit dialog holds (commit-flow prototype variant A):
+/// Everything the commit dialog holds:
 /// the target changelist, the inspected payload, the independent
 /// message/body drafts, and the flag toggles. Kept whole through the
 /// warn/drift overlays so a failed commit restores the dialog untouched.
@@ -66,20 +66,19 @@ pub fn payload_counts(payload: &CommitPayload) -> String {
 /// key until it closes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Overlay {
-    /// A one-line text input, text-on-border framing (the commit-flow
-    /// prototype's general input convention).
+    /// A one-line text input, text-on-border framing (the app-wide
+    /// input convention).
     Input { kind: InputKind, value: String },
     /// Delete-changelist confirmation (brief §3-derived pattern): the
     /// changelist's hunks go to unassigned.
     ConfirmDelete { name: String },
-    /// The centered assign popup (prototype variant D).
+    /// The centered assign popup.
     Assign { payload: AssignPayload, row: usize },
-    /// The all-in-one commit dialog (commit-flow prototype variant A).
+    /// The all-in-one commit dialog.
     Commit(CommitDraft),
-    /// The ◑ staged-stale warn-and-confirm over the dialog (variant B,
-    /// ADR 0004).
+    /// The ◑ staged-stale warn-and-confirm over the dialog (ADR 0004).
     CommitStale(CommitDraft),
-    /// The zero-staged stage-all offer (variant C, ADR 0004 — core never
+    /// The zero-staged stage-all offer (ADR 0004 — core never
     /// auto-stages).
     CommitStageAll {
         changelist: Option<String>,
@@ -88,7 +87,7 @@ pub enum Overlay {
         hunks: usize,
         files: usize,
     },
-    /// Drift re-confirm keeping the message (variant D, the ADR 0004
+    /// Drift re-confirm keeping the message (the ADR 0004
     /// freshness guard): `draft.payload` is already the fresh payload;
     /// `previous` is what the dialog had confirmed.
     CommitDrift {
@@ -296,7 +295,7 @@ impl App {
         }
     }
 
-    /// The commit dialog's keys (prototype variant A): `enter` commit
+    /// The commit dialog's keys: `enter` commit
     /// (from the message; in the body it breaks the line), `tab` toggles
     /// message/body, `ctrl+n`/`ctrl+a` toggle the flags, `esc` cancels.
     fn on_commit_dialog_key(&mut self, key: KeyEvent, mut draft: CommitDraft) -> Option<Action> {
@@ -315,7 +314,7 @@ impl App {
                     self.overlay = Some(Overlay::Commit(draft));
                     return None;
                 }
-                // ◑ in the payload → warn-and-confirm first (variant B);
+                // ◑ in the payload → warn-and-confirm first;
                 // otherwise straight to the commit step.
                 if draft.payload.stale_hunks() > 0 {
                     self.overlay = Some(Overlay::CommitStale(draft));
@@ -345,14 +344,14 @@ impl App {
 
     // ── commit-flow outcomes (fed back by the main loop) ────────────
 
-    /// A derived payload arrived for `c`'s dialog (variant A). Empty
+    /// A derived payload arrived for `c`'s dialog. Empty
     /// payloads route through [`App::offer_stage_all`] instead.
     pub fn open_commit_dialog(&mut self, changelist: Option<String>, payload: CommitPayload) {
         self.overlay = Some(Overlay::Commit(CommitDraft::new(changelist, payload)));
     }
 
     /// The payload came back empty: offer stage-all-and-commit
-    /// (variant C) when the changelist has hunks at all, otherwise say
+    /// when the changelist has hunks at all, otherwise say
     /// why nothing opened.
     pub fn offer_stage_all(&mut self, changelist: Option<String>) {
         let owner = changelist.as_deref();
@@ -387,7 +386,7 @@ impl App {
     }
 
     /// The refresh-before-commit guard tripped (ADR 0004): re-confirm
-    /// against the fresh payload, message and flags kept (variant D).
+    /// against the fresh payload, message and flags kept.
     pub fn commit_drifted(&mut self, mut draft: CommitDraft, fresh: CommitPayload) {
         let previous = std::mem::replace(&mut draft.payload, fresh);
         self.overlay = Some(Overlay::CommitDrift { draft, previous });
@@ -526,7 +525,7 @@ impl App {
         Some((path.to_owned(), hunks))
     }
 
-    /// The assign popup's rows (prototype variant D): every changelist,
+    /// The assign popup's rows: every changelist,
     /// the active one annotated, then the create-new escape hatch.
     pub fn assign_rows(&self) -> Vec<AssignRow> {
         let mut rows: Vec<AssignRow> = self

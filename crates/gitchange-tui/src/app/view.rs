@@ -148,8 +148,7 @@ pub enum FilesRow {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HunkTag {
     pub label: String,
-    /// Staging glyph next to the label; `None` on unassigned tags
-    /// (prototype B).
+    /// Staging glyph next to the label; `None` on unassigned tags.
     pub stage: Option<HunkStage>,
     pub unassigned: bool,
     pub dim: bool,
@@ -164,14 +163,14 @@ pub enum DiffLine {
         text: String,
         tag: Option<HunkTag>,
         foreign: bool,
-        /// Part of the hunk-mode selection (prototype variant C).
+        /// Part of the hunk-mode selection.
         selected: bool,
     },
     Content {
         origin: char,
         text: String,
         foreign: bool,
-        /// Part of the hunk-mode selection (prototype variant C).
+        /// Part of the hunk-mode selection.
         selected: bool,
     },
     /// Blank spacing between hunks.
@@ -311,7 +310,7 @@ impl App {
             return format!("{name} (conflicted)");
         }
         // Hunk mode replaces the staged counts with the selection
-        // position (prototype variant C).
+        // position.
         if let Some(index) = self.hunk_sel {
             return format!("{name} — hunk {} of {}", index + 1, file.total_hunks());
         }
@@ -432,7 +431,7 @@ impl App {
     /// reach (issue #45) without a hand-written special case. The trio
     /// is one hint with its three scopes in key order — three separate
     /// hints crowd out the rest of the bar. Hunk mode swaps in its own
-    /// arm (prototype variant C).
+    /// arm.
     pub fn key_hints(&self) -> Vec<(String, &'static str)> {
         use BindingId::*;
         const JK: &[BindingId] = &[MoveDown, MoveUp];

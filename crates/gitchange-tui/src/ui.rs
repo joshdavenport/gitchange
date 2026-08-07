@@ -1,6 +1,5 @@
 //! Rendering: the lazygit panel stack from the App's view-models.
-//! Layout and treatments follow `docs/prototypes/tui-prototype.html`
-//! (variants A/B); every glyph and colour comes from [`Theme`].
+//! Every glyph and colour comes from [`Theme`].
 
 use std::time::Instant;
 
@@ -34,7 +33,7 @@ pub fn draw(frame: &mut Frame, app: &App, theme: &Theme, now: Instant) {
     ])
     .areas(left);
     // ~20% of the right column at rest, growing one row per pin so
-    // conditions never eat history (prototype variant E).
+    // conditions never eat history.
     let pins = app.pins();
     let log_height = (u32::from(right.height) * 20 / 100).max(5) as u16 + pins.len() as u16;
     let [diff, log] =
@@ -59,7 +58,7 @@ pub fn draw(frame: &mut Frame, app: &App, theme: &Theme, now: Instant) {
     }
 }
 
-/// A prototype-style panel frame: `[n]─Title - alt` on the top border,
+/// A panel frame: `[n]─Title - alt` on the top border,
 /// the position count on the bottom-right. The title comes from `panel`
 /// itself ([`Panel::title`]) so a panel can't be drawn under the wrong
 /// name.
@@ -414,8 +413,8 @@ fn render_diff_line(
                     "{}{}{glyph}{}",
                     theme.glyphs.tag_open, tag.label, theme.glyphs.tag_close
                 );
-                // The prototype floats the tag at the header's right
-                // edge; pad to the panel width, minimum two spaces.
+                // The tag floats at the header's right edge; pad to
+                // the panel width, minimum two spaces.
                 let lead = if hunk_mode { 2 } else { 0 };
                 let pad = width
                     .saturating_sub(lead + text.chars().count() + pill.chars().count())
@@ -470,9 +469,9 @@ fn tag_color(unassigned: bool, dim: bool, theme: &Theme) -> ratatui::style::Colo
     }
 }
 
-/// Line-level diff treatments: foreign rows get the DIM attribute (the
-/// prototype's ~45% opacity — terminal cells can't blend), the hunk-mode
-/// selection gets the selection background (the prototype's outline has
+/// Line-level diff treatments: foreign rows get the DIM attribute
+/// (standing in for ~45% opacity — terminal cells can't blend), the
+/// hunk-mode selection gets the selection background (an outline has
 /// no terminal equivalent) — `selected` arrives pre-gated on Diff focus
 /// (issue #45); the blurred selection keeps only its header cursor.
 ///
@@ -679,8 +678,8 @@ fn draw_overlay(frame: &mut Frame, area: Rect, app: &App, overlay: &Overlay, the
         }
         Overlay::Commit(draft) => draw_commit_dialog(frame, area, draft, theme, true),
         Overlay::CommitStale(draft) => {
-            // The dialog stays visible under the warn (prototype
-            // variant B) — its state is untouched, only the cursor goes.
+            // The dialog stays visible under the warn — its state is
+            // untouched, only the cursor goes.
             draw_commit_dialog(frame, area, draft, theme, false);
             draw_stale_warn(frame, area, draft, theme);
         }
@@ -856,8 +855,7 @@ fn payload_spans(
     spans
 }
 
-/// The all-in-one commit dialog (commit-flow prototype variant A):
-/// one-line payload summary, independent message/body inputs with
+/// The all-in-one commit dialog: one-line payload summary, independent message/body inputs with
 /// text-on-border framing, flag toggles, hints. `active` drops the
 /// cursor while the ◑ warn sits on top.
 fn draw_commit_dialog(
@@ -990,7 +988,7 @@ fn draw_commit_dialog(
     );
 }
 
-/// The ◑ staged-stale warn-and-confirm (prototype variant B, ADR 0004),
+/// The ◑ staged-stale warn-and-confirm (ADR 0004),
 /// drawn over the dimmed dialog.
 fn draw_stale_warn(frame: &mut Frame, area: Rect, draft: &CommitDraft, theme: &Theme) {
     let stale = draft.payload.stale_hunks();

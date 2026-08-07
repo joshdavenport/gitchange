@@ -63,8 +63,8 @@ pub struct Glyphs {
     pub log_error: char,
     /// The pinned-condition marker at the top of the Log panel.
     pub pin: char,
-    /// Diff hunk-tag delimiters — the terminal stand-in for the
-    /// prototype's bordered pill.
+    /// Diff hunk-tag delimiters — a terminal stand-in for a
+    /// bordered pill.
     pub tag_open: char,
     pub tag_close: char,
     /// The persistent selection cursor (issue #45).

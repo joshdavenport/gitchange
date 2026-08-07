@@ -168,7 +168,7 @@ pub struct App {
     pub file_sel: Option<FileEntry>,
     pub commit_row: usize,
     pub diff_scroll: u16,
-    /// Hunk-mode selection (prototype variant C): `Some` while `enter`
+    /// Hunk-mode selection: `Some` while `enter`
     /// on a file has focused the Diff panel for per-hunk work; `0`-key
     /// focus is plain scroll mode (`None`). Survives a blur to another
     /// panel (issue #45) — the cursor stays visible for the cross-panel
@@ -435,7 +435,7 @@ impl App {
         }
     }
 
-    /// `enter` on a file (prototype variant C): focus the Diff panel
+    /// `enter` on a file: focus the Diff panel
     /// with its first hunk selected. Hunk-less files have nothing to
     /// select, and a binary's one whole-file hunk is a state that can
     /// only waste keypresses — polite no-op, no log event (ADR 0009).
