@@ -47,8 +47,8 @@ pub struct LogEntry {
 
 /// The error-modal contract (ADR 0007): title names the operation,
 /// detail is verbatim and scrollable (hook stderr especially), dismissed
-/// with `esc`/`enter`. Held outside [`Overlay`] so a rejection modal can
-/// land on top of the restored commit dialog.
+/// with `esc`/`enter`. Held outside [`crate::app::Overlay`] so a
+/// rejection modal can land on top of the restored commit dialog.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ErrorModal {
     pub title: String,

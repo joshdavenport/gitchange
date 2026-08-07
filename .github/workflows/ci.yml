@@ -51,3 +51,19 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # Rustdoc's lints come from RUSTDOCFLAGS and nothing else, so a broken
+  # intra-doc link survives a green clippy matrix. Ubuntu alone: a doc
+  # comment on a non-unix item would escape this job, and ADR 0008 (CI)
+  # accepts that gap. Private items are documented because gitchange is
+  # an application: most of the prose lives on internal items.
+  docs:
+    name: docs (ubuntu-latest)
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --no-deps --document-private-items --workspace

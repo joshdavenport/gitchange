@@ -492,9 +492,9 @@ fn validate_changelist(snapshot: &Snapshot, changelist: Option<&str>) -> Result<
 /// user pointed at. `None` is the stale case.
 ///
 /// A whole-file hunk matches by path continuity rather than content
-/// ([`HunkIdentity::same_hunk`]), so a binary rewritten between refresh
-/// and keypress still resolves — reachable in practice, since assign
-/// (`ctrl+a`/`A`) routes a binary's whole-file hunk through here.
+/// ([`crate::HunkIdentity::same_hunk`]), so a binary rewritten between
+/// refresh and keypress still resolves — reachable in practice, since
+/// assign (`ctrl+a`/`A`) routes a binary's whole-file hunk through here.
 fn find_fresh<'a>(
     files: &'a [ChangedFile],
     path: &str,
