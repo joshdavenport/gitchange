@@ -10,7 +10,7 @@ use support::RepoFixture;
 
 // Gated with its only user below, so Windows builds this file clean.
 #[cfg(unix)]
-use gitchange_core::Error;
+use gitchange_core::{ApplySite, Error};
 
 /// Twenty numbered lines, with `edits` as (1-based line, replacement).
 fn numbered(edits: &[(usize, &str)]) -> String {
@@ -617,8 +617,9 @@ fn a_refused_apply_reports_apply_failed_and_stages_nothing() {
 
     let _odb = fixture.unwritable_odb();
     match repo.stage_hunk("a.txt", &hunk).unwrap_err() {
-        Error::ApplyFailed { path, detail } => {
+        Error::ApplyFailed { path, detail, site } => {
             assert_eq!(path, "a.txt", "the error names the file");
+            assert_eq!(site, ApplySite::Index, "and the staging site");
             assert!(
                 detail.contains("Permission denied"),
                 "libgit2's own message, verbatim: {detail}"

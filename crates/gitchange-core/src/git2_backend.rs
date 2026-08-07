@@ -5,7 +5,7 @@ use std::process::Command;
 use crate::backend::{CommitPathSpec, CommittedId, GitBackend, HunkHeader};
 use crate::commit::{AMEND_FLAG, CommitOptions, NO_VERIFY_FLAG};
 use crate::diff::{BinarySides, BlobInfo, ChangeKind, DiffHunk, FileDiff, HunkLine, RepoDiffs};
-use crate::error::Error;
+use crate::error::{ApplySite, Error};
 use crate::snapshot::{CommitInfo, GitOperation, Head};
 use crate::universe::ranges_overlap;
 
@@ -416,10 +416,17 @@ impl Git2Backend {
             // Postimage blobs land in the odb; the live index is never
             // involved. Per-path applies keep header filtering
             // unambiguous (headers are unique only within one file).
+            // A refusal maps to `ApplyFailed` — the apply tripwire's
+            // commit site (ADR 0003), never the opaque `Backend`; only
+            // the apply call itself is mapped that way.
             let applied = self
                 .repo
                 .apply_to_tree(&base_tree, &diff, Some(&mut apply_options))
-                .map_err(backend_error)?;
+                .map_err(|error| Error::ApplyFailed {
+                    path: spec.path.clone(),
+                    detail: error.message().to_owned(),
+                    site: ApplySite::CommitTempIndex,
+                })?;
             match applied.get_path(Path::new(&spec.path), 0) {
                 Some(entry) => temp.add(&entry).map_err(backend_error)?,
                 // The payload deletes the file.
@@ -490,11 +497,11 @@ impl Git2Backend {
     /// changes nothing.
     ///
     /// A refusal from the apply itself becomes [`Error::ApplyFailed`],
-    /// not an opaque [`Error::Backend`] — that variant is ADR 0003's
-    /// trigger for the conditional shell-out fallback, so it must be
-    /// distinguishable from a locked index or a broken odb. Only the
-    /// `apply` call is mapped that way; setting the call up is ordinary
-    /// backend work.
+    /// not an opaque [`Error::Backend`] — the apply tripwire's staging
+    /// site, ADR 0003's trigger for the conditional shell-out fallback
+    /// (the commit site is `commit_via_temp_index`'s payload apply).
+    /// Only the `apply` call is mapped that way; setting the call up is
+    /// ordinary backend work.
     fn apply_to_index(
         &self,
         path: &str,
@@ -517,6 +524,7 @@ impl Git2Backend {
             .map_err(|error| Error::ApplyFailed {
                 path: path.to_owned(),
                 detail: error.message().to_owned(),
+                site: ApplySite::Index,
             })
     }
 }

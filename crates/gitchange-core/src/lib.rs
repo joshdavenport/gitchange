@@ -19,7 +19,7 @@ pub use commit::{
 };
 pub use diff::{BinarySides, BlobInfo, ChangeKind, DiffHunk, FileDiff, HunkLine, RepoDiffs};
 pub use engine::{Condition, Engine, EngineEvent};
-pub use error::Error;
+pub use error::{ApplySite, Error};
 pub use matcher::Advisory;
 pub use repo::{OpOutcome, Repo};
 pub use snapshot::{CommitInfo, FileGroup, GitOperation, GroupKind, Head, Snapshot};

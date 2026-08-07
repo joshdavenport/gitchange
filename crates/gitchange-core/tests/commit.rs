@@ -9,7 +9,9 @@ mod support;
 
 use std::fs;
 
-use gitchange_core::{Advisory, CommitOptions, CommitOutcome, Error, HunkStage, Repo, Snapshot};
+use gitchange_core::{
+    Advisory, ApplySite, CommitOptions, CommitOutcome, Error, HunkStage, Repo, Snapshot,
+};
 use support::RepoFixture;
 
 /// Lines `line 1`..=`line count`, as a vec for splicing edits into.
@@ -279,11 +281,13 @@ fn no_verify_commits_past_a_rejecting_hook() {
 /// The refusal is forced by an unwritable object store, not by a
 /// mismatching payload — that shape is unreachable through the public
 /// ops, since the diff applied is computed from HEAD's tree against the
-/// live index and applied straight back to that tree (issue #58). Two
-/// consequences the failure shape decides: the error is
-/// [`Error::Backend`], not `ApplyFailed` — only the index apply maps to
-/// that variant — and the state dir stays clean because the abort
-/// precedes the temp index being written, so it is
+/// live index and applied straight back to that tree (issue #58). The
+/// refusal maps to [`Error::ApplyFailed`] at the commit site — the
+/// apply tripwire's second sensor (ADR 0003) — carrying libgit2's
+/// message verbatim and stating ADR 0004's abort guarantee. Like the
+/// staging twin, an unwritable odb is not the tripwire's trigger (#55);
+/// what this certifies is the reporting path. The state dir stays clean
+/// because the abort precedes the temp index being written, so it is
 /// [`hook_rejection_changes_nothing`] that covers discarding files which
 /// do exist.
 // Unix-only by necessity: no Windows equivalent of a 0o500 directory, so
@@ -303,16 +307,22 @@ fn a_refused_temp_index_apply_aborts_before_any_commit_exists() {
     let err = repo
         .commit(Some("one"), "one: ten", &CommitOptions::default(), None)
         .unwrap_err();
-    // Both halves matter: `Backend` is the catch-all for everything in
-    // the commit path, so the message is what pins the refusal to the
-    // apply rather than to some earlier step the same mode also breaks.
+    // The variant pins the refusal to the apply itself: everything
+    // else in the commit path the same mode breaks stays `Backend`.
+    match &err {
+        Error::ApplyFailed { path, detail, site } => {
+            assert_eq!(path, "a.txt", "the error names the file");
+            assert_eq!(*site, ApplySite::CommitTempIndex, "and the commit site");
+            assert!(
+                detail.contains("Permission denied"),
+                "libgit2's own refusal, verbatim: {detail}"
+            );
+        }
+        other => panic!("expected ApplyFailed, got {other:?}"),
+    }
     assert!(
-        matches!(err, Error::Backend(_)),
-        "the apply's refusal, unmapped: {err:?}"
-    );
-    assert!(
-        err.to_string().contains("Permission denied"),
-        "libgit2's own refusal, verbatim: {err}"
+        err.to_string().contains("nothing was committed"),
+        "the abort guarantee is stated: {err}"
     );
 
     assert_eq!(fixture.commit_count(), 1, "no commit was created");

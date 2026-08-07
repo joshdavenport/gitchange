@@ -42,24 +42,30 @@ pub enum Error {
     #[error("nothing staged to commit")]
     NothingStaged,
 
-    /// A hunk-wise apply to the index was refused (ADR 0003). Nothing
-    /// was written — every postimage is computed before the index is
-    /// touched, so the apply is all-or-nothing.
+    /// A hunk-wise apply was refused (ADR 0003). Nothing was written —
+    /// every postimage is computed before anything is touched, so the
+    /// apply is all-or-nothing; at the commit site the abort precedes
+    /// any commit existing (ADR 0004).
     ///
-    /// Distinct from [`Error::Backend`] because it is the one trigger
-    /// for ADR 0003's conditional CLI shell-out fallback: gitchange only
-    /// ever applies a diff it computed moments earlier against the very
-    /// state it applies to, so the usual causes (context drift, fuzz)
-    /// cannot arise and this has no known trigger. A report carrying
-    /// `detail` is the evidence that mitigation waits on — hence the
-    /// verbatim libgit2 message, and hence a hard error rather than a
-    /// soft advisory.
-    #[error(
-        "could not apply that hunk to the index for '{path}': {detail}\n\
-         staging the region with `git add -p -- {path}` works around it, \
-         and gitchange absorbs the result at the next refresh"
-    )]
-    ApplyFailed { path: String, detail: String },
+    /// Distinct from [`Error::Backend`] because it is the apply
+    /// tripwire: the one trigger for ADR 0003's conditional CLI
+    /// shell-out fallback. The mapping is attached to the two apply
+    /// calls alone (see [`ApplySite`]), never to the work around them —
+    /// though an environmental failure striking inside an apply call
+    /// (a broken odb) still maps, and the trigger condition (git's own
+    /// apply succeeds on the same selection against the same base) is
+    /// what filters those out. gitchange only ever applies a diff it
+    /// computed moments earlier against the very state it applies to,
+    /// so the usual causes (context drift, fuzz) cannot arise and this
+    /// has no known trigger. A report carrying `detail` is the evidence
+    /// that mitigation waits on — hence the verbatim libgit2 message,
+    /// and hence a hard error rather than a soft advisory.
+    #[error("{}", apply_failed_message(.site, .path, .detail))]
+    ApplyFailed {
+        path: String,
+        detail: String,
+        site: ApplySite,
+    },
 
     /// `git commit` exited nonzero with nothing committed. Usually a
     /// hook rejection (the dominant cause once gitchange builds the
@@ -83,4 +89,34 @@ pub enum Error {
 
     #[error("git backend error: {0}")]
     Backend(#[source] Box<dyn std::error::Error + Send + Sync>),
+}
+
+/// The two libgit2 apply calls the apply tripwire watches — where a
+/// hunk-wise apply can be refused and [`Error::ApplyFailed`] fires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplySite {
+    /// Staging's write-through: apply to the live index (ADR 0003).
+    Index,
+    /// Commit's payload apply against HEAD's tree while the temp index
+    /// is assembled (ADR 0004).
+    CommitTempIndex,
+}
+
+/// [`Error::ApplyFailed`]'s message, per site. The staging site offers
+/// a workaround because a direct route to the same end state exists
+/// (`git add -p`, absorbed at the next refresh). The commit site offers
+/// none — `git commit` would commit every changelist's staged hunks at
+/// once — and states ADR 0004's abort guarantee instead.
+fn apply_failed_message(site: &ApplySite, path: &str, detail: &str) -> String {
+    match site {
+        ApplySite::Index => format!(
+            "could not apply that hunk to the index for '{path}': {detail}\n\
+             staging the region with `git add -p -- {path}` works around it, \
+             and gitchange absorbs the result at the next refresh"
+        ),
+        ApplySite::CommitTempIndex => format!(
+            "could not apply the commit payload to the temp index for '{path}': {detail}\n\
+             nothing was committed"
+        ),
+    }
 }
