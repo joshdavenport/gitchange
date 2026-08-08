@@ -24,12 +24,24 @@ pub fn draw(frame: &mut Frame, app: &App, theme: &Theme, now: Instant) {
     let [left, right] =
         Layout::horizontal([Constraint::Percentage(44), Constraint::Percentage(56)]).areas(main);
 
+    // Fit-to-content with a ceiling (issue #87): the Changelists panel is
+    // exactly its own size until the column runs out, then it stops
+    // growing and scrolls. An unbounded Length squeezed the panels below
+    // it to nothing.
     let changelists_height = app.changelist_rows().len() as u16 + 2;
+    // 26% of the column as ratatui itself rounds it — halves down — with a
+    // floor of three content rows, so Commits can no longer be squeezed
+    // out of the frame. A Percentage yields to every Length and Min beside
+    // it, all the way to zero. The arithmetic is deliberately spelled out
+    // rather than nested in a sub-Layout: a render test holds it against
+    // ratatui's own Percentage, which it cannot do if both sides ask
+    // ratatui the same question.
+    let commits_height = ((u32::from(left.height) * 26 + 49) / 100).max(5) as u16;
     let [status, changelists, files, commits] = Layout::vertical([
         Constraint::Length(3),
-        Constraint::Length(changelists_height),
+        Constraint::Max(changelists_height),
         Constraint::Min(5),
-        Constraint::Percentage(26),
+        Constraint::Length(commits_height),
     ])
     .areas(left);
     // ~20% of the right column at rest, growing one row per pin so
@@ -228,7 +240,8 @@ fn draw_changelists(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         .collect();
     let count = format!("{} of {}", app.changelist_row + 1, rows.len());
     let block = panel_block(Panel::Changelists, None, Some(count), app, theme);
-    frame.render_widget(Paragraph::new(lines).block(block), area);
+    let scroll = keep_visible(app.changelist_row, area.height.saturating_sub(2));
+    frame.render_widget(Paragraph::new(lines).block(block).scroll((scroll, 0)), area);
 }
 
 fn draw_files(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {

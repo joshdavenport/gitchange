@@ -11,6 +11,7 @@ use gitchange_core::{
 };
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier};
 use ratatui::{Terminal, backend::TestBackend};
 
@@ -90,7 +91,13 @@ fn render_buffer(app: &App) -> Buffer {
 }
 
 fn render_buffer_themed(app: &App, theme: &Theme) -> Buffer {
-    let mut terminal = Terminal::new(TestBackend::new(140, 40)).unwrap();
+    render_buffer_sized(app, theme, 140, 40)
+}
+
+/// One frame at an arbitrary terminal size — every other render helper
+/// is this one with a size pinned.
+fn render_buffer_sized(app: &App, theme: &Theme, width: u16, height: u16) -> Buffer {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     terminal
         .draw(|frame| ui::draw(frame, app, theme, Instant::now()))
         .unwrap();
@@ -991,4 +998,200 @@ fn the_help_overlay_derives_spellings_and_themes_its_arrows() {
         text.contains("back (diff » files » changelists » all)"),
         "{text}"
     );
+}
+
+// ── the left column's geometry (issue #87) ──────────────────────────
+//
+// These read panel heights off the rendered frame rather than asserting
+// height tuples: the invariants are "every panel is drawn", "the cursor
+// is on screen" and "Commits keeps its share", all of which survive
+// anyone re-tuning the column.
+
+/// A repo with `count` user changelists and nothing else — the
+/// Changelists panel draws `count + 2` rows, `all` and `unassigned`
+/// bracketing them.
+fn changelists_snapshot(count: usize) -> Snapshot {
+    Snapshot {
+        files: Vec::new(),
+        changelists: (0..count)
+            .map(|index| Changelist {
+                name: format!("list-{index:03}"),
+            })
+            .collect(),
+        active: None,
+        advisories: Vec::new(),
+        head: Head::Branch {
+            name: "main".into(),
+        },
+        recent_commits: vec![CommitInfo {
+            short_id: "91a05c13".into(),
+            author: "Josh Davenport-Smith".into(),
+            summary: "fix: viewport sizing".into(),
+        }],
+        operation: None,
+    }
+}
+
+/// The frames the column tests measure: 80 columns wide, `height` rows
+/// tall — the narrow shape the failure was reproduced at.
+fn render_buffer_at(app: &App, height: u16) -> Buffer {
+    render_buffer_sized(app, &Theme::default(), 80, height)
+}
+
+/// A buffer row as text.
+fn row_text(buffer: &Buffer, y: u16) -> String {
+    (0..buffer.area.width)
+        .map(|x| buffer[(x, y)].symbol())
+        .collect()
+}
+
+/// The rows a left-column panel occupies, borders included, read off its
+/// own frame: the titled top corner down to the next bottom corner.
+/// `None` when the panel is not drawn, or is drawn without a frame to
+/// measure.
+fn left_panel_rows(buffer: &Buffer, title: &str) -> Option<(u16, u16)> {
+    let corner = |y: u16| buffer[(0, y)].symbol();
+    let top = (0..buffer.area.height)
+        .find(|&y| corner(y) == "╭" && row_text(buffer, y).contains(title))?;
+    let bottom = (top + 1..buffer.area.height).find(|&y| corner(y) != "│")?;
+    (corner(bottom) == "╰").then_some((top, bottom))
+}
+
+/// A left-column panel's outer height, borders included.
+fn left_panel_height(buffer: &Buffer, title: &str) -> u16 {
+    let (top, bottom) = left_panel_rows(buffer, title).unwrap_or_else(|| {
+        panic!(
+            "panel {title} is not drawn\n{}",
+            text_of(buffer).replace('\n', "|\n")
+        )
+    });
+    bottom - top + 1
+}
+
+/// The panel's content rows carrying the selection cursor — one, in a
+/// frame that draws the selection at all.
+fn cursor_rows(buffer: &Buffer, title: &str) -> Vec<String> {
+    let (top, bottom) =
+        left_panel_rows(buffer, title).unwrap_or_else(|| panic!("panel {title} is not drawn"));
+    (top + 1..bottom)
+        .map(|y| row_text(buffer, y))
+        .filter(|row| row.contains('❯'))
+        .collect()
+}
+
+/// Changelist counts spanning the panel's whole range: a handful that
+/// fits any terminal, tens that overflow a short one, hundreds that
+/// overflow every one.
+const CHANGELIST_COUNTS: [usize; 8] = [0, 1, 5, 10, 20, 40, 100, 300];
+
+#[test]
+fn every_left_column_panel_is_drawn_from_twenty_rows_up() {
+    let column = [
+        Panel::Status,
+        Panel::Changelists,
+        Panel::Files,
+        Panel::Commits,
+    ];
+    for count in CHANGELIST_COUNTS {
+        let mut app = App::new("repo");
+        app.apply_snapshot(changelists_snapshot(count));
+        for height in 20..=120 {
+            let buffer = render_buffer_at(&app, height);
+            for panel in column {
+                let rows = left_panel_height(&buffer, panel.title());
+                assert!(
+                    rows >= 3,
+                    "{} has no content row at height {height} with {count} changelists\n{}",
+                    panel.title(),
+                    text_of(&buffer)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_changelists_cursor_is_on_screen_at_every_scroll_position() {
+    for count in CHANGELIST_COUNTS {
+        let rows = count + 2;
+        // First row, middle, last row, and one step past it.
+        for steps in [0, rows / 2, rows - 1, rows] {
+            let mut app = App::new("repo");
+            app.apply_snapshot(changelists_snapshot(count));
+            for _ in 0..steps {
+                app.on_key(key(KeyCode::Char('j')));
+            }
+            for height in [20, 24, 30, 40, 60, 120] {
+                let buffer = render_buffer_at(&app, height);
+                let visible = cursor_rows(&buffer, Panel::Changelists.title());
+                assert_eq!(
+                    visible.len(),
+                    1,
+                    "cursor rows {visible:?} at height {height}, \
+                     {count} changelists, {steps} steps down\n{}",
+                    text_of(&buffer)
+                );
+                // The last row is the one the bug hid: the bottom-right
+                // count read 'unassigned' as selected, and the Files and
+                // Diff panels followed it, with no cursor on screen.
+                if steps >= rows - 1 {
+                    assert!(
+                        visible[0].contains("unassigned"),
+                        "cursor sits on {:?}, not the last row, at height {height} \
+                         with {count} changelists",
+                        visible[0]
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_changelists_panel_under_the_ceiling_is_exactly_its_own_size() {
+    for count in [0, 1, 5, 10] {
+        let mut app = App::new("repo");
+        app.apply_snapshot(changelists_snapshot(count));
+        let buffer = render_buffer_at(&app, 60);
+        let expected = app.changelist_rows().len() as u16 + 2;
+        assert_eq!(
+            left_panel_height(&buffer, Panel::Changelists.title()),
+            expected,
+            "{count} changelists at height 60\n{}",
+            text_of(&buffer)
+        );
+    }
+    // Spelled out once, unchanged from before the cap: three changelist
+    // rows — `all`, one list, `unassigned` — draw a five-row panel.
+    let mut app = App::new("repo");
+    app.apply_snapshot(changelists_snapshot(1));
+    let buffer = render_buffer_at(&app, 40);
+    assert_eq!(left_panel_height(&buffer, Panel::Changelists.title()), 5);
+}
+
+#[test]
+fn the_commits_panel_keeps_the_share_of_the_column_it_had() {
+    for count in CHANGELIST_COUNTS {
+        let mut app = App::new("repo");
+        app.apply_snapshot(changelists_snapshot(count));
+        // Far enough up to cross every column height where rounding the
+        // percentage the wrong way would diverge: 25, 75, 125 and 175.
+        for height in 20..=180 {
+            // ratatui's own answer for the percentage this panel carried,
+            // over the same column: the frame less the keybar row.
+            let column = Rect::new(0, 0, 80, height - 1);
+            let [_, share]: [Rect; 2] =
+                Layout::vertical([Constraint::Min(0), Constraint::Percentage(26)]).areas(column);
+            // From 20 rows up the percentage clears the panel's floor, so
+            // the floor never masks a divergence here.
+            assert!(share.height >= 5, "floor reached at height {height}");
+            let buffer = render_buffer_at(&app, height);
+            assert_eq!(
+                left_panel_height(&buffer, Panel::Commits.title()),
+                share.height,
+                "Commits at height {height} with {count} changelists\n{}",
+                text_of(&buffer)
+            );
+        }
+    }
 }
