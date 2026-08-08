@@ -21,10 +21,11 @@ use std::time::{Duration, Instant};
 use gitchange_core::{CommitPayload, Snapshot};
 use gitchange_test_support::RepoFixture;
 use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::*;
-use app::{INDICATOR_DELAY, LogEntry, Overlay};
+use app::{INDICATOR_DELAY, LogEntry, Overlay, Panel};
 
 /// Wide enough that no panel renders degenerate — the same shape the
 /// render tests draw at.
@@ -782,6 +783,112 @@ fn engine_events_reach_their_app_handlers() {
         "the refresh is in flight"
     );
     assert_eq!(refreshes, 0, "engine events ask for nothing back");
+}
+
+// ── the frame's geometry (issue #85) ────────────────────────────────
+
+/// [`drive_engine`], keeping the terminal so the last frame the loop drew
+/// can be measured. The engine disconnect returns before the next draw,
+/// so that frame is the one the App's recorded heights came from.
+fn drive_engine_frame(repo: &Repo, app: &mut App, script: Vec<EngineEvent>) -> Buffer {
+    let (engine_tx, engine_rx) = unbounded();
+    let (_input_tx, input_rx) = unbounded();
+    for event in script {
+        engine_tx.send(event).unwrap();
+    }
+    drop(engine_tx);
+    let mut terminal = ratatui::Terminal::new(TestBackend::new(WIDTH, HEIGHT)).unwrap();
+    let result = event_loop(&mut terminal, &engine_rx, &input_rx, || {}, repo, app);
+    assert!(matches!(result, Err(Error::EngineDied)), "{result:?}");
+    terminal.backend().buffer().clone()
+}
+
+/// A panel's frame rows in a drawn buffer, found by its own title: the
+/// `╭` that titles it, down to the `╰` in the same column. Read off what
+/// was painted, so nothing here re-derives the layout it checks.
+fn panel_frame(buffer: &Buffer, panel: Panel) -> (u16, u16) {
+    for y in 0..buffer.area.height {
+        for x in 0..buffer.area.width {
+            if buffer[(x, y)].symbol() != "╭" {
+                continue;
+            }
+            // Bounded by this panel's own top-right corner: the two
+            // columns draw their top borders on one row, and an
+            // unbounded read would match the neighbour's title.
+            let Some(end) = (x + 1..buffer.area.width).find(|&x| buffer[(x, y)].symbol() == "╮")
+            else {
+                continue;
+            };
+            let border: String = (x..=end).map(|x| buffer[(x, y)].symbol()).collect();
+            if !border.contains(panel.title()) {
+                continue;
+            }
+            let bottom = (y + 1..buffer.area.height)
+                .find(|&y| buffer[(x, y)].symbol() == "╰")
+                .expect("a titled panel closes its frame");
+            return (y, bottom);
+        }
+    }
+    panic!("panel {} is not drawn", panel.title());
+}
+
+/// The rows inside a drawn panel's frame, borders excluded.
+fn drawn_content_height(buffer: &Buffer, panel: Panel) -> u16 {
+    let (top, bottom) = panel_frame(buffer, panel);
+    bottom - top - 1
+}
+
+#[test]
+fn the_loop_records_the_content_heights_it_drew() {
+    let (fixture, repo) = repo_with_commit();
+    // Content in every panel: a changelist row, a changed file, a
+    // commit, and the log line the refresh echoes.
+    fixture.write("a.txt", "line 1\nedited\nline 3\n");
+    repo.create_changelist("wip").unwrap();
+    let mut app = App::new("repo");
+
+    let buffer = drive_engine_frame(
+        &repo,
+        &mut app,
+        vec![EngineEvent::RefreshComplete(repo.refresh().unwrap())],
+    );
+
+    assert!(app.pins().is_empty(), "a clean repo pins nothing");
+    for panel in Panel::ALL {
+        assert_eq!(
+            app.panel_height(panel),
+            drawn_content_height(&buffer, panel),
+            "{panel:?} recorded {} against the frame it drew",
+            app.panel_height(panel)
+        );
+    }
+}
+
+#[test]
+fn the_recorded_log_height_excludes_the_pin_banner() {
+    let (_fixture, repo) = repo_with_commit();
+
+    let mut quiet = App::new("repo");
+    let unpinned = drive_engine_frame(&repo, &mut quiet, Vec::new());
+    let unpinned_frame = drawn_content_height(&unpinned, Panel::Log);
+
+    let mut degraded = App::new("repo");
+    let pinned = drive_engine_frame(
+        &repo,
+        &mut degraded,
+        vec![EngineEvent::ConditionStarted(Condition::WatcherDegraded)],
+    );
+
+    assert_eq!(degraded.pins().len(), 1, "the condition became a pin");
+    // The Log's frame grew a row for the pin (conditions never eat
+    // history)...
+    let pinned_frame = drawn_content_height(&pinned, Panel::Log);
+    assert_eq!(pinned_frame, unpinned_frame + 1);
+    // ...and the height the App records did not: the banner is fixed
+    // above the scrollable stream, not part of it (ADR 0007).
+    assert_eq!(degraded.panel_height(Panel::Log), pinned_frame - 1);
+    assert_eq!(degraded.panel_height(Panel::Log), unpinned_frame);
+    assert_eq!(quiet.panel_height(Panel::Log), unpinned_frame);
 }
 
 // ── the smoke test ──────────────────────────────────────────────────

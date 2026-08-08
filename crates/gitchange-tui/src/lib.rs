@@ -29,7 +29,7 @@ use ratatui::backend::Backend;
 use ratatui::crossterm::event::{DisableFocusChange, EnableFocusChange, Event, KeyEventKind};
 use ratatui::crossterm::execute;
 
-use app::{Action, App, CommitDraft, CommitStep, Op, Severity};
+use app::{Action, App, CommitDraft, CommitStep, Op, PanelHeights, Severity};
 use theme::Theme;
 
 /// Error-modal titles reused across several ops' failure paths, so each
@@ -122,7 +122,18 @@ fn event_loop<B: Backend>(
     let theme = Theme::default();
     loop {
         let now = Instant::now();
-        terminal.draw(|frame| ui::draw(frame, app, &theme, now))?;
+        // The same pure layout the draw divides the frame with, recorded
+        // on the App afterwards (issue #85): a page key measures the
+        // screen the user was looking at when they pressed it. The draw
+        // runs before `select!` reads any input, so the heights are at
+        // most one frame stale and never absent — including across a
+        // resize.
+        let mut heights = PanelHeights::default();
+        terminal.draw(|frame| {
+            heights = ui::panel_areas(frame.area(), app).content_heights();
+            ui::draw(frame, app, &theme, now);
+        })?;
+        app.set_panel_heights(heights);
 
         // Wake exactly when the deferred indicator becomes due.
         let timer = match app.indicator_deadline() {

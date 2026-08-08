@@ -75,6 +75,41 @@ impl Panel {
             Panel::Log => "Log",
         }
     }
+
+    /// The panel's slot in [`Panel::ALL`], for keying a fixed-size
+    /// per-panel array. Read from `ALL` rather than written out, so the
+    /// keys and the array [`PanelHeights`] builds from `ALL` cannot
+    /// disagree.
+    fn slot(self) -> usize {
+        Self::ALL
+            .into_iter()
+            .position(|panel| panel == self)
+            .expect("ALL lists every panel")
+    }
+}
+
+/// Per-panel content heights as of the last drawn frame (issue #85):
+/// borders excluded, and for the Log the pinned-conditions banner
+/// excluded too. The renderer computes them; the main loop hands them
+/// here so an action's magnitude can depend on how tall its panel was.
+///
+/// Every panel has a height at all times — zero until the first frame —
+/// so reading one needs no option handling. See [`App::page`] for what
+/// that zero means to a page-sized step.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PanelHeights([u16; Panel::ALL.len()]);
+
+impl PanelHeights {
+    /// Measure every panel. [`Panel::ALL`] drives the call, so the set is
+    /// total by construction: a panel cannot be left behind at a default
+    /// by a caller that forgot it.
+    pub fn from_fn(height: impl FnMut(Panel) -> u16) -> Self {
+        Self(Panel::ALL.map(height))
+    }
+
+    pub fn get(&self, panel: Panel) -> u16 {
+        self.0[panel.slot()]
+    }
 }
 
 /// What a key press asks the main loop to do beyond mutating the App.
@@ -200,6 +235,10 @@ pub struct App {
     /// The (files, hunks, conflicted) counts last echoed to the log —
     /// polling refreshes that change nothing stay quiet.
     last_refresh_echo: Option<(usize, usize, usize)>,
+    /// What the last frame gave each panel (issue #85). The App holds no
+    /// other geometry: everything else the renderer needs it derives at
+    /// draw time.
+    panel_heights: PanelHeights,
 }
 
 impl App {
@@ -222,7 +261,31 @@ impl App {
             refresh_started: None,
             last_refresh_failure: None,
             last_refresh_echo: None,
+            panel_heights: PanelHeights::default(),
         }
+    }
+
+    // ── viewport geometry (issue #85) ───────────────────────────────
+
+    /// Record what the frame just drawn gave each panel. The main loop
+    /// calls this after every `terminal.draw`, so the heights read back
+    /// are the screen the user was looking at when they pressed a key.
+    pub fn set_panel_heights(&mut self, heights: PanelHeights) {
+        self.panel_heights = heights;
+    }
+
+    /// `panel`'s content height as of the last frame; zero before the
+    /// first one.
+    pub fn panel_height(&self, panel: Panel) -> u16 {
+        self.panel_heights.get(panel)
+    }
+
+    /// How far a page-sized step moves in `panel`: one screen, less a
+    /// row of overlap so the reader keeps a line of context. Never zero
+    /// — an App that has never been drawn pages by a single row rather
+    /// than standing still.
+    pub fn page(&self, panel: Panel) -> usize {
+        usize::from(self.panel_height(panel).saturating_sub(1).max(1))
     }
 
     // ── input ───────────────────────────────────────────────────────

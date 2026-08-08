@@ -1944,3 +1944,44 @@ fn the_bar_hides_c_while_an_operation_is_in_progress() {
         "the hunk-mode bar hides commit too"
     );
 }
+
+// ── viewport geometry (issue #85) ───────────────────────────────────
+
+#[test]
+fn a_never_rendered_app_pages_by_a_single_row() {
+    let app = App::new("repo");
+    for panel in Panel::ALL {
+        assert_eq!(app.panel_height(panel), 0, "{panel:?}");
+        // No Option at the call site, no panic, no zero-length step:
+        // the great majority of these tests never draw a frame.
+        assert_eq!(app.page(panel), 1, "{panel:?}");
+    }
+}
+
+#[test]
+fn a_recorded_height_pages_by_a_screen_less_one_row_of_overlap() {
+    let mut app = App::new("repo");
+    app.set_panel_heights(PanelHeights::from_fn(|panel| match panel {
+        Panel::Files => 20,
+        Panel::Log => 2,
+        Panel::Diff => 1,
+        _ => 0,
+    }));
+    assert_eq!(app.panel_height(Panel::Files), 20);
+    assert_eq!(app.page(Panel::Files), 19);
+    assert_eq!(app.page(Panel::Log), 1);
+    // A one-row panel still moves a row: the overlap never eats the step.
+    assert_eq!(app.page(Panel::Diff), 1);
+    // A panel the frame never gave a height keeps the unrendered step.
+    assert_eq!(app.page(Panel::Commits), 1);
+}
+
+#[test]
+fn every_panel_keys_its_own_height() {
+    // A distinct height per panel: reading any one back must give that
+    // panel's own number, not a neighbour's slot.
+    let heights = PanelHeights::from_fn(|panel| panel.slot() as u16 + 1);
+    for (index, panel) in Panel::ALL.into_iter().enumerate() {
+        assert_eq!(heights.get(panel), index as u16 + 1, "{panel:?}");
+    }
+}

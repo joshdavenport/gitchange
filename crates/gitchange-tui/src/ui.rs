@@ -7,20 +7,81 @@ use gitchange_core::{
     ALL, AMEND_FLAG, ChangeKind, FileStage, Head, HunkStage, NO_VERIFY_FLAG, UNASSIGNED, count_noun,
 };
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 use crate::app::{
     App, AssignRow, CommitDraft, DiffLine, ErrorModal, FilesRow, InputKind, LogEntry, Overlay,
-    Panel, Scope, Severity, help_rows, payload_counts,
+    Panel, PanelHeights, Scope, Severity, help_rows, payload_counts,
 };
 use crate::theme::Theme;
 
-pub fn draw(frame: &mut Frame, app: &App, theme: &Theme, now: Instant) {
-    let [main, keybar] =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(frame.area());
+/// Every rect the panel stack occupies in one frame, as [`panel_areas`]
+/// divides it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PanelAreas {
+    /// Everything above the keybar: the panel stack, and the area the
+    /// overlays, the help sheet and the error modal centre themselves in.
+    pub main: Rect,
+    pub keybar: Rect,
+    pub status: Rect,
+    pub changelists: Rect,
+    pub files: Rect,
+    pub commits: Rect,
+    pub diff: Rect,
+    pub log: LogAreas,
+}
+
+/// The Log panel's rects (ADR 0007): its outer frame, the pin banner
+/// fixed at the top of the inner area, and the scrollable stream under
+/// it. The pins are not part of the stream, so they are split off here
+/// rather than inside the draw.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LogAreas {
+    pub outer: Rect,
+    pub pins: Rect,
+    pub stream: Rect,
+}
+
+impl PanelAreas {
+    /// What each panel can show: its frame less the border rows, and the
+    /// Log's stream alone — the pin banner above it is fixed, so it is
+    /// not height a scroll can reach.
+    ///
+    /// Every number here is the one that panel's draw helper scrolls
+    /// against for the same frame: the scrolling panels share
+    /// [`inner_height`] with their draws, and the Log takes the very rect
+    /// its stream is painted into. The match is exhaustive, so a new
+    /// panel fails to compile rather than reporting a silent zero.
+    pub fn content_heights(&self) -> PanelHeights {
+        PanelHeights::from_fn(|panel| match panel {
+            Panel::Status => inner_height(self.status),
+            Panel::Changelists => inner_height(self.changelists),
+            Panel::Files => inner_height(self.files),
+            Panel::Commits => inner_height(self.commits),
+            Panel::Diff => inner_height(self.diff),
+            Panel::Log => self.log.stream.height,
+        })
+    }
+}
+
+/// A panel's content height: its frame less the two border rows.
+const fn inner_height(area: Rect) -> u16 {
+    area.height.saturating_sub(2)
+}
+
+/// The panel stack's geometry over `area`, pure in the `App` the sizes
+/// are read from — the one place the panel constraints are written.
+///
+/// Two callers share it: [`draw`], which paints into the rects, and the
+/// main loop, which records the content heights on the App so an
+/// action's magnitude can depend on how tall its panel was (issue #85).
+/// Computing it twice per frame costs a few `Layout` calls and keeps
+/// `draw` a pure function of `&App`.
+pub(crate) fn panel_areas(area: Rect, app: &App) -> PanelAreas {
+    let [main, keybar] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
     let [left, right] =
         Layout::horizontal([Constraint::Percentage(44), Constraint::Percentage(56)]).areas(main);
 
@@ -46,27 +107,52 @@ pub fn draw(frame: &mut Frame, app: &App, theme: &Theme, now: Instant) {
     .areas(left);
     // ~20% of the right column at rest, growing one row per pin so
     // conditions never eat history.
-    let pins = app.pins();
-    let log_height = (u32::from(right.height) * 20 / 100).max(5) as u16 + pins.len() as u16;
+    let pin_count = app.pins().len() as u16;
+    let log_height = (u32::from(right.height) * 20 / 100).max(5) as u16 + pin_count;
     let [diff, log] =
         Layout::vertical([Constraint::Min(5), Constraint::Length(log_height)]).areas(right);
+    // Inside the Log's frame — its `Borders::ALL` inset by a row and a
+    // column — the pin banner is fixed at the top and the stream takes
+    // the rest.
+    let log_inner = log.inner(Margin::new(1, 1));
+    let [pins, stream] =
+        Layout::vertical([Constraint::Length(pin_count), Constraint::Min(0)]).areas(log_inner);
 
-    draw_status(frame, status, app, theme);
-    draw_changelists(frame, changelists, app, theme);
-    draw_files(frame, files, app, theme);
-    draw_commits(frame, commits, app, theme);
-    draw_diff(frame, diff, app, theme);
-    draw_log(frame, log, app, &pins, theme);
-    draw_keybar(frame, keybar, app, theme, now);
+    PanelAreas {
+        main,
+        keybar,
+        status,
+        changelists,
+        files,
+        commits,
+        diff,
+        log: LogAreas {
+            outer: log,
+            pins,
+            stream,
+        },
+    }
+}
+
+pub fn draw(frame: &mut Frame, app: &App, theme: &Theme, now: Instant) {
+    let areas = panel_areas(frame.area(), app);
+
+    draw_status(frame, areas.status, app, theme);
+    draw_changelists(frame, areas.changelists, app, theme);
+    draw_files(frame, areas.files, app, theme);
+    draw_commits(frame, areas.commits, app, theme);
+    draw_diff(frame, areas.diff, app, theme);
+    draw_log(frame, areas.log, app, theme);
+    draw_keybar(frame, areas.keybar, app, theme, now);
     if let Some(overlay) = &app.overlay {
-        draw_overlay(frame, main, app, overlay, theme);
+        draw_overlay(frame, areas.main, app, overlay, theme);
     }
     if app.help_open {
-        draw_help(frame, main, theme);
+        draw_help(frame, areas.main, theme);
     }
     // Topmost: it swallows every key until dismissed (ADR 0007).
     if let Some(modal) = &app.error_modal {
-        draw_error_modal(frame, main, modal, theme);
+        draw_error_modal(frame, areas.main, modal, theme);
     }
 }
 
@@ -240,7 +326,7 @@ fn draw_changelists(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         .collect();
     let count = format!("{} of {}", app.changelist_row + 1, rows.len());
     let block = panel_block(Panel::Changelists, None, Some(count), app, theme);
-    let scroll = keep_visible(app.changelist_row, area.height.saturating_sub(2));
+    let scroll = keep_visible(app.changelist_row, inner_height(area));
     frame.render_widget(Paragraph::new(lines).block(block).scroll((scroll, 0)), area);
 }
 
@@ -316,7 +402,7 @@ fn draw_files(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         app,
         theme,
     );
-    let scroll = keep_visible(selected_row, area.height.saturating_sub(2));
+    let scroll = keep_visible(selected_row, inner_height(area));
     frame.render_widget(Paragraph::new(lines).block(block).scroll((scroll, 0)), area);
 }
 
@@ -351,7 +437,7 @@ fn draw_commits(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         format!("{} of {}", app.commit_row + 1, commits.len())
     };
     let block = panel_block(Panel::Commits, None, Some(count), app, theme);
-    let scroll = keep_visible(app.commit_row, area.height.saturating_sub(2));
+    let scroll = keep_visible(app.commit_row, inner_height(area));
     frame.render_widget(Paragraph::new(lines).block(block).scroll((scroll, 0)), area);
 }
 
@@ -369,8 +455,7 @@ fn draw_diff(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     // uses the App's line offset.
     let scroll = match app.selected_hunk_line() {
         Some(header) => {
-            let height = area.height.saturating_sub(2);
-            let max = (lines.len() as u16).saturating_sub(height);
+            let max = (lines.len() as u16).saturating_sub(inner_height(area));
             (header as u16).saturating_sub(2).min(max)
         }
         None => app.diff_scroll,
@@ -511,15 +596,19 @@ fn decorate(
 
 /// The Log panel (ADR 0007): the tinted pin banner fixed at top —
 /// conditions that currently hold — over one chronological stream of
-/// events, newest kept visible.
-fn draw_log(frame: &mut Frame, area: Rect, app: &App, pins: &[String], theme: &Theme) {
+/// events, newest kept visible. The banner/stream split arrives from
+/// [`panel_areas`], so what is drawn here and the height the App
+/// records are one number.
+fn draw_log(frame: &mut Frame, areas: LogAreas, app: &App, theme: &Theme) {
+    let LogAreas {
+        outer,
+        pins: pin_area,
+        stream: stream_area,
+    } = areas;
     let block = panel_block(Panel::Log, None, None, app, theme);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    frame.render_widget(block, outer);
 
-    let [pin_area, stream_area] =
-        Layout::vertical([Constraint::Length(pins.len() as u16), Constraint::Min(0)]).areas(inner);
-
+    let pins = app.pins();
     if !pins.is_empty() {
         let pin_lines: Vec<Line> = pins
             .iter()
