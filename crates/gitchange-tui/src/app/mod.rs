@@ -355,6 +355,8 @@ impl App {
             BindingId::MoveUp => self.move_selection(Motion::Row, -1),
             BindingId::PageDown => self.move_selection(Motion::Page, 1),
             BindingId::PageUp => self.move_selection(Motion::Page, -1),
+            BindingId::JumpBottom => self.move_selection(Motion::Jump, 1),
+            BindingId::JumpTop => self.move_selection(Motion::Jump, -1),
             BindingId::NewChangelist => {
                 self.overlay = Some(Overlay::Input {
                     kind: InputKind::NewChangelist,

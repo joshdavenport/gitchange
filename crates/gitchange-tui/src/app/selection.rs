@@ -6,7 +6,7 @@ use gitchange_core::{ChangedFile, Snapshot, count_noun};
 use super::status::COMMIT_DISABLED;
 use super::{App, Panel, Severity};
 
-/// How far one movement press moves (issue #84).
+/// How far one movement press moves (issues #84, #88).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Motion {
     /// One row, line or hunk — `j`/`k` and the arrows.
@@ -15,6 +15,8 @@ pub(super) enum Motion {
     /// row that was last visible becomes the first — `.`/`,` and
     /// `PgDn`/`PgUp`.
     Page,
+    /// The whole panel: as far as its content goes — `>` and `<`.
+    Jump,
 }
 
 impl App {
@@ -158,23 +160,30 @@ impl App {
     }
 
     /// Move the focused panel's selection — or its scroll, where the
-    /// panel has no selection — one row or one screenful, in
-    /// `direction` (`1` down, `-1` up).
+    /// panel has no selection — one row, one screenful or the whole
+    /// panel, in `direction` (`1` down, `-1` up).
     ///
-    /// One match over the panels serves both magnitudes rather than a
-    /// page-sized copy of it (issue #84), so a panel added later cannot
-    /// answer the movement keys without answering the page keys too.
-    /// Where the two magnitudes genuinely differ — hunk mode, whose page
-    /// is not a count of hunks — they part inside that panel's own arm.
+    /// One match over the panels serves every magnitude rather than a
+    /// copy of it per key (issues #84, #88), so a panel added later
+    /// cannot answer the movement keys without answering the page and
+    /// jump keys too. Where a magnitude genuinely differs — hunk mode,
+    /// whose page is not a count of hunks — it parts inside that panel's
+    /// own arm.
     pub(super) fn move_selection(&mut self, motion: Motion, direction: isize) {
         // A page is measured against the panel the key acts on, as the
         // last frame drew it (issue #85) — never zero, so an App that
-        // has yet to draw one pages by a single row.
+        // has yet to draw one pages by a single row. A jump moves
+        // without bound: every arm below already clamps to its own
+        // content, so both ends fall out of the clamps that are there
+        // rather than out of a second set of them.
         let amount = match motion {
             Motion::Row => 1,
             Motion::Page => self.page(self.focus),
+            Motion::Jump => usize::MAX,
         };
-        let delta = direction * amount as isize;
+        let delta = isize::try_from(amount)
+            .unwrap_or(isize::MAX)
+            .saturating_mul(direction);
         match self.focus {
             Panel::Changelists => {
                 let rows = self.changelist_rows().len();
@@ -210,7 +219,9 @@ impl App {
                 // space.
                 if let Some(index) = self.hunk_sel {
                     let next = match motion {
-                        Motion::Row => {
+                        // A row and a jump are both counts of hunks —
+                        // one step, or every step there is.
+                        Motion::Row | Motion::Jump => {
                             let hunks = self.selected_file().map_or(0, |file| file.hunks.len());
                             step(index, delta, hunks)
                         }
@@ -218,9 +229,13 @@ impl App {
                     };
                     self.hunk_sel = Some(next);
                 } else {
-                    let max = self.diff_lines().len().saturating_sub(1) as u16;
+                    // The offset is a `u16`, so a diff longer than one
+                    // can address ends where the offset does.
+                    let max = u16::try_from(self.diff_lines().len().saturating_sub(1))
+                        .unwrap_or(u16::MAX);
                     // A page came from a panel height, so it fits a
-                    // `u16`; the clamp is arithmetic hygiene.
+                    // `u16`; an unbounded jump saturates here and the
+                    // clamps below take it to the content's end.
                     let lines = u16::try_from(amount).unwrap_or(u16::MAX);
                     self.diff_scroll = if direction > 0 {
                         self.diff_scroll.saturating_add(lines).min(max)
@@ -231,11 +246,15 @@ impl App {
             }
             Panel::Log => {
                 // Offset from the stream's bottom: down goes back toward
-                // the newest entry, up into history.
+                // the newest entry, up into history — and a jump ends
+                // where that run of presses ends, so `>` is the newest
+                // entry rather than the offset's maximum.
                 self.log_scroll = if direction > 0 {
                     self.log_scroll.saturating_sub(amount)
                 } else {
-                    (self.log_scroll + amount).min(self.log.len().saturating_sub(1))
+                    self.log_scroll
+                        .saturating_add(amount)
+                        .min(self.log.len().saturating_sub(1))
                 };
             }
             Panel::Status => {}

@@ -2384,3 +2384,195 @@ fn the_page_keys_are_one_help_row_and_no_keybar_arm() {
         }
     }
 }
+
+// ── jumps (issue #88) ───────────────────────────────────────────────
+
+const JUMP_BOTTOM: KeyCode = KeyCode::Char('>');
+const JUMP_TOP: KeyCode = KeyCode::Char('<');
+
+#[test]
+fn jumping_the_files_panel_reaches_either_end_from_anywhere() {
+    let mut app = files_app(60, 21);
+    app.on_key(key(JUMP_BOTTOM));
+    assert_eq!(app.files_count(), (60, 60), "the last row");
+    app.on_key(key(JUMP_BOTTOM));
+    assert_eq!(app.files_count(), (60, 60), "pressing again is idempotent");
+    app.on_key(key(JUMP_TOP));
+    assert_eq!(app.files_count(), (1, 60), "the first row");
+    app.on_key(key(JUMP_TOP));
+    assert_eq!(app.files_count(), (1, 60));
+    // From a position that is neither end, both keys still reach one.
+    app.on_key(key(PAGE_DOWN));
+    assert_eq!(app.files_count().0, 21);
+    app.on_key(key(JUMP_BOTTOM));
+    assert_eq!(app.files_count().0, 60);
+}
+
+#[test]
+fn a_jump_needs_no_viewport() {
+    // No frame has been drawn, so every panel's height is zero. A page
+    // would move a single row; a jump is absolute and must not care.
+    let mut app = App::new("repo");
+    app.apply_snapshot(many_files(60));
+    drill_into_unassigned(&mut app);
+    app.on_key(key(JUMP_BOTTOM));
+    assert_eq!(app.files_count().0, 60);
+}
+
+#[test]
+fn jumping_the_commits_panel_reaches_either_end() {
+    let mut app = App::new("repo");
+    app.apply_snapshot(many_files(1)); // a dozen commits
+    viewport(&mut app, 10);
+    app.on_key(key(KeyCode::Char('4')));
+    assert_eq!(app.focus, Panel::Commits);
+    let last = app.snapshot.as_ref().unwrap().recent_commits.len() - 1;
+    app.on_key(key(JUMP_BOTTOM));
+    assert_eq!(app.commit_row, last, "the oldest retained commit");
+    app.on_key(key(JUMP_TOP));
+    assert_eq!(app.commit_row, 0);
+}
+
+#[test]
+fn jumping_the_changelists_panel_reaches_either_end() {
+    let mut app = app();
+    viewport(&mut app, 4);
+    assert_eq!(app.focus, Panel::Changelists);
+    app.on_key(key(JUMP_BOTTOM));
+    assert_eq!(app.scope(), Scope::Unassigned, "the last row");
+    app.on_key(key(JUMP_TOP));
+    assert_eq!(app.scope(), Scope::All);
+}
+
+#[test]
+fn jumping_the_diff_in_scroll_mode_stops_at_the_content() {
+    let mut app = diff_app(10, 10);
+    app.on_key(key(KeyCode::Char('0')));
+    assert_eq!(app.hunk_sel, None, "explicit Diff focus is scroll mode");
+    let last = app.diff_lines().len() as u16 - 1;
+    app.on_key(key(JUMP_BOTTOM));
+    assert_eq!(app.diff_scroll, last, "no jump reaches blank space");
+    app.on_key(key(JUMP_BOTTOM));
+    assert_eq!(app.diff_scroll, last, "pressing again is idempotent");
+    app.on_key(key(JUMP_TOP));
+    assert_eq!(app.diff_scroll, 0);
+    app.on_key(key(JUMP_TOP));
+    assert_eq!(app.diff_scroll, 0);
+}
+
+#[test]
+fn jumping_in_hunk_mode_takes_the_last_and_first_hunk() {
+    let mut app = diff_app(6, 5);
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(app.hunk_sel, Some(0), "enter selects the first hunk");
+    app.on_key(key(JUMP_BOTTOM));
+    assert_eq!(app.hunk_sel, Some(5), "the file's last hunk");
+    app.on_key(key(JUMP_BOTTOM));
+    assert_eq!(app.hunk_sel, Some(5), "pressing again is idempotent");
+    app.on_key(key(JUMP_TOP));
+    assert_eq!(app.hunk_sel, Some(0));
+    app.on_key(key(JUMP_TOP));
+    assert_eq!(app.hunk_sel, Some(0));
+}
+
+#[test]
+fn jumping_the_log_reaches_the_oldest_and_the_newest() {
+    let mut app = App::new("repo");
+    for index in 0..60 {
+        app.push_log(Severity::Info, format!("entry {index}"));
+    }
+    viewport(&mut app, 10);
+    app.on_key(key(KeyCode::Char('5')));
+    assert_eq!(app.focus, Panel::Log);
+    // The offset is from the stream's bottom, so `<` reaches history's
+    // far end and `>` comes back to the newest entry — the direction
+    // `k`/`,` and `j`/`.` already take in this panel. A jump is the
+    // limit of a long run of the movement key, not the maximum of the
+    // offset behind it.
+    app.on_key(key(JUMP_TOP));
+    assert_eq!(
+        app.log_scroll,
+        app.log.len() - 1,
+        "the oldest retained entry"
+    );
+    app.on_key(key(JUMP_TOP));
+    assert_eq!(app.log_scroll, app.log.len() - 1);
+    app.on_key(key(JUMP_BOTTOM));
+    assert_eq!(app.log_scroll, 0, "back to the newest");
+    app.on_key(key(JUMP_BOTTOM));
+    assert_eq!(app.log_scroll, 0);
+}
+
+#[test]
+fn a_jump_leaves_the_state_the_equivalent_run_of_single_steps_leaves() {
+    let mut jumped = files_app(60, 21);
+    let mut stepped = files_app(60, 21);
+    for app in [&mut jumped, &mut stepped] {
+        scrolled_with_a_blurred_hunk(app);
+    }
+    jumped.on_key(key(JUMP_BOTTOM));
+    for _ in 0..59 {
+        stepped.on_key(key(KeyCode::Char('j')));
+    }
+    assert_eq!(jumped.files_count().0, 60);
+    assert_eq!(jumped.file_sel, stepped.file_sel);
+    assert_eq!(
+        jumped.diff_scroll, 0,
+        "the new file's diff starts at the top"
+    );
+    assert_eq!(
+        jumped.hunk_sel, None,
+        "the blurred hunk belonged to the old file"
+    );
+    assert_eq!(jumped.diff_scroll, stepped.diff_scroll);
+    assert_eq!(jumped.hunk_sel, stepped.hunk_sel);
+}
+
+#[test]
+fn the_jump_keys_act_with_the_shift_that_typed_them() {
+    // A terminal reports `>` as its own character byte, with or without
+    // the SHIFT that produced it (ADR 0013). Both reports must act.
+    let mut app = files_app(60, 21);
+    app.on_key(KeyEvent::new(JUMP_BOTTOM, KeyModifiers::SHIFT));
+    assert_eq!(app.files_count().0, 60);
+    app.on_key(KeyEvent::new(JUMP_TOP, KeyModifiers::SHIFT));
+    assert_eq!(app.files_count().0, 1);
+}
+
+#[test]
+fn the_jump_keys_do_nothing_on_the_status_panel() {
+    let mut app = app();
+    viewport(&mut app, 10);
+    app.on_key(key(KeyCode::Char('1')));
+    assert_eq!(app.focus, Panel::Status);
+    let before = app.log.len();
+    app.on_key(key(JUMP_BOTTOM));
+    app.on_key(key(JUMP_TOP));
+    assert_eq!(app.focus, Panel::Status);
+    assert_eq!(app.log.len(), before, "a no-op movement says nothing");
+}
+
+#[test]
+fn the_jump_keys_are_one_help_row_and_no_keybar_arm() {
+    let jumps: Vec<(String, String)> = help_rows('→')
+        .into_iter()
+        .filter(|(_, label)| label.starts_with("jump"))
+        .collect();
+    let [(keys, _)] = &jumps[..] else {
+        panic!("the two records merge into one help row, got {jumps:?}");
+    };
+    for spelling in [">", "<"] {
+        assert!(keys.contains(spelling), "{keys} names {spelling}");
+    }
+    // The bar advertises no movement key, and these are movement keys.
+    let mut app = app();
+    for panel in Panel::ALL {
+        app.on_key(key(KeyCode::Char(panel.number())));
+        for (keys, _) in app.key_hints() {
+            assert!(
+                !keys.contains('>') && !keys.contains('<'),
+                "{panel:?} bar names a jump key: {keys}"
+            );
+        }
+    }
+}

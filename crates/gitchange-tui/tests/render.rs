@@ -991,6 +991,7 @@ fn the_help_overlay_derives_spellings_and_themes_its_arrows() {
     assert!(text.contains("1-5, 0"), "{text}");
     assert!(text.contains("j/k  ↓/↑"), "{text}");
     assert!(text.contains("./,  PgDn/PgUp"), "{text}");
+    assert!(text.contains(">/<"), "{text}");
     // The drill arrows take the theme's glyph — no `→` literals left.
     assert!(
         text.contains("drill in: changelist » files » hunk mode"),

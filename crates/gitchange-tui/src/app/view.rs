@@ -443,10 +443,10 @@ impl App {
     /// scopes in key order — three separate hints crowd out the rest of
     /// the bar. Hunk mode swaps in its own arm.
     ///
-    /// No arm mentions the movement or page keys (issues #86, #84): the
-    /// bar has finite width, arrow-key users and vim users both already
-    /// reach for a key that works, and the help overlay carries every
-    /// spelling.
+    /// No arm mentions the movement, page or jump keys (issues #86, #84,
+    /// #88): the bar has finite width, arrow-key users and vim users both
+    /// already reach for a key that works, and the help overlay carries
+    /// every spelling.
     pub fn key_hints(&self) -> Vec<(String, &'static str)> {
         use BindingId::*;
         const ASSIGN_TRIO: &[BindingId] = &[AssignSelected, AssignUnassigned, AssignAll];

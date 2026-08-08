@@ -18,6 +18,8 @@ pub(super) enum BindingId {
     MoveUp,
     PageDown,
     PageUp,
+    JumpBottom,
+    JumpTop,
     DrillIn,
     AssignSelected,
     AssignUnassigned,
@@ -195,6 +197,23 @@ pub(super) const BINDINGS: &[Binding] = &[
         keys: &[Key::Char(','), Key::PageUp],
         capability: Capability::Always,
         help: HelpLabel::Plain("page within panel / hunks / scroll diff"),
+    },
+    // The jump keys (issue #88), lazygit's spellings, paired with the
+    // page keys above as lazygit pairs them. Each arrives as its own
+    // character byte whether or not the terminal reports the shift that
+    // typed it, so ADR 0013 permits them and dispatch inspects no
+    // modifier. One shared help label, one overlay row.
+    Binding {
+        id: BindingId::JumpBottom,
+        keys: &[Key::Char('>')],
+        capability: Capability::Always,
+        help: HelpLabel::Plain("jump to either end of panel / hunks / diff"),
+    },
+    Binding {
+        id: BindingId::JumpTop,
+        keys: &[Key::Char('<')],
+        capability: Capability::Always,
+        help: HelpLabel::Plain("jump to either end of panel / hunks / diff"),
     },
     Binding {
         id: BindingId::DrillIn,
