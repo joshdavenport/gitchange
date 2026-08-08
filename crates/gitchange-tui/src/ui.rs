@@ -173,22 +173,22 @@ fn panel_block(
     } else {
         theme.colors.border
     };
+    // Every text the frame carries — the `[n]─` prefix, the title, the
+    // bottom count — takes one colour, so a focused panel reads as one
+    // unit rather than a lit border with dim writing on it (issue #45).
     let title_color = if focused {
         theme.colors.border_focus
     } else {
         theme.colors.title
     };
-    // The separator follows the number so the whole `[n]─Title` prefix
-    // reads as one focused unit (issue #45).
-    let prefix_color = if focused {
-        theme.colors.border_focus
-    } else {
-        theme.colors.dim
-    };
     let mut spans = vec![
+        // A title starts at the inner edge, hard against the corner.
+        // One rule glyph in the border's own colour insets it a column,
+        // so the frame reads `┌─[1]─Status` rather than `┌[1]─Status`.
+        Span::styled(theme.glyphs.rule.to_string(), Style::new().fg(border)),
         Span::styled(
             format!("[{}]{}", panel.number(), theme.glyphs.rule),
-            prefix_color,
+            title_color,
         ),
         Span::styled(panel.title(), Style::new().fg(title_color)),
     ];
@@ -197,11 +197,19 @@ fn panel_block(
     }
     let mut block = Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(theme.glyphs.panel_border)
         .border_style(Style::new().fg(border))
         .title(Line::from(spans));
     if let Some(count) = count {
-        block = block.title_bottom(Line::styled(count, theme.colors.dim).right_aligned());
+        // The trailing rule insets the count off the corner, mirroring
+        // the lead on the top border.
+        block = block.title_bottom(
+            Line::from(vec![
+                Span::styled(count, title_color),
+                Span::styled(theme.glyphs.rule.to_string(), Style::new().fg(border)),
+            ])
+            .right_aligned(),
+        );
     }
     block
 }

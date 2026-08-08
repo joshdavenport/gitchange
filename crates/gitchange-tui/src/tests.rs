@@ -27,6 +27,7 @@ use ratatui::layout::Rect;
 
 use super::*;
 use app::{INDICATOR_DELAY, LogEntry, Overlay, Panel};
+use theme::Theme;
 
 /// Wide enough that no panel renders degenerate — the same shape the
 /// render tests draw at.
@@ -819,20 +820,24 @@ fn drive_engine_frame(repo: &Repo, app: &mut App, script: Vec<EngineEvent>) -> B
     buffer
 }
 
-/// A panel's frame in a drawn buffer, found by its own title: the `╭`
-/// that titles it, across to its `╮` and down to the `╰` in the same
-/// column. Read off what was painted, so nothing here re-derives the
+/// A panel's frame in a drawn buffer, found by its own title: the top-left
+/// corner that titles it, across to the top-right and down to the
+/// bottom-left in the same column. The corners come from the theme's own
+/// [`Theme::glyphs`]`.panel_border`, so a frame the theme redraws is still
+/// found here. Read off what was painted, so nothing here re-derives the
 /// layout it checks.
 fn panel_frame(buffer: &Buffer, panel: Panel) -> Rect {
+    let frame = Theme::default().glyphs.panel_border.to_border_set();
     for y in 0..buffer.area.height {
         for x in 0..buffer.area.width {
-            if buffer[(x, y)].symbol() != "╭" {
+            if buffer[(x, y)].symbol() != frame.top_left {
                 continue;
             }
             // Bounded by this panel's own top-right corner: the two
             // columns draw their top borders on one row, and an
             // unbounded read would match the neighbour's title.
-            let Some(end) = (x + 1..buffer.area.width).find(|&x| buffer[(x, y)].symbol() == "╮")
+            let Some(end) =
+                (x + 1..buffer.area.width).find(|&x| buffer[(x, y)].symbol() == frame.top_right)
             else {
                 continue;
             };
@@ -841,7 +846,7 @@ fn panel_frame(buffer: &Buffer, panel: Panel) -> Rect {
                 continue;
             }
             let bottom = (y + 1..buffer.area.height)
-                .find(|&y| buffer[(x, y)].symbol() == "╰")
+                .find(|&y| buffer[(x, y)].symbol() == frame.bottom_left)
                 .expect("a titled panel closes its frame");
             return Rect {
                 x,

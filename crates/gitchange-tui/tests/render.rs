@@ -725,14 +725,24 @@ fn hunk_headers_share_one_cursor_column_in_hunk_mode() {
 }
 
 #[test]
-fn the_panel_number_prefix_follows_focus() {
-    let theme = Theme::default();
+fn the_panel_frame_text_follows_focus() {
+    // Three distinct colours, because the default theme leaves both
+    // `border` and `title` at Reset: against defaults, blurred frame text
+    // would read the same whether it were styled or not.
+    let mut theme = Theme::default();
+    theme.colors.border = Color::Blue;
+    theme.colors.title = Color::Magenta;
+    theme.colors.border_focus = Color::Green;
     let mut app = App::new("repo");
     app.apply_snapshot(snapshot());
 
-    // Default focus is Changelists: its whole `[2]─` prefix takes the
-    // focus colour; the blurred Files panel's `[3]─` stays dim.
-    let buffer = render_buffer(&app);
+    // Every text a frame carries moves together: the `[n]─` prefix on the
+    // top border and the count on the bottom. Default focus is
+    // Changelists, so its frame text takes the focus colour and the
+    // blurred Files frame takes the title colour. Both sides read the
+    // theme's own tokens — the point is that the text follows focus, not
+    // which two colours a theme picks.
+    let buffer = render_buffer_themed(&app, &theme);
     let (cx, cy) = find_text(&buffer, "[2]─");
     let (fx, fy) = find_text(&buffer, "[3]─");
     for dx in 0..4 {
@@ -743,18 +753,30 @@ fn the_panel_number_prefix_follows_focus() {
         );
         assert_eq!(
             fg_at(&buffer, fx + dx, fy),
-            theme.colors.dim,
+            theme.colors.title,
             "blurred [3]─ cell {dx}"
         );
     }
+    let (ccx, ccy) = count_tail(&buffer, Panel::Changelists.title());
+    let (fcx, fcy) = count_tail(&buffer, Panel::Files.title());
+    assert_eq!(
+        fg_at(&buffer, ccx, ccy),
+        theme.colors.border_focus,
+        "focused Changelists count"
+    );
+    assert_eq!(
+        fg_at(&buffer, fcx, fcy),
+        theme.colors.title,
+        "blurred Files count"
+    );
 
-    // Focus Files: the colours swap.
+    // Focus Files: the colours swap, top border and bottom count alike.
     app.on_key(key(KeyCode::Char('3')));
-    let buffer = render_buffer(&app);
+    let buffer = render_buffer_themed(&app, &theme);
     for dx in 0..4 {
         assert_eq!(
             fg_at(&buffer, cx + dx, cy),
-            theme.colors.dim,
+            theme.colors.title,
             "blurred [2]─ cell {dx}"
         );
         assert_eq!(
@@ -763,6 +785,16 @@ fn the_panel_number_prefix_follows_focus() {
             "focused [3]─ cell {dx}"
         );
     }
+    assert_eq!(
+        fg_at(&buffer, ccx, ccy),
+        theme.colors.title,
+        "blurred Changelists count"
+    );
+    assert_eq!(
+        fg_at(&buffer, fcx, fcy),
+        theme.colors.border_focus,
+        "focused Files count"
+    );
 }
 
 #[test]
@@ -1053,11 +1085,36 @@ fn row_text(buffer: &Buffer, y: u16) -> String {
 /// `None` when the panel is not drawn, or is drawn without a frame to
 /// measure.
 fn left_panel_rows(buffer: &Buffer, title: &str) -> Option<(u16, u16)> {
+    // The frame's own glyphs, so a theme that redraws the border does not
+    // hide every panel from this helper.
+    let frame = Theme::default().glyphs.panel_border.to_border_set();
     let corner = |y: u16| buffer[(0, y)].symbol();
     let top = (0..buffer.area.height)
-        .find(|&y| corner(y) == "╭" && row_text(buffer, y).contains(title))?;
-    let bottom = (top + 1..buffer.area.height).find(|&y| corner(y) != "│")?;
-    (corner(bottom) == "╰").then_some((top, bottom))
+        .find(|&y| corner(y) == frame.top_left && row_text(buffer, y).contains(title))?;
+    let bottom = (top + 1..buffer.area.height).find(|&y| corner(y) != frame.vertical_left)?;
+    (corner(bottom) == frame.bottom_left).then_some((top, bottom))
+}
+
+/// The last cell of a left-column panel's bottom-right count, found from
+/// the corner the count is inset off: the trailing rule sits against the
+/// corner, the count's own last cell one further left.
+fn count_tail(buffer: &Buffer, title: &str) -> (u16, u16) {
+    let frame = Theme::default().glyphs.panel_border.to_border_set();
+    let (_, bottom) =
+        left_panel_rows(buffer, title).unwrap_or_else(|| panic!("panel {title} is not drawn"));
+    let corner = (0..buffer.area.width)
+        .find(|&x| buffer[(x, bottom)].symbol() == frame.bottom_right)
+        .unwrap_or_else(|| panic!("panel {title} does not close its bottom border"));
+    let x = corner - 2;
+    // A count ends in its total, so the cell is a digit. Asserted here
+    // because the border shares the focus colour: a caller reading a
+    // border cell by mistake would still see the colour it expects.
+    let symbol = buffer[(x, bottom)].symbol();
+    assert!(
+        symbol.chars().all(|c| c.is_ascii_digit()),
+        "panel {title} count tail is {symbol:?}, not a digit"
+    );
+    (x, bottom)
 }
 
 /// A left-column panel's outer height, borders included.

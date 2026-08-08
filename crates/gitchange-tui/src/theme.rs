@@ -6,6 +6,7 @@ use gitchange_core::{
     ACTIVE_MARKER, ARROW, PARTIALLY_STAGED, SEPARATOR, STAGED, STAGED_STALE, UNSTAGED,
 };
 use ratatui::style::Color;
+use ratatui::widgets::BorderType;
 
 pub struct Theme {
     pub colors: Colors,
@@ -77,6 +78,12 @@ pub struct Glyphs {
     /// The horizontal rule: the panel-title prefix's `[n]─Title` divider
     /// and the assign popup's section break.
     pub rule: char,
+    /// The panel frame's own glyph set — a whole corner-and-edge set
+    /// rather than one char, which is why it is a `BorderType` and not a
+    /// field per corner. The render tests find a panel by the corners it
+    /// draws, so they read this rather than spelling `┌` out again: a
+    /// theme may change the frame without breaking them.
+    pub panel_border: BorderType,
     /// The truncation/continuation mark ("loading…", the assign popup's
     /// "create new changelist…", the body input's placeholder, the
     /// keybar's "refreshing…"). A theme targeting a terminal without
@@ -88,9 +95,9 @@ impl Default for Theme {
     fn default() -> Self {
         Self {
             colors: Colors {
-                border: Color::DarkGray,
+                border: Color::Reset,
                 border_focus: Color::Green,
-                title: Color::Cyan,
+                title: Color::Reset,
                 dim: Color::DarkGray,
                 text: Color::Reset,
                 changelist: Color::Magenta,
@@ -134,6 +141,7 @@ impl Default for Theme {
                 cursor: '❯',
                 keybar_gap: "  ",
                 rule: '─',
+                panel_border: BorderType::Plain,
                 ellipsis: '…',
             },
         }
