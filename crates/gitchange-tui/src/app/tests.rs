@@ -1985,3 +1985,402 @@ fn every_panel_keys_its_own_height() {
         assert_eq!(heights.get(panel), index as u16 + 1, "{panel:?}");
     }
 }
+
+// ── paging (issue #84) ──────────────────────────────────────────────
+
+const PAGE_DOWN: KeyCode = KeyCode::Char('.');
+const PAGE_UP: KeyCode = KeyCode::Char(',');
+
+/// A snapshot of `count` single-hunk unassigned files and no changelists,
+/// so a drill into unassigned renders them as one flat list — row index
+/// and entry index are the same number there. Carries a dozen commits
+/// too, so the Commits panel is never degenerate in a test that pages
+/// through every panel.
+fn many_files(count: usize) -> Snapshot {
+    Snapshot {
+        files: (0..count)
+            .map(|index| {
+                file(
+                    &format!("src/file{index:03}.rs"),
+                    vec![hunk(index as u32 + 1, None, HunkStage::Unstaged)],
+                )
+            })
+            .collect(),
+        changelists: Vec::new(),
+        active: None,
+        advisories: Vec::new(),
+        head: Head::Branch {
+            name: "main".into(),
+        },
+        recent_commits: (0..12)
+            .map(|index| CommitInfo {
+                short_id: format!("{index:07}"),
+                author: "Josh Davenport-Smith".into(),
+                summary: format!("commit {index}"),
+            })
+            .collect(),
+        operation: None,
+    }
+}
+
+/// Give every panel `height` content rows, as one drawn frame would.
+fn viewport(app: &mut App, height: u16) {
+    app.set_panel_heights(PanelHeights::from_fn(|_| height));
+}
+
+/// Drill from the Changelists panel into the unassigned scope, whose
+/// Files rows are one flat list — so a row index and an entry index are
+/// the same number there.
+fn drill_into_unassigned(app: &mut App) {
+    app.on_key(key(KeyCode::Down)); // all → unassigned
+    app.on_key(key(KeyCode::Enter)); // → files
+    assert_eq!(app.focus, Panel::Files);
+}
+
+/// An App over `snapshot`, drilled into unassigned with the Files panel
+/// focused and every panel `height` rows tall.
+fn drilled_app(snapshot: Snapshot, height: u16) -> App {
+    let mut app = App::new("repo");
+    app.apply_snapshot(snapshot);
+    viewport(&mut app, height);
+    drill_into_unassigned(&mut app);
+    app
+}
+
+/// [`drilled_app`] over `count` single-hunk files.
+fn files_app(count: usize, height: u16) -> App {
+    drilled_app(many_files(count), height)
+}
+
+/// [`drilled_app`] over one file of `hunks` two-line hunks, whose headers
+/// land on lines 2, 6, 10, … — four lines apart.
+fn diff_app(hunks: usize, height: u16) -> App {
+    let mut snapshot = many_files(1);
+    snapshot.files[0].hunks = (0..hunks)
+        .map(|index| hunk(index as u32 * 10 + 1, None, HunkStage::Unstaged))
+        .collect();
+    drilled_app(snapshot, height)
+}
+
+#[test]
+fn paging_the_files_panel_steps_a_screen_less_a_row_of_overlap() {
+    // Twenty-one content rows: from the first row the page lands on the
+    // twenty-first — the row that was last visible — so the fold row is
+    // shared between the two screens and nothing is stepped over.
+    let mut app = files_app(60, 21);
+    assert_eq!(app.files_count(), (1, 60));
+    app.on_key(key(PAGE_DOWN));
+    assert_eq!(app.files_count().0, 21, "the last visible row");
+    app.on_key(key(PAGE_DOWN));
+    assert_eq!(app.files_count().0, 41);
+    app.on_key(key(PAGE_UP));
+    assert_eq!(app.files_count().0, 21, "up reverses it exactly");
+    app.on_key(key(PAGE_UP));
+    assert_eq!(app.files_count().0, 1);
+}
+
+#[test]
+fn paging_a_list_clamps_at_both_ends_and_repeats_harmlessly() {
+    let mut app = files_app(30, 21);
+    app.on_key(key(PAGE_DOWN));
+    app.on_key(key(PAGE_DOWN));
+    assert_eq!(
+        app.files_count(),
+        (30, 30),
+        "the tail clamps to the last row"
+    );
+    app.on_key(key(PAGE_DOWN));
+    assert_eq!(app.files_count(), (30, 30), "pressing again is idempotent");
+    app.on_key(key(PAGE_UP));
+    app.on_key(key(PAGE_UP));
+    assert_eq!(app.files_count(), (1, 30));
+    app.on_key(key(PAGE_UP));
+    assert_eq!(app.files_count(), (1, 30));
+}
+
+#[test]
+fn a_page_measures_the_panel_it_moves() {
+    // A distinct height either side of the focused panel: paging Files
+    // must take Files' own screen, not a neighbour's.
+    let mut app = files_app(60, 21);
+    app.set_panel_heights(PanelHeights::from_fn(|panel| match panel {
+        Panel::Files => 11,
+        _ => 31,
+    }));
+    app.on_key(key(PAGE_DOWN));
+    assert_eq!(app.files_count().0, 11);
+}
+
+#[test]
+fn a_never_rendered_app_pages_a_list_by_a_single_row() {
+    // No frame has been drawn, so every panel's height is zero — the
+    // press must still move, and by exactly one row.
+    let mut app = App::new("repo");
+    app.apply_snapshot(many_files(60));
+    drill_into_unassigned(&mut app);
+    app.on_key(key(PAGE_DOWN));
+    assert_eq!(app.files_count().0, 2);
+}
+
+/// Leave a diff scrolled away from its top and a hunk selection blurred
+/// out of the Diff panel — the two things moving the file selection has
+/// to clear — driving it all through the keymap.
+fn scrolled_with_a_blurred_hunk(app: &mut App) {
+    app.on_key(key(KeyCode::Char('0'))); // diff, scroll mode
+    for _ in 0..3 {
+        app.on_key(key(KeyCode::Char('j')));
+    }
+    app.on_key(key(KeyCode::Char('3'))); // back to files
+    app.on_key(key(KeyCode::Enter)); // hunk mode
+    app.on_key(key(KeyCode::Char('3'))); // blur it, still selected
+    assert_eq!(app.diff_scroll, 3);
+    assert_eq!(app.hunk_sel, Some(0));
+}
+
+#[test]
+fn a_page_leaves_the_state_an_equal_run_of_single_steps_leaves() {
+    let mut paged = files_app(60, 21);
+    let mut stepped = files_app(60, 21);
+    for app in [&mut paged, &mut stepped] {
+        scrolled_with_a_blurred_hunk(app);
+    }
+    paged.on_key(key(PAGE_DOWN));
+    for _ in 0..20 {
+        stepped.on_key(key(KeyCode::Char('j')));
+    }
+    assert_eq!(paged.files_count().0, 21);
+    assert_eq!(paged.file_sel, stepped.file_sel);
+    assert_eq!(
+        paged.diff_scroll, 0,
+        "the new file's diff starts at the top"
+    );
+    assert_eq!(
+        paged.hunk_sel, None,
+        "the blurred hunk belonged to the old file"
+    );
+    assert_eq!(paged.diff_scroll, stepped.diff_scroll);
+    assert_eq!(paged.hunk_sel, stepped.hunk_sel);
+}
+
+#[test]
+fn paging_the_changelists_panel_lands_on_the_last_row() {
+    // The panel fits its four rows today, so the clamp is the whole
+    // behaviour — and it stays correct once the panel can scroll (#87)
+    // without a code path of its own.
+    let mut app = app();
+    viewport(&mut app, 4);
+    assert_eq!(app.focus, Panel::Changelists);
+    app.on_key(key(PAGE_DOWN));
+    assert_eq!(app.scope(), Scope::Unassigned, "the last row");
+    app.on_key(key(PAGE_UP));
+    assert_eq!(app.scope(), Scope::All);
+}
+
+#[test]
+fn paging_the_commits_panel_steps_and_clamps() {
+    let mut app = App::new("repo");
+    app.apply_snapshot(many_files(1)); // a dozen commits
+    viewport(&mut app, 10);
+    app.on_key(key(KeyCode::Char('4')));
+    assert_eq!(app.focus, Panel::Commits);
+    app.on_key(key(PAGE_DOWN));
+    assert_eq!(app.commit_row, 9);
+    app.on_key(key(PAGE_DOWN));
+    assert_eq!(app.commit_row, 11, "clamped to the last commit");
+    app.on_key(key(PAGE_UP));
+    assert_eq!(app.commit_row, 2);
+}
+
+#[test]
+fn paging_the_diff_in_scroll_mode_stops_at_the_content() {
+    let mut app = diff_app(10, 10);
+    app.on_key(key(KeyCode::Char('0')));
+    assert_eq!(app.hunk_sel, None, "explicit Diff focus is scroll mode");
+    app.on_key(key(PAGE_DOWN));
+    assert_eq!(app.diff_scroll, 9);
+    let last = app.diff_lines().len() as u16 - 1;
+    for _ in 0..10 {
+        app.on_key(key(PAGE_DOWN));
+    }
+    assert_eq!(app.diff_scroll, last, "no page reaches blank space");
+    for _ in 0..10 {
+        app.on_key(key(PAGE_UP));
+    }
+    assert_eq!(app.diff_scroll, 0);
+}
+
+#[test]
+fn a_hunk_header_on_the_fold_row_is_taken() {
+    // Headers four lines apart, a five-row panel: the fold — four lines
+    // on from the current header — is exactly the next header, and the
+    // shared fold row is what makes it the one taken.
+    let mut app = diff_app(6, 5);
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(app.hunk_sel, Some(0), "enter selects the first hunk");
+    assert_eq!(app.hunk_header_lines()[..2], [2, 6]);
+    app.on_key(key(PAGE_DOWN));
+    assert_eq!(app.hunk_sel, Some(1));
+    app.on_key(key(PAGE_UP));
+    assert_eq!(app.hunk_sel, Some(0));
+}
+
+#[test]
+fn a_page_skips_the_short_hunks_before_the_fold() {
+    // A nine-row panel's fold is eight lines on: two whole hunks. The
+    // one in between is paged over, not walked — that is paging.
+    let mut app = diff_app(6, 9);
+    app.on_key(key(KeyCode::Enter));
+    app.on_key(key(PAGE_DOWN));
+    assert_eq!(app.hunk_sel, Some(2));
+}
+
+#[test]
+fn a_hunk_taller_than_the_panel_is_left_in_one_press() {
+    let mut snapshot = many_files(1);
+    let mut tall = hunk(20, None, HunkStage::Unstaged);
+    tall.identity = HunkIdentity::Text {
+        lines: (0..20)
+            .map(|index| HunkLine {
+                origin: '+',
+                content: format!("line {index}\n"),
+            })
+            .collect(),
+    };
+    snapshot.files[0].hunks = vec![
+        hunk(1, None, HunkStage::Unstaged),
+        tall,
+        hunk(60, None, HunkStage::Unstaged),
+    ];
+    let mut app = drilled_app(snapshot, 6);
+    app.on_key(key(KeyCode::Enter)); // hunk mode
+    app.on_key(key(KeyCode::Char('j'))); // onto the tall hunk
+    assert_eq!(app.hunk_sel, Some(1));
+    app.on_key(key(PAGE_DOWN));
+    assert_eq!(
+        app.hunk_sel,
+        Some(2),
+        "twenty unread lines go by in one press — reading them is j/k's job"
+    );
+}
+
+#[test]
+fn a_page_with_no_hunk_at_the_fold_clamps_to_the_end() {
+    let mut app = diff_app(3, 40);
+    app.on_key(key(KeyCode::Enter));
+    app.on_key(key(PAGE_DOWN));
+    assert_eq!(app.hunk_sel, Some(2), "clamped to the last hunk");
+    app.on_key(key(PAGE_DOWN));
+    assert_eq!(app.hunk_sel, Some(2), "pressing again is idempotent");
+    app.on_key(key(PAGE_UP));
+    assert_eq!(app.hunk_sel, Some(0));
+    app.on_key(key(PAGE_UP));
+    assert_eq!(app.hunk_sel, Some(0));
+}
+
+#[test]
+fn paging_the_log_moves_a_screen_of_the_stream() {
+    let mut app = App::new("repo");
+    for index in 0..60 {
+        app.push_log(Severity::Info, format!("entry {index}"));
+    }
+    viewport(&mut app, 10);
+    app.on_key(key(KeyCode::Char('5')));
+    assert_eq!(app.focus, Panel::Log);
+    // The offset is from the stream's bottom, so up pages into history
+    // and down comes back toward the newest entry — the direction `k`
+    // and `j` already take.
+    app.on_key(key(PAGE_UP));
+    assert_eq!(app.log_scroll, 9);
+    for _ in 0..10 {
+        app.on_key(key(PAGE_UP));
+    }
+    assert_eq!(app.log_scroll, 59, "stopped at the oldest retained entry");
+    app.on_key(key(PAGE_DOWN));
+    assert_eq!(app.log_scroll, 50);
+    for _ in 0..10 {
+        app.on_key(key(PAGE_DOWN));
+    }
+    assert_eq!(app.log_scroll, 0, "back to the newest");
+}
+
+#[test]
+fn the_page_keys_do_nothing_on_the_status_panel() {
+    let mut app = app();
+    viewport(&mut app, 10);
+    app.on_key(key(KeyCode::Char('1')));
+    assert_eq!(app.focus, Panel::Status);
+    let before = app.log.len();
+    app.on_key(key(PAGE_DOWN));
+    app.on_key(key(PAGE_UP));
+    assert_eq!(app.focus, Panel::Status);
+    assert_eq!(app.log.len(), before, "a no-op movement says nothing");
+}
+
+#[test]
+fn the_keypad_page_keys_are_the_same_action() {
+    // One script over every panel, run twice on the two spellings: the
+    // state they leave must be indistinguishable.
+    let run = |down: KeyCode, up: KeyCode| {
+        let mut app = files_app(60, 11);
+        for _ in 0..30 {
+            app.push_log(Severity::Info, "entry");
+        }
+        app.on_key(key(down));
+        app.on_key(key(down));
+        app.on_key(key(up));
+        app.on_key(key(KeyCode::Enter)); // hunk mode
+        app.on_key(key(down));
+        app.on_key(key(KeyCode::Char('0'))); // diff, scroll mode
+        app.on_key(key(down));
+        for panel in [
+            Panel::Log,
+            Panel::Commits,
+            Panel::Changelists,
+            Panel::Status,
+        ] {
+            app.on_key(key(KeyCode::Char(panel.number())));
+            app.on_key(key(down));
+            app.on_key(key(up));
+            app.on_key(key(down));
+        }
+        (
+            app.file_sel.clone(),
+            app.hunk_sel,
+            app.diff_scroll,
+            app.log_scroll,
+            app.changelist_row,
+            app.commit_row,
+            app.focus,
+            app.log.len(),
+        )
+    };
+    assert_eq!(
+        run(PAGE_DOWN, PAGE_UP),
+        run(KeyCode::PageDown, KeyCode::PageUp)
+    );
+}
+
+#[test]
+fn the_page_keys_are_one_help_row_and_no_keybar_arm() {
+    let paging: Vec<(String, String)> = help_rows('→')
+        .into_iter()
+        .filter(|(_, label)| label.starts_with("page"))
+        .collect();
+    let [(keys, _)] = &paging[..] else {
+        panic!("the two records merge into one help row, got {paging:?}");
+    };
+    for spelling in [".", ",", "PgDn", "PgUp"] {
+        assert!(keys.contains(spelling), "{keys} names {spelling}");
+    }
+    // The bar advertises no movement key, and these are movement keys.
+    let mut app = app();
+    for panel in Panel::ALL {
+        app.on_key(key(KeyCode::Char(panel.number())));
+        for (keys, _) in app.key_hints() {
+            assert!(
+                !keys.contains('.') && !keys.contains(','),
+                "{panel:?} bar names a page key: {keys}"
+            );
+        }
+    }
+}

@@ -18,6 +18,7 @@ pub use status::{ErrorModal, INDICATOR_DELAY, LogEntry, Severity, advisory_entry
 pub use view::{ChangelistRow, DiffLine, FileEntry, FilesRow, Group, HunkTag, Scope};
 
 use keymap::{BindingId, Capability};
+use selection::Motion;
 
 use std::time::Instant;
 
@@ -350,8 +351,10 @@ impl App {
                     }
                 }
             }
-            BindingId::MoveDown => self.move_selection(1),
-            BindingId::MoveUp => self.move_selection(-1),
+            BindingId::MoveDown => self.move_selection(Motion::Row, 1),
+            BindingId::MoveUp => self.move_selection(Motion::Row, -1),
+            BindingId::PageDown => self.move_selection(Motion::Page, 1),
+            BindingId::PageUp => self.move_selection(Motion::Page, -1),
             BindingId::NewChangelist => {
                 self.overlay = Some(Overlay::Input {
                     kind: InputKind::NewChangelist,

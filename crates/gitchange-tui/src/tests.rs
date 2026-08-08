@@ -23,6 +23,7 @@ use gitchange_test_support::RepoFixture;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::layout::Rect;
 
 use super::*;
 use app::{INDICATOR_DELAY, LogEntry, Overlay, Panel};
@@ -787,9 +788,25 @@ fn engine_events_reach_their_app_handlers() {
 
 // ── the frame's geometry (issue #85) ────────────────────────────────
 
-/// [`drive_engine`], keeping the terminal so the last frame the loop drew
-/// can be measured. The engine disconnect returns before the next draw,
-/// so that frame is the one the App's recorded heights came from.
+/// [`run_loop`]'s terminal-keeping twin, for a test that reads what the
+/// loop painted rather than what it requested: the same channel
+/// discipline, plus the last frame drawn. The loop draws at the top of
+/// every iteration, so that frame is the one the run's last event
+/// produced.
+fn run_loop_frame(
+    repo: &Repo,
+    app: &mut App,
+    engine_events: &Receiver<EngineEvent>,
+    input: &Receiver<Event>,
+) -> (Result<(), Error>, Buffer) {
+    let mut terminal = ratatui::Terminal::new(TestBackend::new(WIDTH, HEIGHT)).unwrap();
+    let result = event_loop(&mut terminal, engine_events, input, || {}, repo, app);
+    (result, terminal.backend().buffer().clone())
+}
+
+/// [`drive_engine`], keeping the frame it ended on: the engine disconnect
+/// returns before the next draw, so that frame is the one the App's
+/// recorded heights came from.
 fn drive_engine_frame(repo: &Repo, app: &mut App, script: Vec<EngineEvent>) -> Buffer {
     let (engine_tx, engine_rx) = unbounded();
     let (_input_tx, input_rx) = unbounded();
@@ -797,16 +814,16 @@ fn drive_engine_frame(repo: &Repo, app: &mut App, script: Vec<EngineEvent>) -> B
         engine_tx.send(event).unwrap();
     }
     drop(engine_tx);
-    let mut terminal = ratatui::Terminal::new(TestBackend::new(WIDTH, HEIGHT)).unwrap();
-    let result = event_loop(&mut terminal, &engine_rx, &input_rx, || {}, repo, app);
+    let (result, buffer) = run_loop_frame(repo, app, &engine_rx, &input_rx);
     assert!(matches!(result, Err(Error::EngineDied)), "{result:?}");
-    terminal.backend().buffer().clone()
+    buffer
 }
 
-/// A panel's frame rows in a drawn buffer, found by its own title: the
-/// `╭` that titles it, down to the `╰` in the same column. Read off what
-/// was painted, so nothing here re-derives the layout it checks.
-fn panel_frame(buffer: &Buffer, panel: Panel) -> (u16, u16) {
+/// A panel's frame in a drawn buffer, found by its own title: the `╭`
+/// that titles it, across to its `╮` and down to the `╰` in the same
+/// column. Read off what was painted, so nothing here re-derives the
+/// layout it checks.
+fn panel_frame(buffer: &Buffer, panel: Panel) -> Rect {
     for y in 0..buffer.area.height {
         for x in 0..buffer.area.width {
             if buffer[(x, y)].symbol() != "╭" {
@@ -826,7 +843,12 @@ fn panel_frame(buffer: &Buffer, panel: Panel) -> (u16, u16) {
             let bottom = (y + 1..buffer.area.height)
                 .find(|&y| buffer[(x, y)].symbol() == "╰")
                 .expect("a titled panel closes its frame");
-            return (y, bottom);
+            return Rect {
+                x,
+                y,
+                width: end - x + 1,
+                height: bottom - y + 1,
+            };
         }
     }
     panic!("panel {} is not drawn", panel.title());
@@ -834,8 +856,23 @@ fn panel_frame(buffer: &Buffer, panel: Panel) -> (u16, u16) {
 
 /// The rows inside a drawn panel's frame, borders excluded.
 fn drawn_content_height(buffer: &Buffer, panel: Panel) -> u16 {
-    let (top, bottom) = panel_frame(buffer, panel);
-    bottom - top - 1
+    panel_frame(buffer, panel).height - 2
+}
+
+/// The text of a drawn panel's content rows, borders excluded and each
+/// row trimmed — so a row reads the same whether or not it carries the
+/// selection, which pads its line to the panel's width.
+fn drawn_rows(buffer: &Buffer, panel: Panel) -> Vec<String> {
+    let frame = panel_frame(buffer, panel);
+    (frame.y + 1..frame.bottom() - 1)
+        .map(|y| {
+            (frame.x + 1..frame.right() - 1)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+                .trim()
+                .to_owned()
+        })
+        .collect()
 }
 
 #[test]
@@ -889,6 +926,81 @@ fn the_recorded_log_height_excludes_the_pin_banner() {
     assert_eq!(degraded.panel_height(Panel::Log), pinned_frame - 1);
     assert_eq!(degraded.panel_height(Panel::Log), unpinned_frame);
     assert_eq!(quiet.panel_height(Panel::Log), unpinned_frame);
+}
+
+// ── paging (issue #84) ──────────────────────────────────────────────
+
+/// [`drive`], keeping the frame it ended on: the loop redraws before it
+/// discovers the input disconnect, so that frame is the one the script's
+/// last key produced.
+fn drive_frame(repo: &Repo, app: &mut App, script: &[Event]) -> Buffer {
+    let (_engine_tx, engine_rx) = unbounded::<EngineEvent>();
+    let (input_tx, input_rx) = unbounded();
+    for event in script {
+        input_tx.send(event.clone()).unwrap();
+    }
+    drop(input_tx);
+    let (result, buffer) = run_loop_frame(repo, app, &engine_rx, &input_rx);
+    assert!(result.is_ok(), "{result:?}");
+    buffer
+}
+
+/// A repo with far more changed files than the Files panel can show.
+fn repo_with_many_files(count: usize) -> (RepoFixture, Repo) {
+    let fixture = RepoFixture::new();
+    fixture.write("seed.txt", "seed\n").commit_all("init");
+    for index in 0..count {
+        fixture.write(&format!("file{index:03}.txt"), "changed\n");
+    }
+    let repo = Repo::discover(fixture.path()).unwrap();
+    (fixture, repo)
+}
+
+/// The recorded height reaching the press: the same script run once and
+/// twice, each ending on the frame its last page key drew.
+///
+/// The assertion is the property rather than a row index — a page leaves
+/// one row of overlap, so the row that was last visible is the one now at
+/// the top — which holds at whatever height a future layout gives the
+/// panel.
+#[test]
+fn a_page_key_moves_by_the_height_the_loop_recorded() {
+    let (_fixture, repo) = repo_with_many_files(60);
+    // Drill into unassigned first, so the Files rows are one flat list.
+    let script = |pages: usize| {
+        let mut script = vec![code_key(KeyCode::Down), code_key(KeyCode::Enter)];
+        script.extend(std::iter::repeat_n(char_key('.'), pages));
+        script
+    };
+
+    let mut once = App::new("repo");
+    once.apply_snapshot(repo.refresh().unwrap());
+    let first = drive_frame(&repo, &mut once, &script(1));
+
+    let mut twice = App::new("repo");
+    twice.apply_snapshot(repo.refresh().unwrap());
+    let second = drive_frame(&repo, &mut twice, &script(2));
+
+    let height = once.panel_height(Panel::Files);
+    assert!(height > 2, "the Files panel is drawn at a usable height");
+    assert_eq!(
+        once.files_count().0,
+        usize::from(height),
+        "one page from the first row selects the last visible row"
+    );
+
+    let before = drawn_rows(&first, Panel::Files);
+    let after = drawn_rows(&second, Panel::Files);
+    assert_eq!(
+        before.last(),
+        after.first(),
+        "the row that was last visible is now the first"
+    );
+    assert_ne!(
+        before.first(),
+        after.first(),
+        "the second page actually scrolled the panel"
+    );
 }
 
 // ── the smoke test ──────────────────────────────────────────────────

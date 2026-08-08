@@ -413,13 +413,23 @@ impl App {
         lines
     }
 
+    /// Where each hunk's header sits within [`App::diff_lines`], in hunk
+    /// order — the map from a hunk index to its position on screen, which
+    /// is what lets a page step in hunk mode be measured in lines
+    /// (issue #84).
+    pub(super) fn hunk_header_lines(&self) -> Vec<usize> {
+        self.diff_lines()
+            .iter()
+            .enumerate()
+            .filter_map(|(line, item)| matches!(item, DiffLine::HunkHeader { .. }).then_some(line))
+            .collect()
+    }
+
     /// The selected hunk's header position within [`App::diff_lines`],
     /// for the renderer's keep-visible scroll in hunk mode.
     pub fn selected_hunk_line(&self) -> Option<usize> {
-        self.hunk_sel?;
-        self.diff_lines()
-            .iter()
-            .position(|line| matches!(line, DiffLine::HunkHeader { selected: true, .. }))
+        let index = self.hunk_sel?;
+        self.hunk_header_lines().get(index).copied()
     }
 
     /// Contextual keybar hints for the focused panel: editorial arms —
@@ -433,9 +443,10 @@ impl App {
     /// scopes in key order — three separate hints crowd out the rest of
     /// the bar. Hunk mode swaps in its own arm.
     ///
-    /// No arm mentions the movement keys (issue #86): the bar has finite
-    /// width, arrow-key users and vim users both already reach for a key
-    /// that works, and the help overlay carries every spelling.
+    /// No arm mentions the movement or page keys (issues #86, #84): the
+    /// bar has finite width, arrow-key users and vim users both already
+    /// reach for a key that works, and the help overlay carries every
+    /// spelling.
     pub fn key_hints(&self) -> Vec<(String, &'static str)> {
         use BindingId::*;
         const ASSIGN_TRIO: &[BindingId] = &[AssignSelected, AssignUnassigned, AssignAll];

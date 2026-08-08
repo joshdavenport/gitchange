@@ -16,6 +16,8 @@ pub(super) enum BindingId {
     FocusPanel,
     MoveDown,
     MoveUp,
+    PageDown,
+    PageUp,
     DrillIn,
     AssignSelected,
     AssignUnassigned,
@@ -63,6 +65,8 @@ pub(super) enum Key {
     Esc,
     Down,
     Up,
+    PageDown,
+    PageUp,
     /// Any digit in the panel numbering. Keys and spellings derive from
     /// [`Panel::ALL`], so the bar's span, the help row and the borders'
     /// `[n]` prefixes cannot disagree.
@@ -89,6 +93,8 @@ impl Key {
             Key::Esc => key.code == KeyCode::Esc,
             Key::Down => key.code == KeyCode::Down,
             Key::Up => key.code == KeyCode::Up,
+            Key::PageDown => key.code == KeyCode::PageDown,
+            Key::PageUp => key.code == KeyCode::PageUp,
             Key::PanelDigit => {
                 !ctrl && matches!(key.code, KeyCode::Char(c) if Panel::from_number(c).is_some())
             }
@@ -104,6 +110,8 @@ impl Key {
             Key::Esc => "esc".into(),
             Key::Down => "↓".into(),
             Key::Up => "↑".into(),
+            Key::PageDown => "PgDn".into(),
+            Key::PageUp => "PgUp".into(),
             Key::PanelDigit => match register {
                 Register::Bar => panels_bar_spelling(),
                 Register::Help => panels_help_spelling(),
@@ -172,6 +180,21 @@ pub(super) const BINDINGS: &[Binding] = &[
         keys: &[Key::Char('k'), Key::Up],
         capability: Capability::Always,
         help: HelpLabel::Plain("move within panel / hunks / scroll diff"),
+    },
+    // The page keys (issue #84), lazygit's spellings, with the keypad's
+    // own page keys as equal second spellings. Their shared help label
+    // merges them into one overlay row, as `j`/`k` and the arrows merge.
+    Binding {
+        id: BindingId::PageDown,
+        keys: &[Key::Char('.'), Key::PageDown],
+        capability: Capability::Always,
+        help: HelpLabel::Plain("page within panel / hunks / scroll diff"),
+    },
+    Binding {
+        id: BindingId::PageUp,
+        keys: &[Key::Char(','), Key::PageUp],
+        capability: Capability::Always,
+        help: HelpLabel::Plain("page within panel / hunks / scroll diff"),
     },
     Binding {
         id: BindingId::DrillIn,
@@ -295,7 +318,11 @@ pub(super) fn bar_spelling(ids: &[BindingId]) -> String {
 
 /// The help overlay's rows in core order: every spelling of every
 /// binding, consecutive same-label records merged into one row
-/// (`j/k, ↓/↑`). `arrow` is the theme's drill glyph.
+/// (`j/k  ↓/↑`). `arrow` is the theme's drill glyph.
+///
+/// Spellings join with `/` within a position and with blanks between
+/// positions: a comma is itself a bound key (issue #84), so punctuating
+/// the seam would read as a third spelling.
 pub fn help_rows(arrow: char) -> Vec<(String, String)> {
     let mut groups: Vec<Vec<&Binding>> = Vec::new();
     for binding in BINDINGS {
@@ -318,7 +345,7 @@ pub fn help_rows(arrow: char) -> Vec<(String, String)> {
                         .join("/")
                 })
                 .collect::<Vec<_>>()
-                .join(", ");
+                .join("  ");
             (spelling, group[0].help.render(arrow))
         })
         .collect()

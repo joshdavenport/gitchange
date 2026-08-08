@@ -6,6 +6,17 @@ use gitchange_core::{ChangedFile, Snapshot, count_noun};
 use super::status::COMMIT_DISABLED;
 use super::{App, Panel, Severity};
 
+/// How far one movement press moves (issue #84).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Motion {
+    /// One row, line or hunk — `j`/`k` and the arrows.
+    Row,
+    /// A screenful of the focused panel, less a row of overlap so the
+    /// row that was last visible becomes the first — `.`/`,` and
+    /// `PgDn`/`PgUp`.
+    Page,
+}
+
 impl App {
     /// Swap in a whole snapshot (ADR 0005), preserving selections
     /// identity-first: changelist by name, file by (group, path) then by
@@ -146,7 +157,24 @@ impl App {
             .unwrap_or_else(|| self.commit_row.min(commits.len().saturating_sub(1)));
     }
 
-    pub(super) fn move_selection(&mut self, delta: isize) {
+    /// Move the focused panel's selection — or its scroll, where the
+    /// panel has no selection — one row or one screenful, in
+    /// `direction` (`1` down, `-1` up).
+    ///
+    /// One match over the panels serves both magnitudes rather than a
+    /// page-sized copy of it (issue #84), so a panel added later cannot
+    /// answer the movement keys without answering the page keys too.
+    /// Where the two magnitudes genuinely differ — hunk mode, whose page
+    /// is not a count of hunks — they part inside that panel's own arm.
+    pub(super) fn move_selection(&mut self, motion: Motion, direction: isize) {
+        // A page is measured against the panel the key acts on, as the
+        // last frame drew it (issue #85) — never zero, so an App that
+        // has yet to draw one pages by a single row.
+        let amount = match motion {
+            Motion::Row => 1,
+            Motion::Page => self.page(self.focus),
+        };
+        let delta = direction * amount as isize;
         match self.focus {
             Panel::Changelists => {
                 let rows = self.changelist_rows().len();
@@ -176,32 +204,69 @@ impl App {
                 self.commit_row = step(self.commit_row, delta, commits);
             }
             Panel::Diff => {
-                // Hunk mode: j/k walk hunks (the renderer keeps the
-                // selection visible); scroll mode: line scrolling,
-                // clamped to the content so `j` can't scroll into blank
-                // space indefinitely.
+                // Hunk mode walks hunks (the renderer keeps the
+                // selection visible); scroll mode moves lines, clamped
+                // to the content so neither magnitude scrolls into blank
+                // space.
                 if let Some(index) = self.hunk_sel {
-                    let hunks = self.selected_file().map_or(0, |file| file.hunks.len());
-                    self.hunk_sel = Some(step(index, delta, hunks));
+                    let next = match motion {
+                        Motion::Row => {
+                            let hunks = self.selected_file().map_or(0, |file| file.hunks.len());
+                            step(index, delta, hunks)
+                        }
+                        Motion::Page => self.paged_hunk(index, direction, amount),
+                    };
+                    self.hunk_sel = Some(next);
                 } else {
                     let max = self.diff_lines().len().saturating_sub(1) as u16;
-                    self.diff_scroll = if delta > 0 {
-                        self.diff_scroll.saturating_add(1).min(max)
+                    // A page came from a panel height, so it fits a
+                    // `u16`; the clamp is arithmetic hygiene.
+                    let lines = u16::try_from(amount).unwrap_or(u16::MAX);
+                    self.diff_scroll = if direction > 0 {
+                        self.diff_scroll.saturating_add(lines).min(max)
                     } else {
-                        self.diff_scroll.saturating_sub(1)
+                        self.diff_scroll.saturating_sub(lines)
                     };
                 }
             }
             Panel::Log => {
-                // Offset from the stream's bottom: j back toward the
-                // newest entry, k into history.
-                self.log_scroll = if delta > 0 {
-                    self.log_scroll.saturating_sub(1)
+                // Offset from the stream's bottom: down goes back toward
+                // the newest entry, up into history.
+                self.log_scroll = if direction > 0 {
+                    self.log_scroll.saturating_sub(amount)
                 } else {
-                    (self.log_scroll + 1).min(self.log.len().saturating_sub(1))
+                    (self.log_scroll + amount).min(self.log.len().saturating_sub(1))
                 };
             }
             Panel::Status => {}
+        }
+    }
+
+    /// The hunk a page of `page` lines lands on, from the one at `index`.
+    ///
+    /// A screenful of *hunks* is not a fixed count — one hunk can be
+    /// taller than the panel — so the step is measured in diff lines:
+    /// downward it takes the first hunk whose header sits at or beyond a
+    /// screenful past the current header. Three consequences follow, all
+    /// intended: a header on the fold row is taken (the fold row is
+    /// shared, matching the list panels' row of overlap), short hunks
+    /// before it are skipped rather than walked, and a hunk taller than
+    /// the panel is left in one press — reading it is down/up's job.
+    /// Upward mirrors it. Neither end wraps.
+    fn paged_hunk(&self, index: usize, direction: isize, page: usize) -> usize {
+        let headers = self.hunk_header_lines();
+        let Some(&current) = headers.get(index) else {
+            return index;
+        };
+        if direction > 0 {
+            let fold = current + page;
+            headers
+                .iter()
+                .position(|&line| line >= fold)
+                .unwrap_or(headers.len() - 1)
+        } else {
+            let fold = current.saturating_sub(page);
+            headers.iter().rposition(|&line| line <= fold).unwrap_or(0)
         }
     }
 

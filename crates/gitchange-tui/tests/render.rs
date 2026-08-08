@@ -985,10 +985,12 @@ fn the_help_overlay_derives_spellings_and_themes_its_arrows() {
     app.apply_snapshot(snapshot());
     app.on_key(key(KeyCode::Char('?')));
     let text = text_of(&render_buffer_themed(&app, &theme));
-    // Derived spellings: the panel digits from the panel numbering, the
-    // movement pair with all its keys.
+    // Derived spellings: the panel digits from the panel numbering, and
+    // each movement pair merged into one row with all its keys — blanks
+    // between the two spellings, since a comma is itself a bound key.
     assert!(text.contains("1-5, 0"), "{text}");
-    assert!(text.contains("j/k, ↓/↑"), "{text}");
+    assert!(text.contains("j/k  ↓/↑"), "{text}");
+    assert!(text.contains("./,  PgDn/PgUp"), "{text}");
     // The drill arrows take the theme's glyph — no `→` literals left.
     assert!(
         text.contains("drill in: changelist » files » hunk mode"),
