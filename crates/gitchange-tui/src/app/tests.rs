@@ -1669,12 +1669,21 @@ fn bar(app: &App) -> Vec<String> {
 }
 
 #[test]
+fn a_bar_spelling_names_the_primary_key_only() {
+    // The movement pair is the only multi-spelling record, and since
+    // issue #86 no arm mentions it — so no bar assertion covers the
+    // primary-only rule any more. Assert it against `bar_spelling`
+    // directly: the overlay shows `j/k, ↓/↑`, the bar shows `j/k`.
+    use BindingId::*;
+    assert_eq!(keymap::bar_spelling(&[MoveDown, MoveUp]), "j/k");
+}
+
+#[test]
 fn the_changelists_bar_reflects_what_the_scoped_row_affords() {
     let mut app = app(); // Changelists focus, 'all' selected
     assert_eq!(
         bar(&app),
         [
-            "j/k move",
             "enter files",
             "n new",
             "0-5 panels",
@@ -1687,7 +1696,6 @@ fn the_changelists_bar_reflects_what_the_scoped_row_affords() {
     assert_eq!(
         bar(&app),
         [
-            "j/k move",
             "enter files",
             "n new",
             "d delete",
@@ -1709,7 +1717,6 @@ fn the_files_bar_reflects_what_the_scoped_row_affords() {
     assert_eq!(
         bar(&app),
         [
-            "j/k move",
             "space stage file",
             "enter hunks",
             "a/A/ctrl+a assign group / unassigned / all",
@@ -1727,7 +1734,6 @@ fn the_files_bar_reflects_what_the_scoped_row_affords() {
     assert_eq!(
         bar(&app),
         [
-            "j/k move",
             "space stage file",
             "enter hunks",
             "a/A/ctrl+a assign group / unassigned / all",
@@ -1755,7 +1761,6 @@ fn the_hunk_mode_bar_scopes_commit_like_everywhere_else() {
     assert_eq!(
         bar(&app),
         [
-            "j/k next/prev hunk",
             "space stage/unstage hunk",
             "a/A/ctrl+a assign hunk / unassigned / all",
             "c commit changelist",
@@ -1773,7 +1778,6 @@ fn the_hunk_mode_bar_scopes_commit_like_everywhere_else() {
     assert_eq!(
         bar(&all_scoped),
         [
-            "j/k next/prev hunk",
             "space stage/unstage hunk",
             "a/A/ctrl+a assign hunk / unassigned / all",
             "esc back to files",
@@ -1783,24 +1787,19 @@ fn the_hunk_mode_bar_scopes_commit_like_everywhere_else() {
 }
 
 #[test]
-fn the_status_and_log_bars_match_verbatim() {
+fn the_status_commits_and_log_bars_match_verbatim() {
+    // With no blurred hunk to assign and the movement mention gone
+    // (issue #86), these three arms contribute nothing of their own and
+    // collapse onto the shared tail. That collapse is intended: the
+    // border says which panel has focus, not the bar.
+    const TAIL: [&str; 4] = ["0-5 panels", "R refresh", "? keybindings", "q quit"];
     let mut app = app();
-    app.on_key(key(KeyCode::Char('1'))); // Status — nothing contextual
-    assert_eq!(
-        bar(&app),
-        ["0-5 panels", "R refresh", "? keybindings", "q quit"]
-    );
+    app.on_key(key(KeyCode::Char('1'))); // Status
+    assert_eq!(bar(&app), TAIL);
+    app.on_key(key(KeyCode::Char('4'))); // Commits
+    assert_eq!(bar(&app), TAIL);
     app.on_key(key(KeyCode::Char('5'))); // Log
-    assert_eq!(
-        bar(&app),
-        [
-            "j/k scroll",
-            "0-5 panels",
-            "R refresh",
-            "? keybindings",
-            "q quit",
-        ]
-    );
+    assert_eq!(bar(&app), TAIL);
 }
 
 #[test]
@@ -1810,7 +1809,6 @@ fn the_scroll_mode_diff_bar_advertises_the_file_scoped_assigns() {
     assert_eq!(
         bar(&app),
         [
-            "j/k scroll",
             "A/ctrl+a assign unassigned / all",
             "esc back",
             "0-5 panels",
@@ -1830,7 +1828,6 @@ fn a_blurred_hunk_advertises_and_serves_assign_in_any_panel() {
     assert_eq!(
         bar(&app),
         [
-            "j/k move",
             "a/A/ctrl+a assign hunk / unassigned / all",
             "0-5 panels",
             "R refresh",
@@ -1854,13 +1851,7 @@ fn a_blurred_hunk_advertises_and_serves_assign_in_any_panel() {
     app.on_key(key(KeyCode::Char('4')));
     assert_eq!(
         bar(&app),
-        [
-            "j/k move",
-            "0-5 panels",
-            "R refresh",
-            "? keybindings",
-            "q quit",
-        ]
+        ["0-5 panels", "R refresh", "? keybindings", "q quit"]
     );
 }
 
@@ -1929,7 +1920,6 @@ fn the_bar_hides_c_while_an_operation_is_in_progress() {
     assert_eq!(
         bar(&app),
         [
-            "j/k move",
             "enter files",
             "n new",
             "d delete",
@@ -1946,7 +1936,6 @@ fn the_bar_hides_c_while_an_operation_is_in_progress() {
     assert_eq!(
         bar(&app),
         [
-            "j/k next/prev hunk",
             "space stage/unstage hunk",
             "a/A/ctrl+a assign hunk / unassigned / all",
             "esc back to files",

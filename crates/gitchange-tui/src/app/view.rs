@@ -426,20 +426,22 @@ impl App {
     /// which bindings, in what order, under what short label — with
     /// spellings and liveness derived from the binding core (ADR 0014).
     /// A mention whose capability is disabled drops out, which is what
-    /// keeps the bar honest in both directions (ADR 0013 extended) and
-    /// what lets every arm mention the assign trio for the blurred-hunk
-    /// reach (issue #45) without a hand-written special case. The trio
-    /// is one hint with its three scopes in key order — three separate
-    /// hints crowd out the rest of the bar. Hunk mode swaps in its own
-    /// arm.
+    /// keeps the bar from advertising a key the current context won't
+    /// act on (ADR 0013 extended) and what lets every arm mention the
+    /// assign trio for the blurred-hunk reach (issue #45) without a
+    /// hand-written special case. The trio is one hint with its three
+    /// scopes in key order — three separate hints crowd out the rest of
+    /// the bar. Hunk mode swaps in its own arm.
+    ///
+    /// No arm mentions the movement keys (issue #86): the bar has finite
+    /// width, arrow-key users and vim users both already reach for a key
+    /// that works, and the help overlay carries every spelling.
     pub fn key_hints(&self) -> Vec<(String, &'static str)> {
         use BindingId::*;
-        const JK: &[BindingId] = &[MoveDown, MoveUp];
         const ASSIGN_TRIO: &[BindingId] = &[AssignSelected, AssignUnassigned, AssignAll];
         const ASSIGN_HUNK: &str = "assign hunk / unassigned / all";
         let arm: Vec<(&'static [BindingId], &'static str)> = if self.hunk_mode_focused() {
             vec![
-                (JK, "next/prev hunk"),
                 (&[StageToggle], "stage/unstage hunk"),
                 (ASSIGN_TRIO, ASSIGN_HUNK),
                 (&[Commit], "commit changelist"),
@@ -449,7 +451,6 @@ impl App {
         } else {
             let mut arm: Vec<(&'static [BindingId], &'static str)> = match self.focus {
                 Panel::Changelists => vec![
-                    (JK, "move"),
                     (&[DrillIn], "files"),
                     (&[NewChangelist], "new"),
                     (&[DeleteChangelist], "delete"),
@@ -459,7 +460,6 @@ impl App {
                     (ASSIGN_TRIO, ASSIGN_HUNK),
                 ],
                 Panel::Files => vec![
-                    (JK, "move"),
                     (&[StageToggle], "stage file"),
                     (&[DrillIn], "hunks"),
                     (ASSIGN_TRIO, "assign group / unassigned / all"),
@@ -471,13 +471,10 @@ impl App {
                     (&[Back], "back"),
                 ],
                 Panel::Diff => vec![
-                    (JK, "scroll"),
                     (&[AssignUnassigned, AssignAll], "assign unassigned / all"),
                     (&[Back], "back"),
                 ],
-                Panel::Commits => vec![(JK, "move"), (ASSIGN_TRIO, ASSIGN_HUNK)],
-                Panel::Log => vec![(JK, "scroll"), (ASSIGN_TRIO, ASSIGN_HUNK)],
-                Panel::Status => vec![(ASSIGN_TRIO, ASSIGN_HUNK)],
+                Panel::Commits | Panel::Log | Panel::Status => vec![(ASSIGN_TRIO, ASSIGN_HUNK)],
             };
             arm.extend([
                 (&[FocusPanel] as &[BindingId], "panels"),

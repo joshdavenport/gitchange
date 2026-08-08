@@ -86,9 +86,12 @@ gitui's three uncoordinated answers.
 
 ## Consequences
 
-- The keybar is honest in both directions by construction — ADR 0013's
+- The keybar is honest in one direction by construction — ADR 0013's
   principle extended from "never advertise what the terminal can't send"
   to "never advertise what the current context won't act on".
+  *Amended (issue #86):* one direction, not both — which of the live
+  keys an arm lists stays editorial, because the bar has finite width
+  and makes no claim to be complete.
 - Behaviour change: `c` disappears from the bar during a git operation
   (the pin still names the operation) and on the All view; `d`/`r`/`s`
   disappear when the scoped row is *All*/*Unassigned*, and pressing them

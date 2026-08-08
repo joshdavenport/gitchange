@@ -187,10 +187,11 @@ _Avoid_: worktree diff, fresh diff (alone)
 
 **Keybar**:
 The always-visible bottom bar advertising the keys live in the current
-context. Honest in both directions: never shows a key that won't act,
-never omits one that will. Which keys it lists per context is editorial;
-whether each shows follows its disabled reason. The help overlay is the
-static full-keymap reference; the keybar is the live one.
+context. Honest in one direction: it never shows a key that won't act.
+Which of the live keys it lists per context is editorial — the bar has
+finite width and makes no claim to be complete; whether a listed key
+shows follows its disabled reason. The help overlay is the static
+full-keymap reference; the keybar is the live subset.
 _Avoid_: status bar, options bar, hint line
 
 **Disabled reason**:
