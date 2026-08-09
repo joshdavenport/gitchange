@@ -15,11 +15,9 @@
 //! pins but deliberately does not guard. The guard's edge is only pinned
 //! from both sides.
 
-mod support;
-
+use crate::support::RepoFixture;
 use git2::RepositoryState;
 use gitchange_core::{CommitOptions, CommitOutcome, Error, GitOperation, Head, Repo};
-use support::RepoFixture;
 
 /// The clean, unconflicted file every fixture commits and every guard
 /// assertion stages — the "staging is never guarded" half needs a path

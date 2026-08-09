@@ -5,7 +5,7 @@
 
 // ADR 0006's contract for this crate is "essentially `run()`" — the bin
 // consumes nothing else. These modules are `pub` only because the render
-// tests (tests/render.rs) live outside the crate and need to drive App
+// tests (tests/render/) live outside the crate and need to drive App
 // and ui::draw directly; `#[doc(hidden)]` keeps them from reading as API
 // surface. Don't import them from another crate.
 #[doc(hidden)]

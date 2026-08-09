@@ -3,10 +3,8 @@
 //! public `Repo` ops against real index content per ADR 0008. Stale
 //! hunks fail soft with a notice datum (ADR 0005's validate-at-apply).
 
-mod support;
-
+use crate::support::RepoFixture;
 use gitchange_core::{Advisory, Error, FileStage, Hunk, HunkStage, Repo, Snapshot};
-use support::RepoFixture;
 
 // Gated with its only user below, so Windows builds this file clean.
 #[cfg(unix)]

@@ -5,12 +5,10 @@
 //! rewritten against the new HEAD, baseline stamped in the same locked
 //! update so the external-move guard never fires on an own commit.
 
-mod support;
-
 use std::fs;
 
+use crate::support::RepoFixture;
 use gitchange_core::{Advisory, CommitOptions, CommitOutcome, Error, HunkStage, Repo, Snapshot};
-use support::RepoFixture;
 
 // Gated with its only user below, so Windows builds this file clean.
 #[cfg(unix)]
@@ -351,7 +349,7 @@ fn committing_one_changelist_commutes_same_file_records() {
     // The own-commit half of ADR 0012: `commit()` shifts surviving
     // same-file records by the committed deltas, so a later anchor-broken
     // edit still inherits via tier-2 — the external-commit flavour of
-    // this exact scenario goes dormant instead (tests/head_moves.rs).
+    // this exact scenario goes dormant instead (tests/core/head_moves.rs).
     let fixture = RepoFixture::new();
     let head = numbered_lines(60);
     fixture.write("a.txt", &text(&head)).commit_all("init");
@@ -407,7 +405,7 @@ fn a_residual_stale_hunk_reattaches_after_an_own_commit() {
     // Committing a ◑ hunk as-is leaves a residual worktree diff; the
     // retained record is rewritten against the new HEAD so the residual
     // re-attaches to its changelist — the external flavour goes dormant
-    // (tests/head_moves.rs pins that contrast).
+    // (tests/core/head_moves.rs pins that contrast).
     let fixture = RepoFixture::new();
     let head = numbered_lines(20);
     fixture.write("a.txt", &text(&head)).commit_all("init");

@@ -9,14 +9,12 @@
 //! fallback has no trigger. The commit-mechanics ticket extends `Case`
 //! with commit-result expectations.
 
-mod support;
-
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::support::RepoFixture;
 use gitchange_core::{Advisory, CommitOptions, CommitOutcome, Hunk, Repo, Snapshot};
-use support::RepoFixture;
 
 /// Repo-relative paths with file bytes — one tree state.
 type Tree = Vec<(&'static str, Vec<u8>)>;

@@ -3,10 +3,8 @@
 //! through the public `Repo::refresh()` on real temp repos (ADR 0008),
 //! never record internals.
 
-mod support;
-
+use crate::support::RepoFixture;
 use gitchange_core::{Advisory, Error, Repo, Snapshot};
-use support::RepoFixture;
 
 /// `count` numbered lines, with `edits` as (1-based line, replacement).
 fn numbered(count: usize, edits: &[(usize, &str)]) -> String {

@@ -3,7 +3,7 @@
 Membership-record coordinates are HEAD-side (ADR 0001), so any commit
 touching a file with surviving records strands those records in the old
 HEAD's coordinate space and tier-2 overlap inheritance goes stale. The
-repro suite (`tests/head_moves.rs`, issue 37) proved all three
+repro suite (`tests/core/head_moves.rs`, issue 37) proved all three
 consequences, every one silent: wrong-list assignment when a shifted
 hunk lands inside another record's stale region, membership loss when it
 lands clear, and residual-`◑` shedding whenever the commit payload
@@ -73,7 +73,7 @@ are exact-revival-only like any other dormant record (ADR 0002).
 - A new notice variant (per path, loss-only); rendered like
   `AmbiguousOverlap` by the CLI and the Log panel.
 - The guard lands independently of commit mechanics (issue 39, consumed
-  ready-made by issue 28); `tests/head_moves.rs` defect-pinning
+  ready-made by issue 28); `tests/core/head_moves.rs` defect-pinning
   assertions flip with each half.
 - Issue 28 gains acceptance criteria: committing changelist A's hunks
   leaves B's same-file hunks in B; a residual `◑` hunk re-attaches to

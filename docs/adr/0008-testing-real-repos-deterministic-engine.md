@@ -13,6 +13,34 @@ parameterize only the apply corpus, not the whole suite. Every test
 through the sync ops exercises the git2 adapter for
 free.
 
+## Layout: one test binary per crate, split into per-concern modules
+
+*Added by issue #91; qualifies **Fixtures** below, which places the shared
+builder but not the tests that call it.*
+
+A crate's integration tests live in **one** target, `tests/<name>/main.rs`,
+whose modules each carry one concern — `gitchange-core`'s is `tests/core/`,
+`gitchange-tui`'s is `tests/render/`. `main.rs` holds the `mod`
+declarations and a table mapping each module to its concern, so a reader
+knows which single file to open. The fixture shim is one module of that
+binary (`support` in core, `helpers` in the TUI), compiled once and reached
+as `crate::support::…`.
+
+Cargo makes every `.rs` **directly under** `tests/` its own binary, linked
+against the whole dependency graph, libgit2 included; a directory with a
+`main.rs` is one binary, and Cargo does not scan its subdirectories. A
+sibling `.rs` under `tests/` therefore buys another link of that whole
+graph — put the new file inside the existing directory and declare it in
+`main.rs`. That is what holds file count independent of binary count, so a
+concern can take its own file instead of accreting into a thousand-line one
+that costs every reader the whole file to change part of it.
+
+Filtering names a module rather than a target: `cargo test --test core
+matcher::`. A move between modules leaves `cargo test --test <name> --
+--list` unchanged once the `<module>::` prefixes are stripped — that diff
+is what proves the move lost no test, and it is the check a macro-generated
+case (`apply_corpus`'s `corpus!`) most needs.
+
 ## Fixtures
 
 - **Programmatically built temp repos per test**, via a shared

@@ -1,7 +1,5 @@
-mod support;
-
+use crate::support::{NON_UTF8_PATH, RepoFixture};
 use gitchange_core::{ChangeKind, Error, Head, Repo};
-use support::{NON_UTF8_PATH, RepoFixture};
 
 #[test]
 fn refresh_lists_worktree_changes_sorted_by_path() {

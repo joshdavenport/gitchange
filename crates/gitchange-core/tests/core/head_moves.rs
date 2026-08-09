@@ -5,15 +5,13 @@
 //! for the paths the move changed — stranded live records go dormant, and
 //! anchor-broken hunks capture to active with a per-path notice. The
 //! own-commit half (commutation, issue 28) lives in `Repo::commit`'s
-//! record aftermath; `tests/commit.rs` pins the re-attachment these
+//! record aftermath; `tests/core/commit.rs` pins the re-attachment these
 //! same scenarios keep when the commit is gitchange's own.
-
-mod support;
 
 use std::fs;
 
+use crate::support::{NON_UTF8_PATH, RepoFixture};
 use gitchange_core::{Advisory, Repo, Snapshot};
-use support::{NON_UTF8_PATH, RepoFixture};
 
 /// Lines `line 1`..=`line count`, as a vec for splicing edits into.
 fn numbered_lines(count: usize) -> Vec<String> {

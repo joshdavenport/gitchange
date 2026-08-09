@@ -5,12 +5,10 @@
 //! self-loop filter, last-request-wins) is unit-tested deterministically
 //! inside the engine module. No assertion touches real debounce timing.
 
-mod support;
-
 use std::time::{Duration, Instant};
 
+use crate::support::RepoFixture;
 use gitchange_core::{Engine, EngineEvent, FileStage, Snapshot};
-use support::RepoFixture;
 
 /// Per-wait ceiling. Generous by design (ADR 0008): it exists to fail a
 /// hung watcher, and is never a claim about how long a refresh takes.

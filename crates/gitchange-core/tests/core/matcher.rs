@@ -4,13 +4,11 @@
 //! internals. Determinism makes these table-shaped: same records + same
 //! diffs → same membership.
 
-mod support;
-
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::support::RepoFixture;
 use gitchange_core::{Advisory, HunkStage, Repo, Snapshot};
-use support::RepoFixture;
 
 /// `count` numbered lines, with `edits` as (1-based line, replacement).
 fn numbered(count: usize, edits: &[(usize, &str)]) -> String {

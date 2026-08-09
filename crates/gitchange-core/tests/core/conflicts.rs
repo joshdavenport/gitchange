@@ -4,10 +4,8 @@
 //! resolution re-lands membership — all through the public `Repo`
 //! surface on real temp repos (ADR 0008).
 
-mod support;
-
+use crate::support::RepoFixture;
 use gitchange_core::{ChangeKind, CommitOptions, Error, GitOperation, Repo, Snapshot};
-use support::RepoFixture;
 
 fn repo(fixture: &RepoFixture) -> Repo {
     Repo::discover(fixture.path()).unwrap()

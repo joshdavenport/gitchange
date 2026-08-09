@@ -17,7 +17,7 @@ whole-file hunks too: path continuity (ADR 0009) is *path* continuity, so
 identical bytes at a new path are a fresh change, not the old record's.
 
 What becomes of the old path's records depends on whether the old path
-still diffs (pinned in `tests/matcher.rs`, issue 56):
+still diffs (pinned in `tests/core/matcher.rs`, issue 56):
 
 - **Tracked file** — the old path stays in the universe as `Deleted`, so
   its records re-anchor onto the deletion hunk and keep their changelist

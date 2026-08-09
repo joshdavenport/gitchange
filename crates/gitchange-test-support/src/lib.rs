@@ -5,7 +5,7 @@
 //! A workspace crate rather than a module in core's test target (ADR
 //! 0006, issue #59) so every crate's tests build repos through one
 //! builder: core's take it as a dev-dependency behind a re-export shim
-//! (`tests/support/mod.rs`), the TUI crate's run-loop tests take it
+//! (`tests/core/support.rs`), the TUI crate's run-loop tests take it
 //! directly. It depends on git2 and tempfile and on no crate of ours —
 //! nothing here knows what gitchange does with a repository.
 

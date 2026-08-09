@@ -2,10 +2,8 @@
 //! diff(HEAD↔worktree) and diff(HEAD↔index), with per-hunk ○●◑ and
 //! per-file ●◐○ derived — asserted through `Repo::refresh()` per ADR 0008.
 
-mod support;
-
+use crate::support::RepoFixture;
 use gitchange_core::{ChangeKind, FileStage, HunkIdentity, HunkStage, Repo};
-use support::RepoFixture;
 
 /// Twenty numbered lines, with `edits` as (1-based line, replacement).
 fn numbered(edits: &[(usize, &str)]) -> String {

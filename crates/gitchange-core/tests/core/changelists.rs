@@ -1,12 +1,10 @@
 //! Changelist sync ops + state-file persistence (ticket 23, ADR 0002).
 //! Asserted through core's public ops against real temp repos (ADR 0008).
 
-mod support;
-
 use std::fs;
 
+use crate::support::RepoFixture;
 use gitchange_core::{Error, RESERVED_NAMES, Repo};
-use support::RepoFixture;
 
 fn repo(fixture: &RepoFixture) -> Repo {
     Repo::discover(fixture.path()).unwrap()
