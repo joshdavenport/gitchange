@@ -33,6 +33,25 @@ Per-hunk staged state is three-valued:
 discarding an index-only one. Per-file markers stay `●◐○`; staged-stale
 counts toward `◐`.
 
+## What `space` acts on
+
+*Amended (issue #90): the changelist scope.*
+
+`space` is one decide-by-current-state toggle at three scopes, each set by
+the focused panel: the selected hunk, the selected file (whole-file
+`git add`/`git reset` semantics), and every hunk of the selected
+changelist — `unassigned` included, `all` refused as a view over many
+changelists rather than one of them. Anything `○` or `◑` stages, and only
+a fully `●` selection unstages.
+
+The changelist scope is a bulk application of the per-hunk semantic, not a
+second staging mechanic: it is hunk-granular, so a file split between two
+changelists keeps the other's hunks out of the index, and each hunk
+fails soft on its own (ADR 0005's validate-at-apply) while the rest
+proceed. It moves no membership records — staging never does — and it
+answers even when it moves nothing, so a changelist with no hunks to stage
+says so instead of going quiet (ADR 0007).
+
 ## External staging is absorbed, never an error
 
 Pre-existing staged changes at launch, external `git add`, external

@@ -50,6 +50,10 @@ pub(super) enum Capability {
     /// The assign trio: Files or Diff focus, or a blurred hunk selection
     /// surviving cross-panel (issue #45).
     Assign,
+    /// `space`: on the Changelists panel, a row that is a staging target
+    /// — not the All view. Elsewhere `space` scopes itself by the
+    /// panel's own selection and needs no context guard.
+    Stage,
     /// `c`: no git operation in progress, and not the All view.
     Commit,
 }
@@ -246,8 +250,8 @@ pub(super) const BINDINGS: &[Binding] = &[
     Binding {
         id: BindingId::StageToggle,
         keys: &[Key::Char(' ')],
-        capability: Capability::Always,
-        help: HelpLabel::Plain("stage/unstage file (hunk mode: hunk)"),
+        capability: Capability::Stage,
+        help: HelpLabel::Plain("toggle stage changelist/file/hunk"),
     },
     Binding {
         id: BindingId::Commit,

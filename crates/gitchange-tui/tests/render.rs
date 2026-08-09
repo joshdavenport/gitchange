@@ -996,7 +996,7 @@ fn the_keybar_shows_staging_and_commit_hints() {
     app.apply_snapshot(snapshot());
     app.on_key(key(KeyCode::Char('3')));
     let text = render(&app);
-    assert!(text.contains("space stage file"), "{text}");
+    assert!(text.contains("space toggle stage file"), "{text}");
     // 'all' is scoped: commit isn't afforded, so the bar doesn't lie
     // about it (ADR 0014).
     assert!(!text.contains("c commit"), "{text}");
@@ -1005,7 +1005,7 @@ fn the_keybar_shows_staging_and_commit_hints() {
     app.on_key(key(KeyCode::Char('j'))); // drill into 'fixes'
     app.on_key(key(KeyCode::Enter));
     let text = render(&app);
-    assert!(text.contains("space stage file"), "{text}");
+    assert!(text.contains("space toggle stage file"), "{text}");
     assert!(text.contains("c commit"));
 }
 

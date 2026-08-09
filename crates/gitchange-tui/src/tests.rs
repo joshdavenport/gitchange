@@ -275,6 +275,52 @@ fn assign_stops_at_the_create_modal_when_the_target_name_is_refused() {
     assert!(entries(&app, Severity::Info).is_empty());
 }
 
+#[test]
+fn the_changelist_ops_stage_and_unstage_the_whole_changelist() {
+    let (fixture, repo) = repo_with_commit();
+    fixture.write("a.txt", "line 1\nedited\nline 3\n");
+    repo.create_changelist("wip").unwrap();
+    repo.refresh().unwrap(); // the edit auto-captures into `wip`
+    let mut app = App::new("repo");
+
+    run_op(
+        &repo,
+        &mut app,
+        Op::StageChangelist {
+            changelist: Some("wip".into()),
+        },
+    );
+
+    assert!(app.error_modal.is_none());
+    assert_eq!(
+        entries(&app, Severity::Info),
+        vec!["staged 1 hunk — 'wip'"],
+        "core's echo, on this frontend's info channel"
+    );
+    assert_eq!(
+        fixture.index_content("a.txt").as_deref(),
+        Some("line 1\nedited\nline 3\n")
+    );
+
+    run_op(
+        &repo,
+        &mut app,
+        Op::UnstageChangelist {
+            changelist: Some("wip".into()),
+        },
+    );
+
+    assert_eq!(
+        entries(&app, Severity::Info),
+        vec!["staged 1 hunk — 'wip'", "unstaged 1 hunk — 'wip'"]
+    );
+    assert_eq!(
+        fixture.index_content("a.txt").as_deref(),
+        Some("line 1\nline 2\nline 3\n"),
+        "the index is back at HEAD"
+    );
+}
+
 // ── executors: the commit flow ──────────────────────────────────────
 
 #[test]

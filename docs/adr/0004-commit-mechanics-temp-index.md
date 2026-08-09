@@ -23,7 +23,10 @@ is exactly the other changelists' staged hunks, so derived staged state
   committing. Never silent, never blocking.
 - **Zero staged hunks → offer stage-all-and-commit** ("nothing staged —
   stage all N hunks and commit?"). One commit mechanism, always from staged
-  hunks; `c` never grows a second meaning.
+  hunks; `c` never grows a second meaning. *Amended (issue #90):* the
+  offer stages the changelist's `○` hunks only — a `◑` hunk is itself payload, so an empty
+  payload means the changelist holds nothing else. This is narrower than
+  `space` on a changelist (ADR 0003), which stages `○` and `◑` alike.
 - **Unassigned is committable** like any changelist — no ceremony forced on
   an unsorted tree; the warning styling means "unsorted", not "broken".
   `c` on the `all` view is a no-op with a message.

@@ -225,6 +225,20 @@ fn run_op(repo: &Repo, app: &mut App, op: Op) {
         Op::UnstageHunk { path, hunk } => {
             op_outcome(app, UNSTAGE_FAILED, repo.unstage_hunk(&path, &hunk));
         }
+        Op::StageChangelist { changelist } => {
+            op_outcome(
+                app,
+                STAGE_FAILED,
+                repo.stage_changelist(changelist.as_deref()),
+            );
+        }
+        Op::UnstageChangelist { changelist } => {
+            op_outcome(
+                app,
+                UNSTAGE_FAILED,
+                repo.unstage_changelist(changelist.as_deref()),
+            );
+        }
         Op::Assign {
             path,
             hunks,

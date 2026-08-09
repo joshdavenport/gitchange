@@ -174,6 +174,16 @@ pub enum Op {
         path: String,
         hunk: Hunk,
     },
+    /// `space` on a Changelists row holding any `○`/`◑` hunk: index :=
+    /// worktree across the whole changelist (`None` = unassigned).
+    StageChangelist {
+        changelist: Option<String>,
+    },
+    /// `space` on a Changelists row whose hunks are all `●`: index :=
+    /// HEAD across the whole changelist (`None` = unassigned).
+    UnstageChangelist {
+        changelist: Option<String>,
+    },
 }
 
 /// The commit flow's IO steps (ADR 0004), executed by the main loop on
@@ -463,6 +473,22 @@ impl App {
                     matches!(self.focus, Panel::Files | Panel::Diff) || self.hunk_sel.is_some();
                 (!live).then(String::new)
             }
+            Capability::Stage => {
+                // The three panels `space` has a scope in: the focused
+                // hunk selection, a Files row, a Changelists row.
+                if self.hunk_mode_focused() || self.focus == Panel::Files {
+                    return None;
+                }
+                if self.focus != Panel::Changelists {
+                    return Some(String::new());
+                }
+                // All is a view over many changelists rather than one of
+                // them — the same reason commit and the ops keys give.
+                match self.scope() {
+                    Scope::Changelist(_) | Scope::Unassigned => None,
+                    Scope::All => Some("select a changelist to stage — all is a view".into()),
+                }
+            }
             Capability::Commit => {
                 // The operation guard (ADR 0007): the next commit would
                 // conclude the operation — the pin names it, pressing
@@ -532,7 +558,8 @@ impl App {
 
     /// `space`'s decide-by-current-state toggle (ticket #33): in hunk
     /// mode the selected hunk (`○`/`◑` → stage, `●` → unstage), in the
-    /// Files panel the whole file (`●` → unstage, else stage). Core
+    /// Files panel the whole file (`●` → unstage, else stage), in the
+    /// Changelists panel every hunk of the scoped row (issue #90). Core
     /// exposes stage and unstage separately; the toggle lives here.
     fn stage_toggle(&mut self) -> Option<Action> {
         if self.hunk_mode_focused() {
@@ -545,6 +572,9 @@ impl App {
                 HunkStage::Unstaged | HunkStage::StagedStale => Op::StageHunk { path, hunk },
             };
             return Some(Action::Op(op));
+        }
+        if self.focus == Panel::Changelists {
+            return self.stage_toggle_changelist();
         }
         if self.focus != Panel::Files {
             return None;
@@ -562,5 +592,33 @@ impl App {
             FileStage::Unstaged | FileStage::PartiallyStaged => Op::StageFile { path },
         };
         Some(Action::Op(op))
+    }
+
+    /// `space` on a Changelists row (issue #90): the same toggle at
+    /// changelist scope, over every hunk the row owns across files. Any
+    /// `○`/`◑` among them takes the stage direction, mirroring the
+    /// per-hunk key; only an all-`●` row unstages. A row that owns
+    /// nothing takes the stage direction too, so core answers with its
+    /// nothing-to-stage echo rather than silence.
+    fn stage_toggle_changelist(&self) -> Option<Action> {
+        let scope = self.scope();
+        // `None` is the All row, which owns no hunks — unreachable, since
+        // the Stage capability disabled it before dispatch got here.
+        let owner = scope.owner()?;
+        let snapshot = self.snapshot.as_ref()?;
+        let mut owned = snapshot
+            .files
+            .iter()
+            .flat_map(|file| &file.hunks)
+            .filter(|hunk| view::owns(hunk, owner))
+            .peekable();
+        let all_staged =
+            owned.peek().is_some() && owned.all(|hunk| hunk.stage == HunkStage::Staged);
+        let changelist = owner.map(str::to_owned);
+        Some(Action::Op(if all_staged {
+            Op::UnstageChangelist { changelist }
+        } else {
+            Op::StageChangelist { changelist }
+        }))
     }
 }

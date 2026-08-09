@@ -19,9 +19,12 @@ four could silently drift from the others (issue #53). We decided:
   (which hides the binding). An empty reason hides silently. This covers
   *context* guards only — what the selection affords: the
   changelist-ops scope, the assign context, commit's operation guard and
-  All-view case. *Content* no-ops (hunkless `enter`, empty assign
-  payload, file-less `space`) keep their press-time behaviour inside the
-  helpers; predicates must stay cheap per-frame reads.
+  All-view case, and *(issue #90)* `space`'s staging scope, whose panels
+  without one hide silently and whose own All-view case reads like
+  commit's. *Content* no-ops (hunkless `enter`, empty assign payload,
+  file-less `space`, a changelist with nothing to stage) keep their
+  press-time behaviour inside the helpers; predicates must stay cheap
+  per-frame reads.
 - **Dispatch stays a hand-written match.** The core carries no handler
   functions.
 - **Bar arms stay editorial.** Which bindings a panel advertises, in what

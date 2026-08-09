@@ -120,6 +120,16 @@ single source of truth. External `git add`/`git reset` are absorbed at
 refresh, never errors.
 _Avoid_: staged bit, staged flag
 
+**Stage toggle**:
+`space`, at whatever scope the focused panel selects: the selected hunk in
+hunk mode, the selected file in the Files panel, every hunk of the selected
+changelist (or of `unassigned`) in the Changelists panel. One key and one
+decide-by-current-state rule at all three — anything `○` or `◑` stages,
+and only a fully `●` selection unstages. Hunk-granular everywhere except
+the Files panel's whole-file `git add`; `all` is a view, so it is not a
+staging target.
+_Avoid_: stage key and unstage key (as two actions)
+
 **Staged-stale**:
 Per-hunk state `◑`: the index holds an overlapping-but-different version of
 the hunk (staged then edited, or staged then reverted in the worktree) —

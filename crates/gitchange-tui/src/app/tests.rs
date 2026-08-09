@@ -1178,11 +1178,120 @@ fn space_in_hunk_mode_toggles_the_selected_hunk() {
 }
 
 #[test]
-fn space_outside_files_and_hunk_mode_does_nothing() {
+fn space_outside_files_hunk_mode_and_changelists_does_nothing() {
     let mut app = app();
-    assert_eq!(app.on_key(key(KeyCode::Char(' '))), None); // changelists
+    let logged = app.log.len();
     app.on_key(key(KeyCode::Char('0'))); // diff scroll mode
     assert_eq!(app.on_key(key(KeyCode::Char(' '))), None);
+    app.on_key(key(KeyCode::Char('4'))); // commits
+    assert_eq!(app.on_key(key(KeyCode::Char(' '))), None);
+    assert_eq!(
+        app.log.len(),
+        logged,
+        "a panel with nothing to stage hides the key silently"
+    );
+}
+
+// ── space on a changelist (issue #90) ───────────────────────────
+
+#[test]
+fn space_on_a_changelist_stages_it_while_any_hunk_is_unstaged() {
+    let mut app = app(); // Changelists focus
+    app.on_key(key(KeyCode::Char('j'))); // 'fixes': ● at 14, ○ at 41
+    assert_eq!(
+        app.on_key(key(KeyCode::Char(' '))),
+        Some(Action::Op(Op::StageChangelist {
+            changelist: Some("fixes".into())
+        })),
+        "a mixed changelist stages"
+    );
+
+    // A ◑ alongside a ● takes the stage direction too: `space` aligns
+    // the stale hunk rather than unstaging the pair.
+    let mut stale = snapshot();
+    stale.files[1].hunks[1].stage = HunkStage::StagedStale;
+    app.apply_snapshot(stale);
+    assert_eq!(
+        app.on_key(key(KeyCode::Char(' '))),
+        Some(Action::Op(Op::StageChangelist {
+            changelist: Some("fixes".into())
+        })),
+        "◑ + ● stages"
+    );
+}
+
+#[test]
+fn space_on_a_fully_staged_changelist_unstages_it() {
+    let mut app = app();
+    let mut staged = snapshot();
+    for file in &mut staged.files {
+        for hunk in &mut file.hunks {
+            if hunk.changelist.as_deref() == Some("fixes") {
+                hunk.stage = HunkStage::Staged;
+            }
+        }
+    }
+    app.apply_snapshot(staged);
+    app.on_key(key(KeyCode::Char('j'))); // 'fixes'
+    assert_eq!(
+        app.on_key(key(KeyCode::Char(' '))),
+        Some(Action::Op(Op::UnstageChangelist {
+            changelist: Some("fixes".into())
+        }))
+    );
+}
+
+#[test]
+fn space_on_unassigned_scopes_the_op_to_the_unowned_hunks() {
+    let mut app = app();
+    app.on_key(key(KeyCode::Char('j')));
+    app.on_key(key(KeyCode::Char('j')));
+    app.on_key(key(KeyCode::Char('j'))); // 'unassigned', pinned last
+    assert_eq!(app.scope(), Scope::Unassigned);
+    assert_eq!(
+        app.on_key(key(KeyCode::Char(' '))),
+        Some(Action::Op(Op::StageChangelist { changelist: None })),
+        "unassigned is core's None changelist"
+    );
+}
+
+#[test]
+fn space_on_an_empty_changelist_still_asks_for_the_echo() {
+    // A row owning no hunks takes the stage direction, whose op answers
+    // `nothing to stage — 'empty'` (ADR 0007) instead of going quiet.
+    let mut app = app();
+    let mut empty = snapshot();
+    empty.changelists.push(Changelist {
+        name: "empty".into(),
+    });
+    app.apply_snapshot(empty);
+    for _ in 0..3 {
+        app.on_key(key(KeyCode::Char('j'))); // 'empty', after the other two
+    }
+    assert_eq!(app.scope(), Scope::Changelist("empty".into()));
+    assert_eq!(
+        app.on_key(key(KeyCode::Char(' '))),
+        Some(Action::Op(Op::StageChangelist {
+            changelist: Some("empty".into())
+        }))
+    );
+}
+
+#[test]
+fn space_on_the_all_row_logs_the_all_is_a_view_reason() {
+    let mut app = app(); // Changelists focus, 'all' selected
+    assert_eq!(app.on_key(key(KeyCode::Char(' '))), None);
+    assert!(
+        app.log
+            .iter()
+            .any(|entry| entry.text == "select a changelist to stage — all is a view"),
+        "the disabled reason logs on the press: {:?}",
+        app.log
+    );
+    assert!(
+        !bar(&app).iter().any(|hint| hint.starts_with("space")),
+        "and the bar doesn't advertise the key"
+    );
 }
 
 // ── commit flow (ticket #33) ────────────────────────────────────
@@ -1697,6 +1806,7 @@ fn the_changelists_bar_reflects_what_the_scoped_row_affords() {
         bar(&app),
         [
             "enter files",
+            "space toggle stage changelist",
             "n new",
             "d delete",
             "r rename",
@@ -1717,7 +1827,7 @@ fn the_files_bar_reflects_what_the_scoped_row_affords() {
     assert_eq!(
         bar(&app),
         [
-            "space stage file",
+            "space toggle stage file",
             "enter hunks",
             "a/A/ctrl+a assign group / unassigned / all",
             "n new",
@@ -1734,7 +1844,7 @@ fn the_files_bar_reflects_what_the_scoped_row_affords() {
     assert_eq!(
         bar(&app),
         [
-            "space stage file",
+            "space toggle stage file",
             "enter hunks",
             "a/A/ctrl+a assign group / unassigned / all",
             "c commit",
@@ -1761,7 +1871,7 @@ fn the_hunk_mode_bar_scopes_commit_like_everywhere_else() {
     assert_eq!(
         bar(&app),
         [
-            "space stage/unstage hunk",
+            "space toggle stage hunk",
             "a/A/ctrl+a assign hunk / unassigned / all",
             "c commit changelist",
             "esc back to files",
@@ -1778,7 +1888,7 @@ fn the_hunk_mode_bar_scopes_commit_like_everywhere_else() {
     assert_eq!(
         bar(&all_scoped),
         [
-            "space stage/unstage hunk",
+            "space toggle stage hunk",
             "a/A/ctrl+a assign hunk / unassigned / all",
             "esc back to files",
             "? keybindings",
@@ -1921,6 +2031,7 @@ fn the_bar_hides_c_while_an_operation_is_in_progress() {
         bar(&app),
         [
             "enter files",
+            "space toggle stage changelist",
             "n new",
             "d delete",
             "r rename",
@@ -1936,7 +2047,7 @@ fn the_bar_hides_c_while_an_operation_is_in_progress() {
     assert_eq!(
         bar(&app),
         [
-            "space stage/unstage hunk",
+            "space toggle stage hunk",
             "a/A/ctrl+a assign hunk / unassigned / all",
             "esc back to files",
             "? keybindings",

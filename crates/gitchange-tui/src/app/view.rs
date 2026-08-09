@@ -453,7 +453,7 @@ impl App {
         const ASSIGN_HUNK: &str = "assign hunk / unassigned / all";
         let arm: Vec<(&'static [BindingId], &'static str)> = if self.hunk_mode_focused() {
             vec![
-                (&[StageToggle], "stage/unstage hunk"),
+                (&[StageToggle], "toggle stage hunk"),
                 (ASSIGN_TRIO, ASSIGN_HUNK),
                 (&[Commit], "commit changelist"),
                 (&[Back], "back to files"),
@@ -463,6 +463,7 @@ impl App {
             let mut arm: Vec<(&'static [BindingId], &'static str)> = match self.focus {
                 Panel::Changelists => vec![
                     (&[DrillIn], "files"),
+                    (&[StageToggle], "toggle stage changelist"),
                     (&[NewChangelist], "new"),
                     (&[DeleteChangelist], "delete"),
                     (&[RenameChangelist], "rename"),
@@ -471,7 +472,7 @@ impl App {
                     (ASSIGN_TRIO, ASSIGN_HUNK),
                 ],
                 Panel::Files => vec![
-                    (&[StageToggle], "stage file"),
+                    (&[StageToggle], "toggle stage file"),
                     (&[DrillIn], "hunks"),
                     (ASSIGN_TRIO, "assign group / unassigned / all"),
                     (&[Commit], "commit"),

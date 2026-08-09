@@ -5,12 +5,12 @@
 
 mod support;
 
-use gitchange_core::{Advisory, FileStage, HunkStage, Repo};
+use gitchange_core::{Advisory, Error, FileStage, Hunk, HunkStage, Repo, Snapshot};
 use support::RepoFixture;
 
 // Gated with its only user below, so Windows builds this file clean.
 #[cfg(unix)]
-use gitchange_core::{ApplySite, Error};
+use gitchange_core::ApplySite;
 
 /// Twenty numbered lines, with `edits` as (1-based line, replacement).
 fn numbered(edits: &[(usize, &str)]) -> String {
@@ -631,5 +631,212 @@ fn a_refused_apply_reports_apply_failed_and_stages_nothing() {
         fixture.index_content("a.txt"),
         index_before,
         "a refused apply stages nothing"
+    );
+}
+
+// ── bulk staging: `space` on a changelist (issue #90) ───────────────
+
+/// Each hunk's staging state for `path`, in file order.
+fn stages(snapshot: &Snapshot, path: &str) -> Vec<HunkStage> {
+    let file = snapshot
+        .files
+        .iter()
+        .find(|file| file.path == path)
+        .unwrap_or_else(|| panic!("{path} not in snapshot"));
+    file.hunks.iter().map(|hunk| hunk.stage).collect()
+}
+
+/// A repo where `one` owns a.txt's top hunk and b.txt's only hunk,
+/// `two` owns a.txt's bottom hunk, and c.txt's hunk is unassigned. The
+/// split file is the point: a bulk op must move its own changelist's
+/// hunks and leave the other's in place.
+fn bulk_fixture() -> (RepoFixture, Repo) {
+    let fixture = RepoFixture::new();
+    fixture
+        .write("a.txt", &numbered(&[]))
+        .write("b.txt", &numbered(&[]))
+        .write("c.txt", &numbered(&[]))
+        .commit_all("init")
+        .write(
+            "a.txt",
+            &numbered(&[(2, "edit near top"), (18, "edit near bottom")]),
+        )
+        .write("b.txt", &numbered(&[(2, "b edit")]))
+        .write("c.txt", &numbered(&[(2, "c edit")]));
+    let repo = Repo::discover(fixture.path()).unwrap();
+    repo.create_changelist("one").unwrap();
+    repo.create_changelist("two").unwrap();
+    // Everything auto-captures into `one` (the first created is active);
+    // a.txt's bottom hunk then moves to `two` and c.txt's to unassigned.
+    let snapshot = repo.refresh().unwrap();
+    let bottom = hunks(&snapshot, "a.txt")[1].clone();
+    repo.assign_hunks("a.txt", &[bottom], Some("two")).unwrap();
+    let orphan = hunks(&snapshot, "c.txt");
+    repo.assign_hunks("c.txt", &orphan, None).unwrap();
+    (fixture, repo)
+}
+
+fn hunks(snapshot: &Snapshot, path: &str) -> Vec<Hunk> {
+    snapshot
+        .files
+        .iter()
+        .find(|file| file.path == path)
+        .unwrap_or_else(|| panic!("{path} not in snapshot"))
+        .hunks
+        .clone()
+}
+
+#[test]
+fn staging_a_changelist_takes_its_unstaged_and_staged_stale_hunks() {
+    let (fixture, repo) = bulk_fixture();
+    // b.txt's hunk is staged and then edited again — `◑`, which the
+    // stage direction re-stages alongside a plain `○`.
+    let b = hunks(&repo.refresh().unwrap(), "b.txt")[0].clone();
+    repo.stage_hunk("b.txt", &b).unwrap();
+    fixture.write("b.txt", &numbered(&[(2, "b edit, again")]));
+    assert_eq!(
+        stages(&repo.refresh().unwrap(), "b.txt"),
+        vec![HunkStage::StagedStale]
+    );
+
+    let outcome = repo.stage_changelist(Some("one")).unwrap();
+
+    assert_eq!(outcome.echo.as_deref(), Some("staged 2 hunks — 'one'"));
+    assert_eq!(outcome.advisories, vec![]);
+    // Ground truth: the index holds `one`'s two hunks and nobody else's.
+    assert_eq!(
+        fixture.index_content("a.txt").as_deref(),
+        Some(numbered(&[(2, "edit near top")]).as_str()),
+        "the split file's other changelist stays out of the index"
+    );
+    assert_eq!(
+        fixture.index_content("b.txt").as_deref(),
+        Some(numbered(&[(2, "b edit, again")]).as_str()),
+        "the ◑ hunk is re-staged at its worktree content"
+    );
+    assert_eq!(
+        fixture.index_content("c.txt").as_deref(),
+        Some(numbered(&[]).as_str()),
+        "the unassigned hunk is untouched"
+    );
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(
+        stages(&snapshot, "a.txt"),
+        vec![HunkStage::Staged, HunkStage::Unstaged]
+    );
+    assert_eq!(stages(&snapshot, "b.txt"), vec![HunkStage::Staged]);
+}
+
+#[test]
+fn unstaging_a_changelist_leaves_every_other_changelists_hunk_staged() {
+    let (fixture, repo) = bulk_fixture();
+    repo.stage_changelist(Some("one")).unwrap();
+    repo.stage_changelist(Some("two")).unwrap();
+
+    let outcome = repo.unstage_changelist(Some("one")).unwrap();
+
+    assert_eq!(outcome.echo.as_deref(), Some("unstaged 2 hunks — 'one'"));
+    assert_eq!(outcome.advisories, vec![]);
+    assert_eq!(
+        fixture.index_content("a.txt").as_deref(),
+        Some(numbered(&[(18, "edit near bottom")]).as_str()),
+        "`two`'s hunk of the split file stays staged"
+    );
+    assert_eq!(
+        fixture.index_content("b.txt").as_deref(),
+        Some(numbered(&[]).as_str())
+    );
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(
+        stages(&snapshot, "a.txt"),
+        vec![HunkStage::Unstaged, HunkStage::Staged]
+    );
+    assert_eq!(stages(&snapshot, "b.txt"), vec![HunkStage::Unstaged]);
+}
+
+#[test]
+fn bulk_staging_reaches_the_unassigned_hunks() {
+    let (fixture, repo) = bulk_fixture();
+
+    let outcome = repo.stage_changelist(None).unwrap();
+
+    assert_eq!(
+        outcome.echo.as_deref(),
+        Some("staged 1 hunk — 'unassigned'")
+    );
+    assert_eq!(
+        fixture.index_content("c.txt").as_deref(),
+        Some(numbered(&[(2, "c edit")]).as_str())
+    );
+    assert_eq!(
+        fixture.index_content("a.txt").as_deref(),
+        Some(numbered(&[]).as_str()),
+        "no named changelist's hunk went with it"
+    );
+
+    let outcome = repo.unstage_changelist(None).unwrap();
+
+    assert_eq!(
+        outcome.echo.as_deref(),
+        Some("unstaged 1 hunk — 'unassigned'")
+    );
+    assert_eq!(
+        fixture.index_content("c.txt").as_deref(),
+        Some(numbered(&[]).as_str())
+    );
+}
+
+#[test]
+fn a_bulk_op_that_moves_nothing_still_says_so() {
+    let (_fixture, repo) = bulk_fixture();
+    repo.create_changelist("empty").unwrap();
+
+    assert_eq!(
+        repo.stage_changelist(Some("empty"))
+            .unwrap()
+            .echo
+            .as_deref(),
+        Some("nothing to stage — 'empty'")
+    );
+    assert_eq!(
+        repo.unstage_changelist(Some("one"))
+            .unwrap()
+            .echo
+            .as_deref(),
+        Some("nothing to unstage — 'one'"),
+        "nothing of `one` is staged yet"
+    );
+    assert!(matches!(
+        repo.stage_changelist(Some("missing")),
+        Err(Error::UnknownChangelist { .. })
+    ));
+    assert!(matches!(
+        repo.unstage_changelist(Some("missing")),
+        Err(Error::UnknownChangelist { .. })
+    ));
+}
+
+#[test]
+fn the_commit_flows_stage_all_still_leaves_staged_stale_hunks_alone() {
+    let (fixture, repo) = bulk_fixture();
+    let b = hunks(&repo.refresh().unwrap(), "b.txt")[0].clone();
+    repo.stage_hunk("b.txt", &b).unwrap();
+    fixture.write("b.txt", &numbered(&[(2, "b edit, again")]));
+
+    let outcome = repo.stage_all(Some("one")).unwrap();
+
+    assert_eq!(
+        outcome.echo.as_deref(),
+        Some("staged 1 hunk — 'one'"),
+        "only the ○ hunk; the ◑ one is the dialog's align option to make"
+    );
+    assert_eq!(
+        fixture.index_content("b.txt").as_deref(),
+        Some(numbered(&[(2, "b edit")]).as_str()),
+        "the ◑ hunk keeps its earlier index content"
+    );
+    assert_eq!(
+        stages(&repo.refresh().unwrap(), "b.txt"),
+        vec![HunkStage::StagedStale]
     );
 }

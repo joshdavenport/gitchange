@@ -351,17 +351,11 @@ impl Repo {
     /// [`Repo::stage_hunk`]; the echo names the whole bulk op, with any
     /// stale-hunk advisories alongside.
     pub fn align(&self, changelist: Option<&str>) -> Result<OpOutcome, Error> {
-        let snapshot = self.refresh()?;
-        validate_changelist(&snapshot, changelist)?;
-        let mut advisories = Vec::new();
-        for file in &snapshot.files {
-            for hunk in &file.hunks {
-                if hunk.changelist.as_deref() == changelist && hunk.stage == HunkStage::StagedStale
-                {
-                    advisories.extend(self.stage_hunk(&file.path, hunk)?.advisories);
-                }
-            }
-        }
+        let (_, advisories) = self.bulk_apply(
+            changelist,
+            |stage| stage == HunkStage::StagedStale,
+            Self::stage_hunk,
+        )?;
         Ok(OpOutcome {
             echo: Some(format!(
                 "aligned index to worktree — '{}'",
@@ -373,33 +367,86 @@ impl Repo {
 
     /// The bulk stage op: set index := worktree for each of the
     /// changelist's unstaged hunks — what the commit flow's stage-all
-    /// offer runs before opening the dialog. Fail-soft per hunk like
+    /// offer runs before opening the dialog. `◑` hunks are left alone:
+    /// the offer stages what is not in the index, and the dialog's own
+    /// align option covers the rest (ADR 0004). Fail-soft per hunk like
     /// [`Repo::stage_hunk`]; the echo counts what was staged (`None`
     /// when nothing was), with any stale-hunk advisories alongside.
     pub fn stage_all(&self, changelist: Option<&str>) -> Result<OpOutcome, Error> {
+        let (staged, advisories) = self.bulk_apply(
+            changelist,
+            |stage| stage == HunkStage::Unstaged,
+            Self::stage_hunk,
+        )?;
+        // Silent when nothing staged: the offer's caller is mid-flow
+        // towards a dialog, and has no use for a nothing-to-do line.
+        let echo = (staged > 0).then(|| bulk_echo("stage", staged, changelist));
+        Ok(OpOutcome { echo, advisories })
+    }
+
+    /// The stage direction of `space` on a changelist: set index :=
+    /// worktree for every hunk of it the index does not already hold —
+    /// `○` unstaged and `◑` staged-stale alike, the same pair per-hunk
+    /// `space` stages (ADR 0003). Wider than [`Repo::stage_all`], which
+    /// serves the commit flow's offer. Fail-soft per hunk like
+    /// [`Repo::stage_hunk`]; the echo counts what was staged, and says
+    /// so when that is nothing.
+    pub fn stage_changelist(&self, changelist: Option<&str>) -> Result<OpOutcome, Error> {
+        let (staged, advisories) = self.bulk_apply(
+            changelist,
+            |stage| matches!(stage, HunkStage::Unstaged | HunkStage::StagedStale),
+            Self::stage_hunk,
+        )?;
+        Ok(OpOutcome {
+            echo: Some(bulk_echo("stage", staged, changelist)),
+            advisories,
+        })
+    }
+
+    /// The unstage direction of `space` on a changelist: set index :=
+    /// HEAD for each of its staged hunks — the mirror of
+    /// [`Repo::stage_changelist`], with the same fail-soft, echo and
+    /// membership contracts.
+    pub fn unstage_changelist(&self, changelist: Option<&str>) -> Result<OpOutcome, Error> {
+        let (unstaged, advisories) = self.bulk_apply(
+            changelist,
+            |stage| stage == HunkStage::Staged,
+            Self::unstage_hunk,
+        )?;
+        Ok(OpOutcome {
+            echo: Some(bulk_echo("unstage", unstaged, changelist)),
+            advisories,
+        })
+    }
+
+    /// The body every bulk staging op shares: over one snapshot, run
+    /// `apply` on each of `changelist`'s hunks whose staging state
+    /// `include` accepts — hunks another changelist owns are never
+    /// touched, and conflicted files carry none at all (ADR 0007).
+    /// Returns how many hunks moved, plus the advisories of those that
+    /// failed soft.
+    fn bulk_apply(
+        &self,
+        changelist: Option<&str>,
+        include: impl Fn(HunkStage) -> bool,
+        apply: impl Fn(&Self, &str, &Hunk) -> Result<OpOutcome, Error>,
+    ) -> Result<(usize, Vec<Advisory>), Error> {
         let snapshot = self.refresh()?;
         validate_changelist(&snapshot, changelist)?;
-        let mut staged = 0;
+        let mut moved = 0;
         let mut advisories = Vec::new();
         for file in &snapshot.files {
             for hunk in &file.hunks {
-                if hunk.changelist.as_deref() == changelist && hunk.stage == HunkStage::Unstaged {
-                    let outcome = self.stage_hunk(&file.path, hunk)?;
+                if hunk.changelist.as_deref() == changelist && include(hunk.stage) {
+                    let outcome = apply(self, &file.path, hunk)?;
                     if outcome.advisories.is_empty() {
-                        staged += 1;
+                        moved += 1;
                     }
                     advisories.extend(outcome.advisories);
                 }
             }
         }
-        let echo = (staged > 0).then(|| {
-            format!(
-                "staged {} — '{}'",
-                count_noun(staged, "hunk"),
-                changelist.unwrap_or(UNASSIGNED)
-            )
-        });
-        Ok(OpOutcome { echo, advisories })
+        Ok((moved, advisories))
     }
 
     /// Assign snapshot hunks of `path` to `target` (`None` =
@@ -470,6 +517,18 @@ impl Repo {
         let mut state = state_file::load(&dir)?;
         mutate(&mut state)?;
         state_file::save(&dir, &state)
+    }
+}
+
+/// A changelist-scoped staging op's echo. `space` on a changelist
+/// always answers (ADR 0007): a count when hunks moved, the quiet
+/// nothing-to-do line when none did. `verb` is the plain form —
+/// `stage`/`unstage`, whose past tense is the same word plus `d`.
+fn bulk_echo(verb: &str, moved: usize, changelist: Option<&str>) -> String {
+    let name = changelist.unwrap_or(UNASSIGNED);
+    match moved {
+        0 => format!("nothing to {verb} — '{name}'"),
+        moved => format!("{verb}d {} — '{name}'", count_noun(moved, "hunk")),
     }
 }
 
