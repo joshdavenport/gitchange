@@ -21,6 +21,10 @@
 //! | `operations`    | the guard's remaining arms — rebase, cherry-pick, am  |
 //! | `apply_corpus`  | the data-driven apply-correctness corpus              |
 //! | `engine`        | real-fs notify wiring: the worktree half and `.git`   |
+//!
+//! `matcher` and `commit` are directories, split again by mechanism —
+//! start from the table in their `mod.rs`. Cargo only scans the top level
+//! of `tests/`, so the nesting is still one binary.
 
 mod support;
 

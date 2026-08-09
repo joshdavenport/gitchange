@@ -16,7 +16,8 @@ free.
 ## Layout: one test binary per crate, split into per-concern modules
 
 *Added by issue #91; qualifies **Fixtures** below, which places the shared
-builder but not the tests that call it.*
+builder but not the tests that call it. Nesting and private helpers added
+by issue #92.*
 
 A crate's integration tests live in **one** target, `tests/<name>/main.rs`,
 whose modules each carry one concern — `gitchange-core`'s is `tests/core/`,
@@ -25,6 +26,16 @@ declarations and a table mapping each module to its concern, so a reader
 knows which single file to open. The fixture shim is one module of that
 binary (`support` in core, `helpers` in the TUI), compiled once and reached
 as `crate::support::…`.
+
+A module whose concern outgrows one file becomes a directory of its own,
+with a `mod.rs` carrying the same two things `main.rs` does — the `mod`
+declarations and a table — so the reader's path to one file is the same
+walk, one level longer. Cargo scans only the top level of `tests/`, so the
+nesting stays one binary. Such a directory may carry a private `helpers`
+module for fixtures its own submodules share, reached as
+`super::helpers::…`; that is distinct from the shim, which stays the one
+surface shared across every module of the binary. A fixture used by a
+single submodule stays in it.
 
 Cargo makes every `.rs` **directly under** `tests/` its own binary, linked
 against the whole dependency graph, libgit2 included; a directory with a

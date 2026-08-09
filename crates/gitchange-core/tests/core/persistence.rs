@@ -4,7 +4,8 @@
 //! leaves no temp sibling, and nothing gitchange does writes a git
 //! object. Asserted through core's public ops on real temp repos
 //! (ADR 0008) — the operation-shaped half of ADR 0002 lives in
-//! `tests/core/changelists.rs`, and dormancy in `tests/core/matcher.rs`.
+//! `tests/core/changelists.rs`, and dormancy in
+//! `tests/core/matcher/dormancy.rs`.
 
 use std::fs;
 

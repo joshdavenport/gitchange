@@ -5,8 +5,9 @@
 //! for the paths the move changed — stranded live records go dormant, and
 //! anchor-broken hunks capture to active with a per-path notice. The
 //! own-commit half (commutation, issue 28) lives in `Repo::commit`'s
-//! record aftermath; `tests/core/commit.rs` pins the re-attachment these
-//! same scenarios keep when the commit is gitchange's own.
+//! record aftermath; `tests/core/commit/aftermath.rs` pins the
+//! re-attachment these same scenarios keep when the commit is
+//! gitchange's own.
 
 use std::fs;
 
