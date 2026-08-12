@@ -80,6 +80,7 @@ fn owned_dirty_hunks_ride_across_a_branch_switch() {
 
     let repo = repo(&fixture);
     repo.create_changelist("feature").unwrap();
+    repo.switch(Some("feature")).unwrap();
     fixture.write("a.txt", &numbered(20, &[(5, "five!"), (15, "fifteen!")]));
     let before = repo.refresh().unwrap();
     assert_eq!(
@@ -91,7 +92,7 @@ fn owned_dirty_hunks_ride_across_a_branch_switch() {
     // confused with re-capture: hunks that lost their records would land on
     // 'idle' below, not back on 'feature'.
     repo.create_changelist("idle").unwrap();
-    repo.switch("idle").unwrap();
+    repo.switch(Some("idle")).unwrap();
 
     fixture.switch_branch("other");
 
@@ -187,6 +188,7 @@ fn every_state_file_write_leaves_no_temp_sibling() {
     };
 
     repo.create_changelist("feature").unwrap();
+    repo.switch(Some("feature")).unwrap();
     only_the_state_file("create_changelist");
 
     // A refresh that persists records: a fresh hunk captures to the active
@@ -209,7 +211,7 @@ fn every_state_file_write_leaves_no_temp_sibling() {
     repo.rename_changelist("chores", "errands").unwrap();
     only_the_state_file("rename_changelist");
 
-    repo.switch("errands").unwrap();
+    repo.switch(Some("errands")).unwrap();
     only_the_state_file("switch");
 
     // The commit path writes the state file too — its own locked update for
@@ -262,6 +264,7 @@ fn no_membership_op_writes_a_git_object() {
     };
 
     repo.create_changelist("feature").unwrap();
+    repo.switch(Some("feature")).unwrap();
     repo.create_changelist("chores").unwrap();
     unchanged("create_changelist");
 
@@ -283,7 +286,7 @@ fn no_membership_op_writes_a_git_object() {
     repo.rename_changelist("chores", "errands").unwrap();
     unchanged("rename_changelist");
 
-    repo.switch("errands").unwrap();
+    repo.switch(Some("errands")).unwrap();
     unchanged("switch");
 
     repo.delete_changelist("errands").unwrap();

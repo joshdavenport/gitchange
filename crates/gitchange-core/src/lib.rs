@@ -27,5 +27,5 @@ pub use state::{Changelist, MembershipRecord, OidAnchor, RESERVED_NAMES};
 pub use universe::{ChangedFile, FileStage, Hunk, HunkIdentity, HunkStage};
 pub use vocabulary::{
     ACTIVE_MARKER, ALL, ARROW, CONFLICTS, PARTIALLY_STAGED, RESOLVE_OUTSIDE_GITCHANGE, SEPARATOR,
-    STAGED, STAGED_STALE, UNASSIGNED, UNSTAGED, conflicted_hint, count_noun,
+    STAGED, STAGED_STALE, UNASSIGNED, UNSTAGED, conflicted_hint, count_noun, target_named,
 };

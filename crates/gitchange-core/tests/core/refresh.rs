@@ -1,5 +1,5 @@
 use crate::support::{NON_UTF8_PATH, RepoFixture};
-use gitchange_core::{ChangeKind, Error, Head, Repo};
+use gitchange_core::{ChangeKind, Error, GroupKind, Head, Repo};
 
 #[test]
 fn refresh_lists_worktree_changes_sorted_by_path() {
@@ -28,6 +28,52 @@ fn refresh_lists_worktree_changes_sorted_by_path() {
             ("untracked.txt", ChangeKind::Untracked),
         ]
     );
+}
+
+#[test]
+fn the_all_views_groups_mark_whichever_target_is_active() {
+    // ADR 0015: the `*` belongs to exactly one of {the changelists,
+    // unassigned}, so `groups()` answers for both — and an empty
+    // unassigned group still renders when it holds the marker, since
+    // that marker is capture-off's whole visible surface.
+    let fixture = RepoFixture::new();
+    fixture.write("a.txt", "one\n").commit_all("init");
+    let repo = Repo::discover(fixture.path()).unwrap();
+    repo.create_changelist("feature").unwrap();
+    repo.switch(Some("feature")).unwrap();
+
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(
+        snapshot
+            .groups()
+            .iter()
+            .map(|g| g.kind.clone())
+            .collect::<Vec<_>>(),
+        vec![GroupKind::Changelist {
+            name: "feature".into(),
+            active: true,
+        }],
+        "a clean tree has no unassigned group to show"
+    );
+
+    repo.switch(None).unwrap();
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(
+        snapshot
+            .groups()
+            .iter()
+            .map(|g| g.kind.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            GroupKind::Changelist {
+                name: "feature".into(),
+                active: false,
+            },
+            GroupKind::Unassigned { active: true },
+        ],
+        "capture-off shows the unassigned group for its marker alone"
+    );
+    assert!(snapshot.groups()[1].files.is_empty());
 }
 
 #[test]

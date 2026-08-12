@@ -54,6 +54,16 @@ pub const SEPARATOR: char = '·';
 /// frontends print can never drift apart.
 pub const UNASSIGNED: &str = "unassigned";
 
+/// The op target a user-typed name denotes (`CONTEXT.md`'s *Assign*:
+/// "the target is any changelist or `unassigned`"): the reserved
+/// `unassigned` label denotes the pseudo-changelist, which every core op
+/// spells `None`; any other name denotes that changelist. Reading the
+/// label back sits beside the constant that defines it, so no frontend
+/// re-spells the reserved name.
+pub fn target_named(name: &str) -> Option<&str> {
+    (name != UNASSIGNED).then_some(name)
+}
+
 /// The reserved name and display label for the All pseudo-view
 /// (`CONTEXT.md`'s "All"): every changed file grouped by changelist.
 pub const ALL: &str = "all";

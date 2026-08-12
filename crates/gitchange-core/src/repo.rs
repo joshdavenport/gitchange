@@ -485,7 +485,9 @@ impl Repo {
         Ok(OpOutcome { echo, advisories })
     }
 
-    /// Create a changelist. The first one created becomes active.
+    /// Create a changelist. The active marker stays where it is
+    /// (ADR 0015): a caller that wants the new changelist active says so
+    /// with [`Repo::switch`].
     pub fn create_changelist(&self, name: &str) -> Result<(), Error> {
         self.update_state(|state| state.create(name))
     }
@@ -495,15 +497,19 @@ impl Repo {
         self.update_state(|state| state.rename(from, to))
     }
 
-    /// Delete a changelist. Deleting the active one promotes the first
-    /// remaining changelist.
+    /// Delete a changelist. Deleting the active one leaves unassigned
+    /// active.
     pub fn delete_changelist(&self, name: &str) -> Result<(), Error> {
         self.update_state(|state| state.delete(name))
     }
 
-    /// Set the active changelist.
-    pub fn switch(&self, name: &str) -> Result<(), Error> {
-        self.update_state(|state| state.switch(name))
+    /// Set the active changelist; `None` is unassigned (ADR 0015's
+    /// capture-off). [`target_named`] maps a user-typed name onto
+    /// this argument.
+    ///
+    /// [`target_named`]: crate::target_named
+    pub fn switch(&self, target: Option<&str>) -> Result<(), Error> {
+        self.update_state(|state| state.switch(target))
     }
 
     /// One locked load-mutate-save cycle (ADR 0002): fail-fast lock,

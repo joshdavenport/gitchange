@@ -39,6 +39,7 @@ const COMMIT_FAILED: &str = "Commit failed";
 const STAGE_FAILED: &str = "Stage failed";
 const UNSTAGE_FAILED: &str = "Unstage failed";
 const CREATE_CHANGELIST_FAILED: &str = "Create changelist failed";
+const SWITCH_CHANGELIST_FAILED: &str = "Switch changelist failed";
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -201,8 +202,15 @@ fn run_op(repo: &Repo, app: &mut App, op: Op) {
         }
     };
     match op {
+        // `n` is create-then-switch (`Op::CreateChangelist`): core
+        // creates without moving the marker, so the switch is a second
+        // op. A failed create leaves the marker alone.
         Op::CreateChangelist { name } => {
-            done(app, CREATE_CHANGELIST_FAILED, repo.create_changelist(&name));
+            if let Err(error) = repo.create_changelist(&name) {
+                app.show_error(CREATE_CHANGELIST_FAILED, error.to_string());
+                return;
+            }
+            done(app, SWITCH_CHANGELIST_FAILED, repo.switch(Some(&name)));
         }
         Op::RenameChangelist { from, to } => done(
             app,
@@ -216,7 +224,11 @@ fn run_op(repo: &Repo, app: &mut App, op: Op) {
                 repo.delete_changelist(&name),
             );
         }
-        Op::SetActive { name } => done(app, "Switch changelist failed", repo.switch(&name)),
+        Op::SetActive { changelist } => done(
+            app,
+            SWITCH_CHANGELIST_FAILED,
+            repo.switch(changelist.as_deref()),
+        ),
         Op::StageFile { path } => echoed(app, STAGE_FAILED, repo.stage_file(&path)),
         Op::UnstageFile { path } => echoed(app, UNSTAGE_FAILED, repo.unstage_file(&path)),
         Op::StageHunk { path, hunk } => {

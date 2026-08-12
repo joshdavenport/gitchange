@@ -65,6 +65,7 @@ fn deleting_a_changelist_prunes_its_dormant_records() {
         .commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
 
     fixture.write("a.txt", &numbered(20, &[(10, "ten!")]));
     repo.refresh().unwrap();
@@ -79,7 +80,7 @@ fn deleting_a_changelist_prunes_its_dormant_records() {
     // A survivor is active when "one" dies, as in the orphan test: the
     // prune must not depend on the delete promoting a new active.
     repo.create_changelist("two").unwrap();
-    repo.switch("two").unwrap();
+    repo.switch(Some("two")).unwrap();
     repo.delete_changelist("one").unwrap();
 
     // Pruned outright — not orphaned to unassigned like a live record.
@@ -99,6 +100,7 @@ fn deleting_a_changelist_orphans_its_hunks_to_unassigned() {
         .commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
 
     fixture.write("a.txt", &numbered(20, &[(10, "ten!")]));
     repo.refresh().unwrap();
@@ -106,7 +108,7 @@ fn deleting_a_changelist_orphans_its_hunks_to_unassigned() {
     // Another changelist is active when "one" dies: its hunks must land
     // in unassigned, never be captured by the survivor.
     repo.create_changelist("two").unwrap();
-    repo.switch("two").unwrap();
+    repo.switch(Some("two")).unwrap();
     repo.delete_changelist("one").unwrap();
 
     let snapshot = repo.refresh().unwrap();
@@ -132,6 +134,7 @@ fn renaming_a_changelist_carries_its_records() {
         .commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
     fixture.write("a.txt", &numbered(20, &[(10, "ten!")]));
     repo.refresh().unwrap();
 
@@ -222,6 +225,7 @@ fn a_binary_whole_file_hunk_is_assignable_like_any_other() {
         .commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("art").unwrap();
+    repo.switch(Some("art")).unwrap();
     repo.create_changelist("other").unwrap();
     fixture.write_bytes("logo.png", &[0u8, 9, 9]);
     let snapshot = repo.refresh().unwrap();

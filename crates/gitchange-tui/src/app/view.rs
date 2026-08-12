@@ -99,7 +99,7 @@ impl From<&GroupKind> for Group {
         match kind {
             GroupKind::Conflicts => Group::Conflicts,
             GroupKind::Changelist { name, .. } => Group::Changelist(name.clone()),
-            GroupKind::Unassigned => Group::Unassigned,
+            GroupKind::Unassigned { .. } => Group::Unassigned,
         }
     }
 }
@@ -223,13 +223,15 @@ impl App {
         rows.push(ChangelistRow {
             scope: Scope::Unassigned,
             count: snapshot.files_in(None).len(),
-            active: false,
+            // Unassigned wears the `*` like any active target: capture
+            // flows here while it holds the marker (ADR 0015).
+            active: snapshot.active.is_none(),
         });
         rows
     }
 
     /// Files panel rows for the current scope. All: groups in changelist
-    /// order with the unassigned group last only when non-empty —
+    /// order with the unassigned group last when non-empty or active —
     /// `gitchange status`'s grouping semantics. Drilled: a flat list.
     pub fn files_rows(&self) -> Vec<FilesRow> {
         let Some(snapshot) = &self.snapshot else {
@@ -240,15 +242,14 @@ impl App {
             Scope::All => {
                 // Group order and membership are core's (ADR 0006):
                 // Conflicts first (ADR 0007), changelists in user order,
-                // unassigned last when non-empty.
+                // unassigned last when non-empty or active.
                 for group in snapshot.groups() {
-                    let active = matches!(group.kind, GroupKind::Changelist { active: true, .. });
                     rows.push(FilesRow::Header {
                         label: group.kind.label().to_owned(),
                         count: group.files.len(),
-                        unassigned: matches!(group.kind, GroupKind::Unassigned),
+                        unassigned: matches!(group.kind, GroupKind::Unassigned { .. }),
                         conflicted: matches!(group.kind, GroupKind::Conflicts),
-                        active,
+                        active: group.kind.active(),
                     });
                     let group_kind = Group::from(&group.kind);
                     for file in group.files {

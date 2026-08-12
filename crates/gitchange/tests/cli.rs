@@ -98,7 +98,7 @@ fn switch_then_status_round_trip_the_active_marker() {
     let output = gitchange(repo.path(), &["switch", "bugfix"]);
     assert_eq!(output.status.code(), Some(0));
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert_eq!(stdout, "Switched to changelist 'bugfix'\n");
+    assert_eq!(stdout, "Switched to 'bugfix'\n");
 
     // A separate invocation sees the persisted marker; the dirty files
     // auto-capture to the newly active changelist.
@@ -141,7 +141,9 @@ fn switch_without_a_name_exits_2() {
 
 #[test]
 fn status_lists_changed_files_and_exits_0() {
-    // No changelists exist: the whole dirty tree is the unassigned group.
+    // No changelists exist: the whole dirty tree is the unassigned
+    // group, and unassigned holds the `*` — with nothing else to be
+    // active, capture flows here (ADR 0015).
     let repo = dirty_repo();
     let output = gitchange(repo.path(), &["status"]);
 
@@ -151,7 +153,7 @@ fn status_lists_changed_files_and_exits_0() {
     assert_eq!(
         lines,
         vec![
-            "  unassigned",
+            "* unassigned",
             "    ○ M tracked.txt 0/1",
             "    ○ ? untracked.txt 0/1",
         ]
@@ -172,8 +174,80 @@ fn status_marks_externally_staged_files() {
     assert_eq!(
         lines,
         vec![
-            "  unassigned",
+            "* unassigned",
             "    ● M tracked.txt 1/1",
+            "    ○ ? untracked.txt 0/1",
+        ]
+    );
+}
+
+#[test]
+fn a_clean_tree_still_says_where_capture_would_go() {
+    // The `*` is capture-off's whole indicator (ADR 0015), so it renders
+    // even with nothing to group under it: exactly one target is always
+    // active, and a clean tree must not be the one view that hides which.
+    let repo = committed_repo();
+    seed_state(repo.path(), "feature", &["feature"]);
+
+    let output = gitchange(repo.path(), &["status"]);
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(
+        stdout.lines().collect::<Vec<&str>>(),
+        vec!["* feature"],
+        "an empty unassigned group stays out while a changelist holds it"
+    );
+
+    gitchange(repo.path(), &["switch", "unassigned"]);
+    let output = gitchange(repo.path(), &["status"]);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(
+        stdout.lines().collect::<Vec<&str>>(),
+        vec!["  feature", "* unassigned"],
+        "and appears, file-less, once it holds the marker"
+    );
+}
+
+#[test]
+fn switch_unassigned_turns_capture_off_and_marks_the_group() {
+    // #52 / ADR 0015: `unassigned` is a switch target, and the existing
+    // `*` on its group is the whole indicator.
+    let repo = dirty_repo();
+    seed_state(repo.path(), "feature", &["feature"]);
+
+    let output = gitchange(repo.path(), &["switch", "unassigned"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "Switched to 'unassigned'\n"
+    );
+
+    let output = gitchange(repo.path(), &["status"]);
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines,
+        vec![
+            "  feature",
+            "* unassigned",
+            "    ○ M tracked.txt 0/1",
+            "    ○ ? untracked.txt 0/1",
+        ],
+        "the dirty tree stays out of 'feature': capture is off"
+    );
+
+    // And back: the changelist reclaims the marker and captures again.
+    let output = gitchange(repo.path(), &["switch", "feature"]);
+    assert_eq!(output.status.code(), Some(0));
+    let output = gitchange(repo.path(), &["status"]);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines,
+        vec![
+            "* feature",
+            "    ○ M tracked.txt 0/1",
             "    ○ ? untracked.txt 0/1",
         ]
     );

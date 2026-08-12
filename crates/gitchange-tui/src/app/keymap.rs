@@ -44,9 +44,14 @@ pub(super) enum BindingId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Capability {
     Always,
-    /// `d`/`r`/`s`: a changelist row is scoped, from a panel that shows
-    /// it.
+    /// `d`/`r`: a changelist row is scoped, from a panel that shows it.
+    /// Unassigned is built in — there is nothing to rename or delete.
     ChangelistOps,
+    /// `s`: a changelist row *or* the unassigned row is scoped, from a
+    /// panel that shows it. Wider than [`Capability::ChangelistOps`]
+    /// because unassigned is a switchable target (ADR 0015): switching
+    /// there is capture-off.
+    SwitchActive,
     /// The assign trio: Files or Diff focus, or a blurred hunk selection
     /// surviving cross-panel (issue #45).
     Assign,
@@ -263,7 +268,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         id: BindingId::NewChangelist,
         keys: &[Key::Char('n')],
         capability: Capability::Always,
-        help: HelpLabel::Plain("new changelist"),
+        help: HelpLabel::Plain("new changelist (and switch to it)"),
     },
     Binding {
         id: BindingId::DeleteChangelist,
@@ -280,8 +285,8 @@ pub(super) const BINDINGS: &[Binding] = &[
     Binding {
         id: BindingId::SwitchActive,
         keys: &[Key::Char('s')],
-        capability: Capability::ChangelistOps,
-        help: HelpLabel::Plain("switch active changelist"),
+        capability: Capability::SwitchActive,
+        help: HelpLabel::Plain("switch active changelist (or unassigned)"),
     },
     Binding {
         id: BindingId::Back,

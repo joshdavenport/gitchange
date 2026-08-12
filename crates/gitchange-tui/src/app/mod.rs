@@ -134,6 +134,11 @@ pub enum Action {
 /// the work that applied through [`App::push_log`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Op {
+    /// `n`: create a changelist and switch to it. Core's create never
+    /// moves the active marker (ADR 0015) — pairing it with a switch is
+    /// this frontend's reading of `n`, where one human works one thing
+    /// at a time. The assign popup's "+ create new changelist…" is the
+    /// other creation path and stays [`Op::Assign`]'s, marker untouched.
     CreateChangelist {
         name: String,
     },
@@ -144,8 +149,10 @@ pub enum Op {
     DeleteChangelist {
         name: String,
     },
+    /// `s`: set the active changelist; `None` is unassigned — capture
+    /// off (ADR 0015).
     SetActive {
-        name: String,
+        changelist: Option<String>,
     },
     /// Assign snapshot hunks to a changelist. `create` makes the target
     /// first — the assign popup's "+ create new changelist…" escape
@@ -391,11 +398,20 @@ impl App {
                     self.open_assign(AssignPayload::AllHunks { path });
                 }
             }
-            BindingId::SwitchActive => {
-                if let Some(name) = self.scoped_changelist() {
-                    return Some(Action::Op(Op::SetActive { name }));
+            // `s` reaches one target the other ops keys don't:
+            // unassigned, whose `*` is capture-off (ADR 0015). All is
+            // already out — the capability disabled it above.
+            BindingId::SwitchActive => match self.scope() {
+                Scope::All => {}
+                Scope::Changelist(name) => {
+                    return Some(Action::Op(Op::SetActive {
+                        changelist: Some(name),
+                    }));
                 }
-            }
+                Scope::Unassigned => {
+                    return Some(Action::Op(Op::SetActive { changelist: None }));
+                }
+            },
             BindingId::RenameChangelist => {
                 if let Some(name) = self.scoped_changelist() {
                     self.overlay = Some(Overlay::Input {
@@ -466,6 +482,17 @@ impl App {
                     Scope::Unassigned => {
                         Some("select a changelist — unassigned is built-in".into())
                     }
+                }
+            }
+            Capability::SwitchActive => {
+                if !matches!(self.focus, Panel::Changelists | Panel::Files) {
+                    return Some(String::new());
+                }
+                // Unassigned is a switchable target (ADR 0015), so only
+                // All — a view over many changelists — is left out.
+                match self.scope() {
+                    Scope::Changelist(_) | Scope::Unassigned => None,
+                    Scope::All => Some("select a changelist — all is a view".into()),
                 }
             }
             Capability::Assign => {

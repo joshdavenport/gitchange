@@ -14,6 +14,7 @@ fn payload_drift_returns_to_the_confirm_step() {
     fixture.write("a.txt", &text(&head)).commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
 
     let mut worktree = head.clone();
     worktree[9] = "ten-v1".into();
@@ -87,6 +88,7 @@ fn payload_counts_cover_both_stale_flavours() {
         .commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
 
     // a.txt: one cleanly staged hunk and one edited-flavour ◑ hunk.
     let mut worktree = head.clone();
@@ -121,6 +123,7 @@ fn align_sets_index_to_worktree_for_the_changelists_stale_hunks() {
         .commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
 
     // a.txt: edited-flavour ◑ — align re-stages the edited version.
     let mut worktree_a = head.clone();
@@ -161,6 +164,7 @@ fn stage_all_stages_only_the_changelists_unstaged_hunks() {
         .commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
 
     // Both edits land in the active changelist; b.txt's hunk is then
     // moved out to unassigned so stage_all must leave it behind.
@@ -212,6 +216,7 @@ fn a_stale_binary_warns_and_commits_the_staged_blob() {
         .commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("art").unwrap();
+    repo.switch(Some("art")).unwrap();
     fixture
         .write_bytes("logo.png", &[0u8, 2, 2])
         .stage("logo.png")
@@ -242,6 +247,7 @@ fn a_restaged_binary_blob_drifts_the_confirmation() {
         .commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("art").unwrap();
+    repo.switch(Some("art")).unwrap();
     fixture
         .write_bytes("logo.png", &[0u8, 2, 2])
         .stage("logo.png");

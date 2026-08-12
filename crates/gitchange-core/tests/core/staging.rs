@@ -664,7 +664,8 @@ fn bulk_fixture() -> (RepoFixture, Repo) {
     let repo = Repo::discover(fixture.path()).unwrap();
     repo.create_changelist("one").unwrap();
     repo.create_changelist("two").unwrap();
-    // Everything auto-captures into `one` (the first created is active);
+    repo.switch(Some("one")).unwrap();
+    // Everything auto-captures into `one` (the active changelist);
     // a.txt's bottom hunk then moves to `two` and c.txt's to unassigned.
     let snapshot = repo.refresh().unwrap();
     let bottom = hunks(&snapshot, "a.txt")[1].clone();

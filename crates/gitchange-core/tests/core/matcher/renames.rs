@@ -18,13 +18,14 @@ fn a_text_rename_leaves_membership_at_the_old_path_and_captures_the_new_one() {
         .commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
     fixture.write("old.txt", &numbered(20, &[(10, "ten!")]));
     repo.refresh().unwrap();
 
     // A second changelist is active when the rename lands, so a silent
     // transfer to the new path would be visible as "one" owning it.
     repo.create_changelist("two").unwrap();
-    repo.switch("two").unwrap();
+    repo.switch(Some("two")).unwrap();
     fixture.rename("old.txt", "new.txt");
 
     let snapshot = repo.refresh().unwrap();
@@ -72,6 +73,7 @@ fn a_binary_rename_leaves_membership_at_the_old_path_and_captures_the_new_one() 
         .commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("art").unwrap();
+    repo.switch(Some("art")).unwrap();
     fixture.write_bytes("logo.png", &[0u8, 9, 9]);
     repo.refresh().unwrap();
     let anchored_oid =
@@ -79,7 +81,7 @@ fn a_binary_rename_leaves_membership_at_the_old_path_and_captures_the_new_one() 
     assert!(anchored_oid.is_string(), "the record anchors on a blob OID");
 
     repo.create_changelist("other").unwrap();
-    repo.switch("other").unwrap();
+    repo.switch(Some("other")).unwrap();
     fixture.rename("logo.png", "brand.png");
 
     let snapshot = repo.refresh().unwrap();
@@ -134,11 +136,12 @@ fn renaming_an_untracked_file_leaves_its_record_dormant() {
     fixture.write("keep.txt", "keep\n").commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
     fixture.write("draft.txt", "draft\n");
     repo.refresh().unwrap();
 
     repo.create_changelist("two").unwrap();
-    repo.switch("two").unwrap();
+    repo.switch(Some("two")).unwrap();
     fixture.rename("draft.txt", "final.txt");
 
     let snapshot = repo.refresh().unwrap();
@@ -177,11 +180,12 @@ fn renaming_an_untracked_binary_leaves_its_whole_file_record_dormant() {
     fixture.write("keep.txt", "keep\n").commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("art").unwrap();
+    repo.switch(Some("art")).unwrap();
     fixture.write_bytes("draft.png", &[0u8, 9, 9]);
     repo.refresh().unwrap();
 
     repo.create_changelist("other").unwrap();
-    repo.switch("other").unwrap();
+    repo.switch(Some("other")).unwrap();
     fixture.rename("draft.png", "final.png");
 
     let snapshot = repo.refresh().unwrap();

@@ -38,8 +38,8 @@ struct Case {
     /// Files rewritten after the snapshot, before the op — the
     /// validate-at-apply cases (moved hunks, staleness).
     after_snapshot_writes: Tree,
-    /// Changelists created (first becomes active) before the snapshot,
-    /// so every hunk captures to the first one — commit cases only.
+    /// Changelists created before the snapshot, the first switched to,
+    /// so every hunk captures to that one — commit cases only.
     changelists: Vec<&'static str>,
     op: Op,
     /// Expected index blob per path after the op; `None` = no entry.
@@ -120,6 +120,11 @@ fn run(case: Case) {
     let repo = Repo::discover(fixture.path()).unwrap();
     for name in &case.changelists {
         repo.create_changelist(name).unwrap();
+    }
+    // Creation leaves the marker alone (ADR 0015), so a case wanting its
+    // hunks captured says which changelist captures them: the first.
+    if let Some(first) = case.changelists.first() {
+        repo.switch(Some(first)).unwrap();
     }
     let snapshot = repo.refresh().unwrap();
     for (path, bytes) in &case.after_snapshot_writes {

@@ -17,6 +17,7 @@ fn stash_then_pop_round_trips_membership_through_dormancy() {
         .commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
 
     fixture.write("a.txt", &numbered(20, &[(10, "ten!")]));
     repo.refresh().unwrap();
@@ -49,6 +50,7 @@ fn dormant_records_never_revive_via_overlap() {
         .commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
 
     fixture.write("a.txt", &numbered(20, &[(10, "ten-stashed")]));
     repo.refresh().unwrap();
@@ -58,7 +60,7 @@ fn dormant_records_never_revive_via_overlap() {
     // A different edit at the same lines: overlaps the dormant record's
     // region but is not an exact anchor match.
     repo.create_changelist("two").unwrap();
-    repo.switch("two").unwrap();
+    repo.switch(Some("two")).unwrap();
     fixture.write("a.txt", &numbered(20, &[(10, "ten-different")]));
 
     let snapshot = repo.refresh().unwrap();
@@ -183,6 +185,7 @@ fn binary_dormant_revival_is_exact_only() {
         .commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("art").unwrap();
+    repo.switch(Some("art")).unwrap();
     fixture.write_bytes("logo.png", &[0u8, 9, 9]);
     repo.refresh().unwrap();
 
@@ -196,7 +199,7 @@ fn binary_dormant_revival_is_exact_only() {
 
     // Different content at the path: fresh capture, not a revival.
     repo.create_changelist("other").unwrap();
-    repo.switch("other").unwrap();
+    repo.switch(Some("other")).unwrap();
     fixture.write_bytes("logo.png", &[0u8, 5, 5, 5]);
     let snapshot = repo.refresh().unwrap();
     assert_eq!(owners(&snapshot, "logo.png"), vec![Some("other".into())]);

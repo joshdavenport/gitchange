@@ -38,6 +38,7 @@ fn a_worktree_hunks_stored_anchor_carries_three_context_lines() {
         .commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
 
     fixture.write("a.txt", &numbered(20, &[(10, "ten!")]));
     repo.refresh().unwrap();
@@ -60,6 +61,7 @@ fn an_index_only_hunks_stored_anchor_carries_three_context_lines() {
         .commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
 
     // Staged and reverted before the first refresh, so no worktree-side
     // record exists for tier 1 to carry forward: the anchor under test
@@ -88,13 +90,14 @@ fn a_moved_hunk_keeps_membership_via_exact_anchor_match() {
         .commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
 
     fixture.write("a.txt", &numbered(30, &[(20, "twenty!")]));
     repo.refresh().unwrap();
 
     // New edits now belong elsewhere; the old hunk moves down the file.
     repo.create_changelist("two").unwrap();
-    repo.switch("two").unwrap();
+    repo.switch(Some("two")).unwrap();
     let moved = format!("alpha\nbeta\ngamma\n{}", numbered(30, &[(20, "twenty!")]));
     fixture.write("a.txt", &moved);
 
@@ -129,13 +132,14 @@ fn a_reworked_hunk_below_a_fresh_insertion_keeps_membership_via_overlap() {
         .commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
 
     fixture.write("a.txt", &numbered(30, &[(20, "twenty-a")]));
     repo.refresh().unwrap();
 
     // Another changelist is active when both edits land together.
     repo.create_changelist("two").unwrap();
-    repo.switch("two").unwrap();
+    repo.switch(Some("two")).unwrap();
     let reworked = format!(
         "alpha\nbeta\ngamma\n{}",
         numbered(30, &[(20, "twenty-b"), (21, "twentyone-b")])
@@ -167,6 +171,7 @@ fn editing_your_own_hunk_keeps_membership_via_overlap() {
         .commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
 
     fixture.write("a.txt", &numbered(20, &[(10, "ten-a")]));
     repo.refresh().unwrap();
@@ -174,7 +179,7 @@ fn editing_your_own_hunk_keeps_membership_via_overlap() {
     // Rework the same hunk while another changelist is active: the
     // anchor no longer matches, but the overlap does.
     repo.create_changelist("two").unwrap();
-    repo.switch("two").unwrap();
+    repo.switch(Some("two")).unwrap();
     fixture.write("a.txt", &numbered(20, &[(10, "ten-b"), (11, "eleven-b")]));
 
     let snapshot = repo.refresh().unwrap();
@@ -190,6 +195,7 @@ fn a_split_hunk_inherits_the_parents_changelist() {
         .commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
 
     // One block edit spanning lines 10..=25.
     let edits: Vec<(usize, String)> = (10..=25).map(|n| (n, format!("mod {n}"))).collect();
@@ -199,7 +205,7 @@ fn a_split_hunk_inherits_the_parents_changelist() {
 
     // Revert the middle back to HEAD: the hunk splits in two.
     repo.create_changelist("two").unwrap();
-    repo.switch("two").unwrap();
+    repo.switch(Some("two")).unwrap();
     let split: Vec<(usize, &str)> = edits
         .iter()
         .copied()
@@ -225,11 +231,12 @@ fn a_hunk_overlapping_two_changelists_captures_to_active_with_a_notice() {
     let repo = repo(&fixture);
 
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
     fixture.write("a.txt", &numbered(40, &[(10, "ten!")]));
     repo.refresh().unwrap();
 
     repo.create_changelist("two").unwrap();
-    repo.switch("two").unwrap();
+    repo.switch(Some("two")).unwrap();
     fixture.write("a.txt", &numbered(40, &[(10, "ten!"), (20, "twenty!")]));
     repo.refresh().unwrap();
 
@@ -266,6 +273,7 @@ fn a_reexported_binary_keeps_its_changelist_via_path_continuity() {
         .commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("art").unwrap();
+    repo.switch(Some("art")).unwrap();
 
     fixture.write_bytes("logo.png", &[0u8, 9, 9]);
     let snapshot = repo.refresh().unwrap();
@@ -282,7 +290,7 @@ fn a_reexported_binary_keeps_its_changelist_via_path_continuity() {
 
     // A second changelist becomes active: drift must not recapture.
     repo.create_changelist("other").unwrap();
-    repo.switch("other").unwrap();
+    repo.switch(Some("other")).unwrap();
     fixture.write_bytes("logo.png", &[0u8, 5, 5, 5, 5]);
 
     let snapshot = repo.refresh().unwrap();
@@ -309,11 +317,12 @@ fn an_unchanged_binary_matches_exactly_after_a_move() {
         .commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("art").unwrap();
+    repo.switch(Some("art")).unwrap();
     fixture.write_bytes("logo.png", &[0u8, 9, 9]);
     repo.refresh().unwrap();
 
     repo.create_changelist("other").unwrap();
-    repo.switch("other").unwrap();
+    repo.switch(Some("other")).unwrap();
 
     let snapshot = repo.refresh().unwrap();
     assert_eq!(owners(&snapshot, "logo.png"), vec![Some("art".into())]);

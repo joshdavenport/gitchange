@@ -2,7 +2,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-use gitchange_core::{ACTIVE_MARKER, ChangedFile, GroupKind, Repo};
+use gitchange_core::{ACTIVE_MARKER, ChangedFile, GroupKind, Repo, target_named};
 
 /// The prefix every diagnostic this binary writes to stderr carries, so
 /// output piped alongside git's own is attributable at a glance.
@@ -22,7 +22,8 @@ enum Command {
     Status,
     /// Set the active changelist
     Switch {
-        /// Name of the changelist to make active
+        /// Name of the changelist to make active, or `unassigned` to
+        /// capture nothing
         name: String,
     },
 }
@@ -67,13 +68,12 @@ fn status() -> anyhow::Result<()> {
                     );
                 }
             }
-            GroupKind::Changelist { name, active } => {
-                let marker = if *active { ACTIVE_MARKER } else { ' ' };
-                println!("{marker} {name}");
-                print_files(&group.files);
-            }
-            GroupKind::Unassigned => {
-                println!("  {}", group.kind.label());
+            // A changelist or unassigned: both wear the `*` on the same
+            // terms, since both are switch targets (ADR 0015), so one
+            // arm prints them.
+            kind => {
+                let marker = if kind.active() { ACTIVE_MARKER } else { ' ' };
+                println!("{marker} {}", kind.label());
                 print_files(&group.files);
             }
         }
@@ -94,10 +94,14 @@ fn print_files(files: &[&ChangedFile]) {
     }
 }
 
+/// `switch <name>`, where `unassigned` is a valid target: capture and
+/// ambiguous-edit routing then flow to unassigned (ADR 0015). One
+/// sentence covers both, since "changelist 'unassigned'" would name a
+/// changelist that cannot exist.
 fn switch(name: &str) -> anyhow::Result<()> {
     let repo = open_repo()?;
-    repo.switch(name)?;
-    println!("Switched to changelist '{name}'");
+    repo.switch(target_named(name))?;
+    println!("Switched to '{name}'");
     Ok(())
 }
 

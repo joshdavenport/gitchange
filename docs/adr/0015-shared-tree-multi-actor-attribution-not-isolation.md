@@ -76,15 +76,39 @@ unfamiliar terrain by error text.
 unassigned already exists as a pseudo-changelist with a reserved name. So
 the mechanism is: **the active changelist may be `unassigned`.** Capture
 and ambiguous-edit routing (dormant revival, overlap) then resolve to
-unassigned with the usual advisories — with multiple actors the only
-correct destination, since no inference toward a real changelist is sound.
+unassigned — with multiple actors the only correct destination, since no
+inference toward a real changelist is sound.
+
+Advisories follow the rule they always have: an automatic decision is
+advised, and a fall-through is not. An ambiguous overlap still advises,
+because two changelists' claims were dropped to reach unassigned; a
+routine new hunk does not, because nothing was decided. Capture-off is
+therefore quiet where capture is loud, which is the honest reading of
+both.
 
 This amends the Active-changelist invariant ("exactly one is active
 whenever any changelists exist"): exactly one of {the changelists,
-unassigned} is active. The CONTEXT.md entry is amended when the behaviour
-lands (#52). No new verb, state, or indicator: `switch unassigned` is
-already-reserved grammar (#51), and the `*` marker on the unassigned group
-is the status-panel visibility #52 asked for.
+unassigned} is active. No new verb, state, or indicator: `switch
+unassigned` is already-reserved grammar (#51), and the `*` marker on the
+unassigned group is the status-panel visibility #52 asked for. An
+otherwise-empty unassigned group renders to carry that marker.
+
+Capture to unassigned claims nothing: the hunks stay recordless, exactly
+as they do in a changelist-less repo. Membership records say who owns a
+hunk, and capture-off is the statement that nobody has said yet.
+
+**Only `switch` moves the marker.** Two consequences follow, both of
+which existed as inference and are now stated:
+
+- **Creating a changelist never activates it.** Otherwise step 2 of the
+  contract above would undo step 1: an agent's own create would turn
+  capture back on for every actor in the tree. The TUI's `n` — and only
+  `n`, not the assign popup's create-a-target escape hatch — pairs a
+  create with a switch, since one human at one terminal is saying what
+  they are about to work on; the CLI's create verb (#51) will not.
+- **Deleting the active changelist leaves unassigned active.** Promoting
+  a neighbour would point capture at a changelist nobody named — in a
+  shared tree, quite possibly another actor's.
 
 In a multi-actor session the human loses capture too and works explicit
 like the agents. Accepted: a human clobbering the state-of-play
@@ -138,8 +162,8 @@ collides in the same files, worktrees are the tool (ADR 0002).
 - #51 gains obligated verbs: `add`/`stage`, `commit <changelist>` (strict
   non-interactive defaults), `diff` with `--json` (the hunk-level read
   surface, carrying hunk IDs for `assign`), `status --json`
-  (file/changelist level), and create/delete (names undecided — creation
-  must not activate, so a `switch -c` shape is out).
+  (file/changelist level), and create/delete (names undecided — core's
+  create does not activate, so a `switch -c` shape is out).
 - Hunk addressing (#51) gains urgency: assign-as-you-go wants cheap,
   scriptable per-hunk assignment.
 - Op parity (#51's decision) is what makes the contract possible: every op

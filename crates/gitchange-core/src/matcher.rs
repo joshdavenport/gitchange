@@ -30,8 +30,8 @@ pub enum Advisory {
         new_start: u32,
         /// The overlapped changelists, sorted.
         candidates: Vec<String>,
-        /// Where the hunk went: the active changelist, or unassigned in
-        /// the degenerate hand-edited-state case where none is active.
+        /// Where the hunk went: the active changelist, or unassigned
+        /// when unassigned is the active one (ADR 0015).
         assigned_to: Option<String>,
     },
     /// A stage/unstage/assign acted on a snapshot hunk that no longer
@@ -346,11 +346,14 @@ fn match_file(
             .collect();
 
         let owner = if overlapping.is_empty() {
-            // Genuinely new: active changelist, or unassigned when no
-            // changelists exist. No record for a hunk nobody claims —
-            // a changelist-less repo must not grow a state file. The
-            // capture is advised (ADR 0007): automatic membership
-            // decisions are visible, never silent.
+            // Genuinely new: the active changelist, or unassigned when
+            // unassigned is active (ADR 0015's capture-off). No record
+            // for a hunk nobody claims — a changelist-less repo must not
+            // grow a state file, and capture-off makes no claim it would
+            // have to un-make later. The capture is advised (ADR 0007):
+            // automatic membership decisions are visible, never silent;
+            // falling through to unassigned decides nothing, so it is
+            // quiet.
             if let Some(name) = active {
                 out.advisories.push(Advisory::AutoCaptured {
                     path: file.path.clone(),

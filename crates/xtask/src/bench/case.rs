@@ -269,7 +269,7 @@ fn generate(sandbox: &mut Sandbox, spec: &CaseSpec) -> Result<()> {
                     &module(f, spec.hunks_per_file, BlockVariant::Edited),
                 )?;
             }
-            repo.switch(&format!("cl-{k}"))
+            repo.switch(Some(format!("cl-{k}").as_str()))
                 .map_err(|err| anyhow::anyhow!("switch: {err}"))?;
             refresh(&repo)?;
         }

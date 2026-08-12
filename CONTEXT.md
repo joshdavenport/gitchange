@@ -19,14 +19,20 @@ created, renamed, and deleted at will.
 _Avoid_: group, set, patch, stack
 
 **Active changelist**:
-The single changelist (marked `*`) that captures new hunks and ambiguous
-edits automatically. Exactly one is active whenever any changelists exist.
+The single target (marked `*`) that captures new hunks and ambiguous
+edits automatically. Exactly one of {the changelists, **unassigned**} is
+active. Unassigned active is capture-off: capture and ambiguous-edit
+routing flow there instead (ADR 0015). Only `switch` moves the marker —
+creating a changelist never does, and deleting the active one leaves
+unassigned active.
 _Avoid_: current, selected, default
 
 **Unassigned**:
 The pseudo-changelist holding hunks no changelist owns: the dirty tree
 before any changelist exists, orphans of deleted changelists, and hunks
-assigned to it by hand. Rendered as a warning state. `unassigned` is a
+assigned to it by hand. Rendered as a warning state. A switch target like
+any changelist — while it is the **active changelist**, capture flows
+here and claims nothing, so the hunks stay recordless. `unassigned` is a
 reserved name — user changelists cannot take it.
 _Avoid_: unmanaged, inbox, unsorted
 

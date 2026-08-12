@@ -49,6 +49,7 @@ fn amend_reuses_the_temp_index_path() {
     let repo = repo(&fixture);
 
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
     let mut worktree = head.clone();
     worktree[4] = "five-one".into();
     fixture.write("a.txt", &text(&worktree)).stage("a.txt");
@@ -57,7 +58,7 @@ fn amend_reuses_the_temp_index_path() {
     assert_eq!(fixture.commit_count(), 2);
 
     repo.create_changelist("two").unwrap();
-    repo.switch("two").unwrap();
+    repo.switch(Some("two")).unwrap();
     worktree[9] = "ten-two".into();
     fixture.write("a.txt", &text(&worktree));
     repo.refresh().unwrap();
@@ -67,7 +68,7 @@ fn amend_reuses_the_temp_index_path() {
     // the same temp-index path: staged content outside the payload must
     // stay out of the amended tip and stay staged after it.
     repo.create_changelist("three").unwrap();
-    repo.switch("three").unwrap();
+    repo.switch(Some("three")).unwrap();
     worktree[29] = "thirty-three".into();
     fixture.write("a.txt", &text(&worktree)).stage("a.txt");
     repo.refresh().unwrap();
@@ -133,6 +134,7 @@ fn unborn_branch_initial_commit_works() {
     let fixture = RepoFixture::new();
     let repo = repo(&fixture);
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
 
     fixture.write("a.txt", "alpha\nbeta\n").stage("a.txt");
     repo.refresh().unwrap();

@@ -84,6 +84,7 @@ fn an_untouched_neighbour_survives_an_external_partial_commit() {
 
     // Changelist "two": replace lines 20..=27 with one line (delta -7).
     repo.create_changelist("two").unwrap();
+    repo.switch(Some("two")).unwrap();
     let mut worktree = head.clone();
     worktree.splice(19..27, ["twenty!".into()]);
     fixture.write("a.txt", &text(&worktree));
@@ -91,7 +92,7 @@ fn an_untouched_neighbour_survives_an_external_partial_commit() {
 
     // Changelist "one": edit original line 40, well clear of "two"'s hunk.
     repo.create_changelist("one").unwrap();
-    repo.switch("one").unwrap();
+    repo.switch(Some("one")).unwrap();
     worktree[32] = "forty-one-owned".into();
     fixture.write("a.txt", &text(&worktree));
     let snapshot = repo.refresh().unwrap();
@@ -139,6 +140,7 @@ fn a_shifted_neighbour_goes_dormant_loudly_instead_of_misfiling() {
     // Changelist "two": replace lines 20..=31 with one line (delta -11).
     // Record old range: [17, 35).
     repo.create_changelist("two").unwrap();
+    repo.switch(Some("two")).unwrap();
     let mut worktree = head.clone();
     worktree.splice(19..31, ["twenty!".into()]);
     fixture.write("a.txt", &text(&worktree));
@@ -146,7 +148,7 @@ fn a_shifted_neighbour_goes_dormant_loudly_instead_of_misfiling() {
 
     // Changelist "one": edit original line 40. Record old range: [37, 44).
     repo.create_changelist("one").unwrap();
-    repo.switch("one").unwrap();
+    repo.switch(Some("one")).unwrap();
     worktree[28] = "forty-v1".into();
     fixture.write("a.txt", &text(&worktree));
     let snapshot = repo.refresh().unwrap();
@@ -158,7 +160,7 @@ fn a_shifted_neighbour_goes_dormant_loudly_instead_of_misfiling() {
     // A third changelist is active, so neither outcome can hide behind
     // active-capture landing on "one" by luck.
     repo.create_changelist("three").unwrap();
-    repo.switch("three").unwrap();
+    repo.switch(Some("three")).unwrap();
 
     // Externally partial-commit "two"'s hunk, then keep editing "one"'s
     // hunk — the ordinary commit-and-keep-working flow.
@@ -211,6 +213,7 @@ fn a_shifted_neighbour_clear_of_stranded_records_captures_to_active() {
 
     // Changelist "two": replace lines 20..=31 with one line (delta -11).
     repo.create_changelist("two").unwrap();
+    repo.switch(Some("two")).unwrap();
     let mut worktree = head.clone();
     worktree.splice(19..31, ["twenty!".into()]);
     fixture.write("a.txt", &text(&worktree));
@@ -219,13 +222,13 @@ fn a_shifted_neighbour_clear_of_stranded_records_captures_to_active() {
     // Changelist "one": edit original line 60, far enough down that the
     // -11 shift clears both stranded records. Record old range: [57, 64).
     repo.create_changelist("one").unwrap();
-    repo.switch("one").unwrap();
+    repo.switch(Some("one")).unwrap();
     worktree[48] = "sixty-v1".into();
     fixture.write("a.txt", &text(&worktree));
     repo.refresh().unwrap();
 
     repo.create_changelist("three").unwrap();
-    repo.switch("three").unwrap();
+    repo.switch(Some("three")).unwrap();
 
     let mut intermediate = head.clone();
     intermediate.splice(19..31, ["twenty!".into()]);
@@ -277,6 +280,7 @@ fn a_residual_staged_stale_hunk_goes_dormant_across_an_external_commit() {
     fixture.write("a.txt", &text(&head)).commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
 
     let mut worktree = head.clone();
     worktree[9] = "ten-staged".into();
@@ -287,7 +291,7 @@ fn a_residual_staged_stale_hunk_goes_dormant_across_an_external_commit() {
     repo.refresh().unwrap();
 
     repo.create_changelist("two").unwrap();
-    repo.switch("two").unwrap();
+    repo.switch(Some("two")).unwrap();
     fixture.commit_index("one: ten (staged version)");
 
     // Residual hunk: committed "ten-staged" ↔ worktree "ten-final", at
@@ -331,6 +335,7 @@ fn a_residual_staged_stale_hunk_sheds_membership_when_the_commit_shifts_it() {
     fixture.write("a.txt", &text(&head)).commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
 
     // Changelist "one", two hunks: replace lines 10..=21 with one line
     // (delta -11), and edit original line 40.
@@ -345,7 +350,7 @@ fn a_residual_staged_stale_hunk_sheds_membership_when_the_commit_shifts_it() {
     repo.refresh().unwrap();
 
     repo.create_changelist("two").unwrap();
-    repo.switch("two").unwrap();
+    repo.switch(Some("two")).unwrap();
     // Commit the staged payload: both hunks, the ◑ one as-is.
     fixture.commit_index("one: both hunks, staged versions");
 
@@ -389,13 +394,14 @@ fn a_head_move_touching_only_other_paths_leaves_tier_two_intact() {
     let repo = repo(&fixture);
 
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
     let mut worktree = head.clone();
     worktree[9] = "ten-v1".into();
     fixture.write("a.txt", &text(&worktree));
     repo.refresh().unwrap();
 
     repo.create_changelist("two").unwrap();
-    repo.switch("two").unwrap();
+    repo.switch(Some("two")).unwrap();
     // External commit touching only b.txt.
     fixture
         .write("b.txt", "hello\n")
@@ -442,6 +448,7 @@ fn a_non_utf8_path_in_the_baseline_diff_is_skipped_not_a_loud_failure() {
     // One owned hunk in each file — line 10, so both records' old ranges
     // are [7, 14).
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
     let mut a = head.clone();
     let mut b = head.clone();
     a[9] = "ten-v1".into();
@@ -450,7 +457,7 @@ fn a_non_utf8_path_in_the_baseline_diff_is_skipped_not_a_loud_failure() {
     repo.refresh().unwrap();
 
     repo.create_changelist("two").unwrap();
-    repo.switch("two").unwrap();
+    repo.switch(Some("two")).unwrap();
     // An external commit touching b.txt only, in place (line 5) so
     // nothing below it shifts: what strands b.txt's record is the guard,
     // not arithmetic.
@@ -515,13 +522,14 @@ fn a_pre_baseline_state_file_adopts_the_head_move_silently() {
     let repo = repo(&fixture);
 
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
     let mut worktree = head.clone();
     worktree[29] = "thirty-v1".into();
     fixture.write("a.txt", &text(&worktree));
     repo.refresh().unwrap();
 
     repo.create_changelist("two").unwrap();
-    repo.switch("two").unwrap();
+    repo.switch(Some("two")).unwrap();
     // External commit replacing line 10 in place — a HEAD move that
     // shifts nothing below it.
     let mut committed = head.clone();
@@ -559,13 +567,14 @@ fn an_unresolvable_baseline_degrades_to_all_paths_affected() {
     let repo = repo(&fixture);
 
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
     let mut worktree = head.clone();
     worktree[9] = "ten-v1".into();
     fixture.write("a.txt", &text(&worktree));
     repo.refresh().unwrap();
 
     repo.create_changelist("two").unwrap();
-    repo.switch("two").unwrap();
+    repo.switch(Some("two")).unwrap();
     patch_state(&fixture, |state| {
         state.insert(
             "baseline_head".into(),

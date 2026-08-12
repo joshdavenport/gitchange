@@ -221,6 +221,47 @@ fn a_fail_soft_op_logs_its_advisories_at_notice_with_no_echo() {
 }
 
 #[test]
+fn n_creates_a_changelist_and_switches_to_it() {
+    // Core's create leaves the marker alone (ADR 0015); `n` is this
+    // frontend's create-then-switch, so one human's next edits land
+    // where they just said.
+    let (fixture, repo) = repo_with_commit();
+    let mut app = App::new("repo");
+
+    run_op(&repo, &mut app, Op::CreateChangelist { name: "wip".into() });
+
+    assert!(app.error_modal.is_none());
+    assert_eq!(repo.refresh().unwrap().active.as_deref(), Some("wip"));
+
+    fixture.write("a.txt", "line 1\nedited\nline 3\n");
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(
+        snapshot.files[0].hunks[0].changelist.as_deref(),
+        Some("wip")
+    );
+}
+
+#[test]
+fn s_on_the_unassigned_row_switches_capture_off() {
+    // ADR 0015: `s` on unassigned is capture-off, and the executor's
+    // half of it is one ordinary switch with `None` as the target.
+    let (fixture, repo) = repo_with_commit();
+    let mut app = App::new("repo");
+    run_op(&repo, &mut app, Op::CreateChangelist { name: "wip".into() });
+
+    run_op(&repo, &mut app, Op::SetActive { changelist: None });
+
+    assert!(app.error_modal.is_none());
+    assert_eq!(repo.refresh().unwrap().active, None);
+    fixture.write("a.txt", "line 1\nedited\nline 3\n");
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(
+        snapshot.files[0].hunks[0].changelist, None,
+        "capture is off: the edit stays unassigned"
+    );
+}
+
+#[test]
 fn assign_treats_an_existing_target_as_a_valid_target_rather_than_a_create_failure() {
     let (fixture, repo) = repo_with_commit();
     fixture.write("a.txt", "line 1\nedited\nline 3\n");
@@ -280,6 +321,7 @@ fn the_changelist_ops_stage_and_unstage_the_whole_changelist() {
     let (fixture, repo) = repo_with_commit();
     fixture.write("a.txt", "line 1\nedited\nline 3\n");
     repo.create_changelist("wip").unwrap();
+    repo.switch(Some("wip")).unwrap();
     repo.refresh().unwrap(); // the edit auto-captures into `wip`
     let mut app = App::new("repo");
 

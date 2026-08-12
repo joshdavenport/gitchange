@@ -270,14 +270,17 @@ fn build_sorted_state(sandbox: &mut Sandbox) -> Result<()> {
     edit_report_cleanup(sandbox)?;
 
     let repo = sandbox.repo()?;
-    // First created becomes active; everything auto-captures to it on
-    // the first refresh, then moves distribute the rest.
+    // Creation leaves the marker alone (ADR 0015), so the scenario says
+    // which changelist is active: everything auto-captures to it on the
+    // first refresh, then moves distribute the rest.
     repo.create_changelist("fix-timeout-retry")
         .map_err(|err| anyhow::anyhow!("create changelist: {err}"))?;
     repo.create_changelist("debug-logging")
         .map_err(|err| anyhow::anyhow!("create changelist: {err}"))?;
     repo.create_changelist("api-cleanup")
         .map_err(|err| anyhow::anyhow!("create changelist: {err}"))?;
+    repo.switch(Some("fix-timeout-retry"))
+        .map_err(|err| anyhow::anyhow!("switch: {err}"))?;
     let snapshot = refresh(&repo)?;
     assign_file(&repo, &snapshot, "src/main.rs", "debug-logging")?;
     assign_hunk(&repo, &snapshot, "src/timer.rs", 1, "debug-logging")?;

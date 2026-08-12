@@ -46,6 +46,7 @@ fn two_hunk_fixture() -> (RepoFixture, Repo, Snapshot) {
     let repo = repo(&fixture);
     repo.create_changelist("fixes").unwrap();
     repo.create_changelist("chores").unwrap();
+    repo.switch(Some("fixes")).unwrap();
     fixture.write("a.txt", &numbered(30, &[(5, "five!"), (25, "twentyfive!")]));
     let snapshot = repo.refresh().unwrap();
     assert_eq!(
@@ -166,6 +167,7 @@ fn a_binary_whole_file_hunk_still_assigns_after_a_mid_flight_rewrite() {
         .commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("fixes").unwrap();
+    repo.switch(Some("fixes")).unwrap();
     repo.create_changelist("chores").unwrap();
     fixture.write_bytes("logo.png", &[0u8, 9, 9]);
     let snapshot = repo.refresh().unwrap();

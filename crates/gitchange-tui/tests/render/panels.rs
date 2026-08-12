@@ -59,6 +59,35 @@ fn a_drilled_view_tags_only_foreign_hunks() {
 }
 
 #[test]
+fn capture_off_moves_the_active_marker_onto_unassigned() {
+    // ADR 0015: `switch unassigned` has no indicator of its own — the
+    // `*` moving onto the unassigned row and group header is it, on both
+    // the Changelists panel and the All view.
+    let mut app = App::new("repo");
+    let mut off = snapshot();
+    off.active = None;
+    app.apply_snapshot(off);
+    let text = render(&app);
+
+    assert!(
+        text.contains("unassigned *"),
+        "the group header wears it\n{text}"
+    );
+    assert!(!text.contains("fixes *"), "and 'fixes' has given it up");
+    // `all` is selected: `s` has no target there, so the bar hides it.
+    assert!(!text.contains("switch active"), "{text}");
+
+    app.on_key(key(KeyCode::Char('j')));
+    app.on_key(key(KeyCode::Char('j')));
+    app.on_key(key(KeyCode::Char('j'))); // 'unassigned'
+    let text = render(&app);
+    assert!(
+        text.contains("switch active"),
+        "`s` is live on the unassigned row\n{text}"
+    );
+}
+
+#[test]
 fn the_deferred_indicator_appears_past_the_threshold() {
     let mut app = App::new("repo");
     app.apply_snapshot(snapshot());

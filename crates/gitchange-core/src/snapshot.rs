@@ -73,8 +73,9 @@ pub struct Snapshot {
     pub files: Vec<ChangedFile>,
     /// Changelists in user order.
     pub changelists: Vec<Changelist>,
-    /// Name of the active changelist; `None` only when no changelists
-    /// exist.
+    /// Name of the active changelist; `None` is unassigned — capture
+    /// off (ADR 0015). Exactly one of {the changelists, unassigned} is
+    /// active, so every reader of this field has a `*` to place.
     pub active: Option<String>,
     /// Automatic membership decisions worth spot-checking, in file
     /// order. Not persisted: a decision becomes a record, so it surfaces
@@ -125,8 +126,10 @@ impl Snapshot {
     /// The All view's groups, in render order — the one place its
     /// grouping rules live (ADR 0006): Conflicts first when any path is
     /// unmerged (ADR 0007), changelists in user order (empty ones
-    /// included, the active one flagged), unassigned last only when
-    /// non-empty. Frontends render these; they don't re-derive them.
+    /// included, the active one flagged), unassigned last when non-empty
+    /// or active. An empty unassigned group renders only to carry the
+    /// `*`, which is capture-off's whole visible surface (ADR 0015).
+    /// Frontends render these; they don't re-derive them.
     pub fn groups(&self) -> Vec<FileGroup<'_>> {
         let mut groups = Vec::new();
         let conflicted = self.conflicted_files();
@@ -146,9 +149,12 @@ impl Snapshot {
             });
         }
         let unassigned = self.files_in(None);
-        if !unassigned.is_empty() {
+        let unassigned_active = self.active.is_none();
+        if !unassigned.is_empty() || unassigned_active {
             groups.push(FileGroup {
-                kind: GroupKind::Unassigned,
+                kind: GroupKind::Unassigned {
+                    active: unassigned_active,
+                },
                 files: unassigned,
             });
         }
@@ -171,8 +177,10 @@ pub enum GroupKind {
     Conflicts,
     /// A user changelist; `active` is the `*` marker.
     Changelist { name: String, active: bool },
-    /// Hunks owned by no changelist.
-    Unassigned,
+    /// Hunks owned by no changelist. `active` is the same `*` marker:
+    /// unassigned is a switchable target, and capture flows here while
+    /// it holds the marker (ADR 0015).
+    Unassigned { active: bool },
 }
 
 impl GroupKind {
@@ -181,7 +189,18 @@ impl GroupKind {
         match self {
             GroupKind::Conflicts => CONFLICTS,
             GroupKind::Changelist { name, .. } => name,
-            GroupKind::Unassigned => UNASSIGNED,
+            GroupKind::Unassigned { .. } => UNASSIGNED,
+        }
+    }
+
+    /// Whether this group wears the `*`. Two variants can, so frontends
+    /// ask here rather than matching the flag themselves (ADR 0006) —
+    /// otherwise a third active target would have to be found at every
+    /// render site. Conflicts is derived, never a switch target.
+    pub fn active(&self) -> bool {
+        match self {
+            GroupKind::Conflicts => false,
+            GroupKind::Changelist { active, .. } | GroupKind::Unassigned { active } => *active,
         }
     }
 }

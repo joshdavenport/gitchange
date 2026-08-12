@@ -185,6 +185,7 @@ fn frozen_records_on_a_conflicted_path(fixture: &RepoFixture) -> (Repo, serde_js
 
     // "fixes" owns line 3's edit. Record old range: [1, 7).
     repo.create_changelist("fixes").unwrap();
+    repo.switch(Some("fixes")).unwrap();
     let mut worktree = head.clone();
     worktree[2] = "three-fixes".into();
     fixture.write("a.txt", &text(&worktree));
@@ -192,7 +193,7 @@ fn frozen_records_on_a_conflicted_path(fixture: &RepoFixture) -> (Repo, serde_js
 
     // "other" owns line 15's edit. Record old range: [12, 19).
     repo.create_changelist("other").unwrap();
-    repo.switch("other").unwrap();
+    repo.switch(Some("other")).unwrap();
     worktree[14] = "fifteen-other".into();
     fixture.write("a.txt", &text(&worktree));
     let snapshot = repo.refresh().unwrap();
@@ -206,7 +207,7 @@ fn frozen_records_on_a_conflicted_path(fixture: &RepoFixture) -> (Repo, serde_js
     // re-land can never be confused with a capture: the tiers answer
     // "fixes" and "other", active capture answers "spare".
     repo.create_changelist("spare").unwrap();
-    repo.switch("spare").unwrap();
+    repo.switch(Some("spare")).unwrap();
 
     // The path becomes unmerged (stash-pop style: no operation state).
     fixture.add_index_conflict("a.txt");

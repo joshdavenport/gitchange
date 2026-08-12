@@ -25,6 +25,7 @@ fn commit_writes_only_the_changelists_staged_hunks() {
 
     // Changelist "one": edit line 10.
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
     let mut worktree = head.clone();
     worktree[9] = "ten-one".into();
     fixture.write("a.txt", &text(&worktree));
@@ -32,7 +33,7 @@ fn commit_writes_only_the_changelists_staged_hunks() {
 
     // Changelist "two": edit line 20.
     repo.create_changelist("two").unwrap();
-    repo.switch("two").unwrap();
+    repo.switch(Some("two")).unwrap();
     worktree[19] = "twenty-two".into();
     fixture.write("a.txt", &text(&worktree));
     repo.refresh().unwrap();
@@ -80,13 +81,14 @@ fn a_hook_sees_the_commits_true_content() {
     let repo = repo(&fixture);
 
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
     let mut worktree = head.clone();
     worktree[9] = "ten-one".into();
     fixture.write("a.txt", &text(&worktree));
     repo.refresh().unwrap();
 
     repo.create_changelist("two").unwrap();
-    repo.switch("two").unwrap();
+    repo.switch(Some("two")).unwrap();
     worktree[19] = "twenty-two".into();
     fixture.write("a.txt", &text(&worktree));
     repo.refresh().unwrap();
@@ -120,6 +122,7 @@ fn one_staged_hunk_in_one(fixture: &RepoFixture) -> Vec<String> {
     fixture.write("a.txt", &text(&head)).commit_all("init");
     let repo = repo(fixture);
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
     let mut worktree = head;
     worktree[9] = "ten-one".into();
     fixture.write("a.txt", &text(&worktree)).stage("a.txt");
@@ -298,6 +301,7 @@ fn a_changelist_containing_a_binary_commits_it_whole() {
         .commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("art").unwrap();
+    repo.switch(Some("art")).unwrap();
     fixture
         .write_bytes("logo.png", &[0u8, 9, 9])
         .stage("logo.png");
@@ -305,7 +309,7 @@ fn a_changelist_containing_a_binary_commits_it_whole() {
 
     // A second changelist owns a staged text edit that must not commit.
     repo.create_changelist("other").unwrap();
-    repo.switch("other").unwrap();
+    repo.switch(Some("other")).unwrap();
     let mut lines = numbered_lines(5);
     lines[0] = "edited".into();
     fixture.write("a.txt", &text(&lines)).stage("a.txt");
@@ -343,6 +347,7 @@ fn a_staged_binary_deletion_commits_the_removal() {
         .commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("art").unwrap();
+    repo.switch(Some("art")).unwrap();
     fs::remove_file(fixture.path().join("logo.png")).unwrap();
     fixture.stage_removal("logo.png");
 
@@ -365,6 +370,7 @@ fn a_binary_worktree_over_staged_text_commits_the_staged_text() {
     fixture.write("notes.txt", "original\n").commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("work").unwrap();
+    repo.switch(Some("work")).unwrap();
     fixture
         .write("notes.txt", "staged text\n")
         .stage("notes.txt");

@@ -100,6 +100,12 @@ gitui's three uncoordinated answers.
   disappear when the scoped row is *All*/*Unassigned*, and pressing them
   logs why instead of dying silently. CONTEXT.md's *Operation guard*
   entry gains this clause.
+  *Amended (issue #52):* `s` is live on *Unassigned* — unassigned became
+  a switch target (ADR 0015), so the key has something to do there.
+  `d`/`r` still disappear on it, and all three still disappear on *All*.
+  The split is one capability per answer, not one per key group: `s`
+  carries its own, because a capability is the answer to "why won't this
+  act", and the two keys' answers diverged.
 - The issue #45 hand-written keybar `if` (blurred hunk selection)
   dissolves: the assign group is editorially listed in every arm where
   it can be live, and the predicate hides it elsewhere.

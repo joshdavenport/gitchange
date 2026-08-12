@@ -15,7 +15,7 @@ fn new_hunks_capture_to_the_active_changelist() {
     let repo = repo(&fixture);
     repo.create_changelist("one").unwrap();
     repo.create_changelist("two").unwrap();
-    repo.switch("two").unwrap();
+    repo.switch(Some("two")).unwrap();
 
     fixture
         .write("a.txt", &numbered(20, &[(10, "ten!")]))
@@ -48,7 +48,7 @@ fn an_unowned_externally_staged_hunk_captures_to_active_with_an_advisory() {
     let repo = repo(&fixture);
     repo.create_changelist("one").unwrap();
     repo.create_changelist("two").unwrap();
-    repo.switch("two").unwrap();
+    repo.switch(Some("two")).unwrap();
 
     // Staged before any refresh could record it, so nothing owns it.
     fixture
@@ -87,6 +87,7 @@ fn a_routine_auto_capture_notices_once() {
         .commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
 
     fixture.write("a.txt", &numbered(20, &[(10, "ten!")]));
     let snapshot = repo.refresh().unwrap();
@@ -106,13 +107,15 @@ fn a_routine_auto_capture_notices_once() {
 }
 
 #[test]
-fn with_no_active_changelist_nothing_notices() {
+fn with_unassigned_active_nothing_notices() {
     let fixture = RepoFixture::new();
     fixture
         .write("a.txt", &numbered(20, &[]))
         .commit_all("init")
         .write("a.txt", &numbered(20, &[(10, "ten!")]));
 
+    // A changelist-less repo: unassigned is active by definition
+    // (ADR 0015), so the edit falls through to it.
     let repo = repo(&fixture);
     let snapshot = repo.refresh().unwrap();
     assert_eq!(owners(&snapshot, "a.txt"), vec![None]);
@@ -123,6 +126,119 @@ fn with_no_active_changelist_nothing_notices() {
 }
 
 #[test]
+fn with_unassigned_active_new_hunks_stay_out_of_every_changelist() {
+    // Capture-off (#52, ADR 0015): the changelists exist and one of them
+    // was active a moment ago, but `switch unassigned` stops capture.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("a.txt", &numbered(20, &[]))
+        .commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
+    repo.switch(None).unwrap();
+
+    fixture
+        .write("a.txt", &numbered(20, &[(10, "ten!")]))
+        .write("new.txt", "hello\n");
+
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(owners(&snapshot, "a.txt"), vec![None]);
+    assert_eq!(owners(&snapshot, "new.txt"), vec![None]);
+    assert!(snapshot.files_in(Some("one")).is_empty());
+    assert!(
+        snapshot.advisories.is_empty(),
+        "nothing was decided, so nothing is advised"
+    );
+
+    // Switching back restores capture for what follows.
+    repo.switch(Some("one")).unwrap();
+    fixture.write("b.txt", "b\n");
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(owners(&snapshot, "b.txt"), vec![Some("one".into())]);
+}
+
+#[test]
+fn with_unassigned_active_an_ambiguous_overlap_lands_unassigned_and_notices() {
+    // The routing that the ambiguity rule can't infer: with no real
+    // changelist active, the overlap resolves to unassigned — and says
+    // so, because two changelists' claims were dropped on the way.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("a.txt", &numbered(40, &[]))
+        .commit_all("init");
+    let repo = repo(&fixture);
+
+    repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
+    fixture.write("a.txt", &numbered(40, &[(10, "ten!")]));
+    repo.refresh().unwrap();
+
+    repo.create_changelist("two").unwrap();
+    repo.switch(Some("two")).unwrap();
+    fixture.write("a.txt", &numbered(40, &[(10, "ten!"), (20, "twenty!")]));
+    repo.refresh().unwrap();
+
+    repo.switch(None).unwrap();
+    // Bridge the gap: one fresh hunk now overlaps both records.
+    let edits: Vec<(usize, String)> = (10..=20).map(|n| (n, format!("bridge {n}"))).collect();
+    let edits: Vec<(usize, &str)> = edits.iter().map(|(n, s)| (*n, s.as_str())).collect();
+    fixture.write("a.txt", &numbered(40, &edits));
+
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(owners(&snapshot, "a.txt"), vec![None]);
+    assert_eq!(
+        snapshot.advisories,
+        vec![Advisory::AmbiguousOverlap {
+            path: "a.txt".into(),
+            new_start: 7,
+            candidates: vec!["one".into(), "two".into()],
+            assigned_to: None,
+        }]
+    );
+}
+
+#[test]
+fn with_unassigned_active_a_changed_return_hunk_stays_unassigned() {
+    // The dormant-revival edge: exact-match revival is unaffected by the
+    // marker, but a *changed* return is a fresh capture — which
+    // capture-off routes to unassigned, silently, leaving the dormant
+    // record dormant rather than reviving it into its old changelist.
+    let mut fixture = RepoFixture::new();
+    fixture
+        .write("a.txt", &numbered(20, &[]))
+        .commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
+
+    fixture.write("a.txt", &numbered(20, &[(10, "ten-stashed")]));
+    repo.refresh().unwrap();
+    fixture.stash();
+    repo.refresh().unwrap();
+    assert!(
+        record_at(&state_json(&fixture), "a.txt")["dormant_since"].is_u64(),
+        "precondition: the record is dormant"
+    );
+
+    repo.switch(None).unwrap();
+    fixture.write("a.txt", &numbered(20, &[(10, "ten-different")]));
+
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(owners(&snapshot, "a.txt"), vec![None]);
+    assert!(snapshot.advisories.is_empty());
+    assert!(
+        record_at(&state_json(&fixture), "a.txt")["dormant_since"].is_u64(),
+        "'one' keeps its dormant record, unrevived"
+    );
+
+    // The exact hunk returning still revives it, marker or no marker.
+    fixture.write("a.txt", &numbered(20, &[(10, "ten-stashed")]));
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(owners(&snapshot, "a.txt"), vec![Some("one".into())]);
+}
+
+#[test]
 fn dormant_revival_notices_with_a_per_changelist_count() {
     let mut fixture = RepoFixture::new();
     fixture
@@ -130,6 +246,7 @@ fn dormant_revival_notices_with_a_per_changelist_count() {
         .commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
 
     // Two separate hunks, both owned by "one".
     fixture.write("a.txt", &numbered(30, &[(5, "five!"), (20, "twenty!")]));
@@ -166,6 +283,7 @@ fn a_changed_return_hunk_notices_its_auto_capture() {
         .commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
 
     fixture.write("a.txt", &numbered(20, &[(10, "ten-stashed")]));
     repo.refresh().unwrap();
@@ -179,7 +297,7 @@ fn a_changed_return_hunk_notices_its_auto_capture() {
     // A different edit at the dormant record's lines, under a second
     // active changelist.
     repo.create_changelist("two").unwrap();
-    repo.switch("two").unwrap();
+    repo.switch(Some("two")).unwrap();
     fixture.write("a.txt", &numbered(20, &[(10, "ten-different")]));
 
     let snapshot = repo.refresh().unwrap();
@@ -214,6 +332,7 @@ fn a_changed_return_binary_notices_its_auto_capture() {
         .commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("art").unwrap();
+    repo.switch(Some("art")).unwrap();
     fixture.write_bytes("logo.png", &[0u8, 9, 9]);
     repo.refresh().unwrap();
 
@@ -227,7 +346,7 @@ fn a_changed_return_binary_notices_its_auto_capture() {
 
     // Different content at the path, under a second active changelist.
     repo.create_changelist("other").unwrap();
-    repo.switch("other").unwrap();
+    repo.switch(Some("other")).unwrap();
     fixture.write_bytes("logo.png", &[0u8, 5, 5, 5]);
 
     let snapshot = repo.refresh().unwrap();

@@ -4,7 +4,7 @@ A changed binary file produces no text hunks, so ADR 0001's per-hunk
 membership has nothing to attach to. gitchange treats a changed binary file
 as **one degenerate whole-file "hunk"** with a normal membership record,
 flowing through the existing assignment rules unchanged: new binary change →
-the active changelist, unassigned when no changelists exist, assignable
+the active changelist, unassigned when unassigned is active, assignable
 between changelists like any hunk. This preserves ADR 0003's visibility invariant
 (every hunk that would be in a commit is visible in the TUI) and keeps
 binaries first-class — no code path forks on binary-ness at the

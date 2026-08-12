@@ -21,7 +21,11 @@ fn names_and_active(repo: &Repo) -> (Vec<String>, Option<String>) {
 }
 
 #[test]
-fn first_created_changelist_becomes_active_later_ones_do_not() {
+fn creating_a_changelist_never_moves_the_active_marker() {
+    // ADR 0015: only `switch` moves the marker. A fresh repo has
+    // unassigned active, and creating changelists leaves it there —
+    // otherwise a create would turn capture back on under whoever
+    // switched it off.
     let fixture = RepoFixture::new();
     let repo = repo(&fixture);
 
@@ -30,6 +34,30 @@ fn first_created_changelist_becomes_active_later_ones_do_not() {
 
     let (names, active) = names_and_active(&repo);
     assert_eq!(names, vec!["feature", "bugfix"]);
+    assert_eq!(active, None, "unassigned is still active");
+
+    repo.switch(Some("bugfix")).unwrap();
+    repo.create_changelist("chore").unwrap();
+    let (_, active) = names_and_active(&repo);
+    assert_eq!(active.as_deref(), Some("bugfix"));
+}
+
+#[test]
+fn switching_to_unassigned_turns_capture_off_and_back_on() {
+    // The capture-off state (#52, ADR 0015): `unassigned` is a valid
+    // switch target, and switching back restores capture.
+    let fixture = RepoFixture::new();
+    let repo = repo(&fixture);
+    repo.create_changelist("feature").unwrap();
+    repo.switch(Some("feature")).unwrap();
+
+    repo.switch(None).unwrap();
+    let (names, active) = names_and_active(&repo);
+    assert_eq!(names, vec!["feature"]);
+    assert_eq!(active, None);
+
+    repo.switch(Some("feature")).unwrap();
+    let (_, active) = names_and_active(&repo);
     assert_eq!(active.as_deref(), Some("feature"));
 }
 
@@ -40,7 +68,7 @@ fn switch_sets_active_and_round_trips_across_repo_instances() {
         let repo = repo(&fixture);
         repo.create_changelist("feature").unwrap();
         repo.create_changelist("bugfix").unwrap();
-        repo.switch("bugfix").unwrap();
+        repo.switch(Some("bugfix")).unwrap();
     }
 
     // A fresh handle (a separate invocation) sees the persisted marker.
@@ -55,7 +83,7 @@ fn switch_to_unknown_name_is_an_error() {
     let repo = repo(&fixture);
     repo.create_changelist("feature").unwrap();
 
-    let err = repo.switch("nope").unwrap_err();
+    let err = repo.switch(Some("nope")).unwrap_err();
     assert!(matches!(err, Error::UnknownChangelist { name } if name == "nope"));
 }
 
@@ -113,6 +141,7 @@ fn rename_carries_the_active_marker() {
     let fixture = RepoFixture::new();
     let repo = repo(&fixture);
     repo.create_changelist("feature").unwrap();
+    repo.switch(Some("feature")).unwrap();
 
     repo.rename_changelist("feature", "feature-x").unwrap();
 
@@ -131,24 +160,45 @@ fn rename_unknown_name_is_an_error() {
 }
 
 #[test]
-fn deleting_the_active_changelist_promotes_the_first_remaining() {
+fn deleting_the_active_changelist_leaves_unassigned_active() {
+    // ADR 0015: promoting a neighbour would point capture at a
+    // changelist nobody named — in a shared tree, possibly another
+    // actor's. Capture stops instead, where the `*` says so.
     let fixture = RepoFixture::new();
     let repo = repo(&fixture);
     repo.create_changelist("feature").unwrap();
+    repo.switch(Some("feature")).unwrap();
     repo.create_changelist("bugfix").unwrap();
 
     repo.delete_changelist("feature").unwrap();
 
     let (names, active) = names_and_active(&repo);
     assert_eq!(names, vec!["bugfix"]);
-    assert_eq!(active.as_deref(), Some("bugfix"));
+    assert_eq!(active, None);
 }
 
 #[test]
-fn deleting_the_last_changelist_clears_the_active_marker() {
+fn deleting_an_inactive_changelist_leaves_the_marker_alone() {
     let fixture = RepoFixture::new();
     let repo = repo(&fixture);
     repo.create_changelist("feature").unwrap();
+    repo.create_changelist("bugfix").unwrap();
+    repo.switch(Some("feature")).unwrap();
+
+    repo.delete_changelist("bugfix").unwrap();
+
+    let (names, active) = names_and_active(&repo);
+    assert_eq!(names, vec!["feature"]);
+    assert_eq!(active.as_deref(), Some("feature"));
+}
+
+#[test]
+fn deleting_the_last_changelist_leaves_unassigned_active() {
+    let fixture = RepoFixture::new();
+    let repo = repo(&fixture);
+    repo.create_changelist("feature").unwrap();
+    // Held by the changelist first, so the delete is what moves it.
+    repo.switch(Some("feature")).unwrap();
 
     repo.delete_changelist("feature").unwrap();
 
@@ -171,6 +221,7 @@ fn state_file_is_pretty_json_with_schema_version_at_the_git_path() {
     let fixture = RepoFixture::new();
     let repo = repo(&fixture);
     repo.create_changelist("feature").unwrap();
+    repo.switch(Some("feature")).unwrap();
 
     let state_path = fixture.path().join(".git/gitchange/state.json");
     let raw = fs::read_to_string(&state_path).expect("state file exists");
@@ -209,7 +260,9 @@ fn linked_worktrees_have_independent_state_files() {
     let side_repo = Repo::discover(&worktree_path).unwrap();
 
     main_repo.create_changelist("main-work").unwrap();
+    main_repo.switch(Some("main-work")).unwrap();
     side_repo.create_changelist("side-work").unwrap();
+    side_repo.switch(Some("side-work")).unwrap();
 
     let (main_names, main_active) = names_and_active(&main_repo);
     let (side_names, side_active) = names_and_active(&side_repo);

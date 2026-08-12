@@ -95,6 +95,7 @@ fn an_external_git_reset_is_absorbed_as_an_unstaged_hunk() {
 
     let repo = Repo::discover(fixture.path()).unwrap();
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
     let staged = repo.refresh().unwrap();
     assert_eq!(staged.files[0].hunks[0].stage, HunkStage::Staged);
     assert_eq!(

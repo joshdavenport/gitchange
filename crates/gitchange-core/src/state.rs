@@ -91,11 +91,16 @@ impl MembershipRecord {
 }
 
 /// Everything the state file holds (ADR 0002): the changelists, in user
-/// order, and the active marker. Exactly one changelist is active
-/// whenever any exist.
+/// order, and the active marker. Exactly one of {the changelists,
+/// unassigned} is active.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct State {
     pub version: u32,
+    /// The active changelist; `None` is the unassigned pseudo-changelist
+    /// — ADR 0015's capture-off, where capture and ambiguous-edit
+    /// routing flow to unassigned. A state file written before
+    /// unassigned was switchable reads the same way: no marker meant
+    /// unassigned then too.
     pub active: Option<String>,
     pub changelists: Vec<Changelist>,
     /// Membership records, live and dormant. `default` keeps pre-record
@@ -142,14 +147,14 @@ impl State {
         Ok(())
     }
 
-    /// Append a changelist. The first one created becomes active; later
-    /// ones never steal the marker.
+    /// Append a changelist. Creation never moves the active marker
+    /// (ADR 0015): `switch` is the only thing that does, so creating a
+    /// changelist while unassigned is active cannot turn capture back on
+    /// under a concurrent actor. A caller who does want the new
+    /// changelist active — the TUI's `n` — says so with its own switch.
     pub fn create(&mut self, name: &str) -> Result<(), Error> {
         self.validate_new_name(name)?;
         self.changelists.push(Changelist { name: name.into() });
-        if self.active.is_none() {
-            self.active = Some(name.into());
-        }
         Ok(())
     }
 
@@ -178,9 +183,11 @@ impl State {
         Ok(())
     }
 
-    /// Remove a changelist. Deleting the active one promotes the first
-    /// remaining changelist, keeping the exactly-one-active invariant.
-    /// The deleted changelist's live records become unassigned orphans —
+    /// Remove a changelist. Deleting the active one leaves unassigned
+    /// active (ADR 0015): promoting a neighbour would point capture at a
+    /// changelist nobody named — in a shared tree, quite possibly
+    /// another actor's. The deleted changelist's live records become
+    /// unassigned orphans —
     /// never captured by another changelist — and its dormant records are
     /// pruned (ADR 0002).
     pub fn delete(&mut self, name: &str) -> Result<(), Error> {
@@ -196,7 +203,7 @@ impl State {
             }
         }
         if self.active.as_deref() == Some(name) {
-            self.active = self.changelists.first().map(|cl| cl.name.clone());
+            self.active = None;
         }
         Ok(())
     }
@@ -254,12 +261,15 @@ impl State {
         Ok(())
     }
 
-    /// Set the active marker.
-    pub fn switch(&mut self, name: &str) -> Result<(), Error> {
-        if !self.contains(name) {
+    /// Set the active marker. `target: None` is unassigned (ADR 0015),
+    /// which always exists — the target that turns capture off.
+    pub fn switch(&mut self, target: Option<&str>) -> Result<(), Error> {
+        if let Some(name) = target
+            && !self.contains(name)
+        {
             return Err(Error::UnknownChangelist { name: name.into() });
         }
-        self.active = Some(name.into());
+        self.active = target.map(str::to_owned);
         Ok(())
     }
 }

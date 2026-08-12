@@ -20,6 +20,7 @@ fn committing_one_changelist_commutes_same_file_records() {
 
     // Changelist "two": replace lines 20..=31 with one line (delta -11).
     repo.create_changelist("two").unwrap();
+    repo.switch(Some("two")).unwrap();
     let mut worktree = head.clone();
     worktree.splice(19..31, ["twenty!".into()]);
     fixture.write("a.txt", &text(&worktree));
@@ -27,7 +28,7 @@ fn committing_one_changelist_commutes_same_file_records() {
 
     // Changelist "one": edit original line 40, record old range [37, 44).
     repo.create_changelist("one").unwrap();
-    repo.switch("one").unwrap();
+    repo.switch(Some("one")).unwrap();
     worktree[28] = "forty-v1".into();
     fixture.write("a.txt", &text(&worktree));
     let snapshot = repo.refresh().unwrap();
@@ -42,7 +43,7 @@ fn committing_one_changelist_commutes_same_file_records() {
     // A third changelist is active, so re-attachment can't hide behind
     // active-capture landing on "one" by luck.
     repo.create_changelist("three").unwrap();
-    repo.switch("three").unwrap();
+    repo.switch(Some("three")).unwrap();
     commit(&repo, Some("two"), "two: twenty");
 
     // Keep editing "one"'s hunk: anchor broken, tier-2 must inherit via
@@ -74,6 +75,7 @@ fn a_residual_stale_hunk_reattaches_after_an_own_commit() {
     fixture.write("a.txt", &text(&head)).commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
 
     let mut worktree = head.clone();
     worktree[9] = "ten-staged".into();
@@ -84,7 +86,7 @@ fn a_residual_stale_hunk_reattaches_after_an_own_commit() {
     repo.refresh().unwrap();
 
     repo.create_changelist("two").unwrap();
-    repo.switch("two").unwrap();
+    repo.switch(Some("two")).unwrap();
     commit(&repo, Some("one"), "one: ten (staged version)");
 
     let mut committed = head.clone();
@@ -116,6 +118,7 @@ fn a_residual_stale_hunk_reattaches_when_the_payload_shifts_it() {
     fixture.write("a.txt", &text(&head)).commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
 
     // Changelist "one", two hunks: replace lines 10..=21 with one line
     // (delta -11), and edit original line 40 — both staged.
@@ -129,7 +132,7 @@ fn a_residual_stale_hunk_reattaches_when_the_payload_shifts_it() {
     repo.refresh().unwrap();
 
     repo.create_changelist("two").unwrap();
-    repo.switch("two").unwrap();
+    repo.switch(Some("two")).unwrap();
     commit(&repo, Some("one"), "one: both hunks, staged versions");
 
     let mut committed = head.clone();
@@ -158,6 +161,7 @@ fn commit_stamps_the_baseline_in_the_same_update() {
     fixture.write("a.txt", &text(&head)).commit_all("init");
     let repo = repo(&fixture);
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
 
     let mut worktree = head.clone();
     worktree[9] = "ten-one".into();

@@ -246,6 +246,7 @@ fn a_detached_head_is_not_an_operation_and_leaves_commit_unguarded() {
 
     let repo = Repo::discover(fixture.path()).unwrap();
     repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
     fixture.write("a.txt", "detached edit\n").stage("a.txt");
     let snapshot = repo.refresh().unwrap();
     assert_eq!(

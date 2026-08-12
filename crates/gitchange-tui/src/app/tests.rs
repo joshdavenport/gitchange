@@ -1625,14 +1625,14 @@ fn d_confirms_before_deleting_and_esc_cancels() {
 }
 
 #[test]
-fn s_switches_the_scoped_changelist_and_pseudo_rows_are_inert() {
+fn s_switches_the_scoped_changelist_and_all_is_inert() {
     let mut app = app();
     app.on_key(key(KeyCode::Char('j')));
     app.on_key(key(KeyCode::Char('j'))); // 'chores'
     assert_eq!(
         app.on_key(key(KeyCode::Char('s'))),
         Some(Action::Op(Op::SetActive {
-            name: "chores".into()
+            changelist: Some("chores".into())
         }))
     );
     // `a` is the assign key now, and the Changelists panel has
@@ -1643,7 +1643,53 @@ fn s_switches_the_scoped_changelist_and_pseudo_rows_are_inert() {
     app.on_key(key(KeyCode::Esc)); // back to 'all'
     assert_eq!(app.on_key(key(KeyCode::Char('s'))), None);
     assert_eq!(app.on_key(key(KeyCode::Char('d'))), None);
-    assert!(app.overlay.is_none(), "all/unassigned rows take no ops");
+    assert!(app.overlay.is_none(), "the all row takes no ops");
+}
+
+#[test]
+fn s_on_the_unassigned_row_switches_to_unassigned() {
+    // Capture-off (ADR 0015): unassigned is a switchable target, so `s`
+    // acts on its row while the other ops keys stay disabled there.
+    let mut app = app();
+    for _ in 0..3 {
+        app.on_key(key(KeyCode::Char('j')));
+    }
+    assert_eq!(app.scope(), Scope::Unassigned, "precondition");
+    assert_eq!(
+        app.on_key(key(KeyCode::Char('s'))),
+        Some(Action::Op(Op::SetActive { changelist: None }))
+    );
+
+    assert_eq!(app.on_key(key(KeyCode::Char('d'))), None);
+    assert_eq!(app.on_key(key(KeyCode::Char('r'))), None);
+    assert!(
+        app.overlay.is_none(),
+        "unassigned is built in: nothing to delete or rename"
+    );
+}
+
+#[test]
+fn the_unassigned_row_wears_the_active_marker_when_it_holds_it() {
+    // ADR 0015: the `*` is capture-off's only indicator, so the
+    // unassigned row renders it on the same terms as a changelist row.
+    let mut app = app();
+    let rows = app.changelist_rows();
+    assert!(rows[1].active, "precondition: 'fixes' holds the marker");
+    assert!(!rows[3].active);
+
+    let mut snapshot = snapshot();
+    snapshot.active = None;
+    app.apply_snapshot(snapshot);
+
+    let rows = app.changelist_rows();
+    assert!(
+        rows[3].active,
+        "capture-off puts the `*` on the unassigned row"
+    );
+    assert!(
+        !rows[1].active,
+        "and takes it off the changelist that held it"
+    );
 }
 
 fn blob(size: u64) -> BlobInfo {
@@ -1999,7 +2045,9 @@ fn pressing_an_ops_key_on_a_pseudo_row_logs_why() {
     app.on_key(key(KeyCode::Char('j')));
     app.on_key(key(KeyCode::Char('j')));
     app.on_key(key(KeyCode::Char('j'))); // 'unassigned'
-    assert_eq!(app.on_key(key(KeyCode::Char('s'))), None);
+    // `d` has nothing to delete there; `s` does act (ADR 0015), which is
+    // the one op key that separates the two pseudo rows.
+    assert_eq!(app.on_key(key(KeyCode::Char('d'))), None);
     assert!(app.log.iter().any(|entry| {
         entry.severity == Severity::Info
             && entry.text == "select a changelist — unassigned is built-in"
