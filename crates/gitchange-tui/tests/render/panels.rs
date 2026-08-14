@@ -5,12 +5,14 @@
 use std::time::Duration;
 use std::time::Instant;
 
-use gitchange_core::{ChangeKind, ChangedFile};
+use gitchange_core::{ChangeKind, ChangedFile, Head};
 use ratatui::crossterm::event::KeyCode;
+use ratatui::style::Color;
 
 use gitchange_tui::app::{App, INDICATOR_DELAY, Panel};
+use gitchange_tui::theme::Theme;
 
-use crate::helpers::{key, render, snapshot};
+use crate::helpers::{fg_at, find_text, key, render, render_buffer, snapshot, text_of};
 
 #[test]
 fn the_panel_stack_renders_with_the_all_view() {
@@ -84,6 +86,69 @@ fn capture_off_moves_the_active_marker_onto_unassigned() {
     assert!(
         text.contains("switch active"),
         "`s` is live on the unassigned row\n{text}"
+    );
+}
+
+#[test]
+fn the_status_panel_names_the_holder_of_the_active_marker() {
+    let theme = Theme::default();
+    // The status line reads whole, and the suffix mirrors the
+    // Changelists panel's styling for the same item: active-marker
+    // glyph, then the name in its ownership colour.
+    let assert_line = |app: &App, line: &str, name: Color| {
+        let buffer = render_buffer(app);
+        let text = text_of(&buffer);
+        assert!(text.contains(line), "expected {line:?}\n{text}");
+        let (x, y) = find_text(&buffer, line);
+        // Cells, not bytes: ✓ and → are multi-byte, one cell each.
+        let marker = x + line.chars().take_while(|&c| c != '*').count() as u16;
+        assert_eq!(fg_at(&buffer, marker, y), theme.colors.active);
+        assert_eq!(fg_at(&buffer, marker + 2, y), name);
+    };
+
+    let mut app = App::new("repo");
+    app.apply_snapshot(snapshot());
+    assert_line(
+        &app,
+        "✓ repo → feat/print-page * fixes",
+        theme.colors.changelist,
+    );
+
+    // Capture off (ADR 0015): the marker sits on unassigned, in warn.
+    let mut off = snapshot();
+    off.active = None;
+    app.apply_snapshot(off);
+    assert_line(
+        &app,
+        "✓ repo → feat/print-page * unassigned",
+        theme.colors.warn,
+    );
+}
+
+#[test]
+fn the_status_panel_names_the_active_changelist_for_every_head() {
+    let mut app = App::new("repo");
+    let mut detached = snapshot();
+    detached.head = Head::Detached {
+        short_id: "91a05c13".into(),
+    };
+    app.apply_snapshot(detached);
+    let text = render(&app);
+    assert!(
+        text.contains("@91a05c13 (detached) * fixes"),
+        "detached head keeps the suffix\n{text}"
+    );
+
+    let mut unborn = snapshot();
+    unborn.head = Head::Unborn {
+        name: "main".into(),
+    };
+    unborn.active = None;
+    app.apply_snapshot(unborn);
+    let text = render(&app);
+    assert!(
+        text.contains("main (no commits yet) * unassigned"),
+        "unborn head keeps the suffix\n{text}"
     );
 }
 

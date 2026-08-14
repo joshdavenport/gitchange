@@ -171,7 +171,9 @@ fn the_changelists_cursor_persists_on_blur_and_never_recolours() {
     app.on_key(key(KeyCode::Char('j'))); // select 'fixes'
 
     let assert_cursor_row = |buffer: &Buffer, bg: Color| {
-        let (x, y) = find_text(buffer, "* fixes");
+        // The count pins the needle to the Changelists row — the Status
+        // panel names the active changelist too (issue #95).
+        let (x, y) = find_text(buffer, "* fixes (1)");
         assert_eq!(buffer[(x - 2, y)].symbol(), "❯", "cursor leads the row");
         assert_eq!(fg_at(buffer, x - 2, y), theme.colors.cursor);
         // The type glyph and name keep their own colours.
@@ -194,7 +196,7 @@ fn unselected_changelist_rows_keep_a_blank_cursor_column() {
 
     // The blank stand-in keeps the glyph and name columns aligned.
     let (all_x, all_y) = find_text(&buffer, "≡ all");
-    let (fixes_x, fixes_y) = find_text(&buffer, "* fixes");
+    let (fixes_x, fixes_y) = find_text(&buffer, "* fixes (1)");
     assert_eq!(fixes_x, all_x, "glyph columns align");
     let (chores_x, _) = find_text(&buffer, "chores (1)");
     assert_eq!(chores_x, all_x + 2, "name columns align");

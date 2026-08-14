@@ -222,22 +222,34 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             Span::styled(format!(" {} ", theme.glyphs.arrow), theme.colors.dim),
         ]
     };
-    let line = match app.snapshot.as_ref().map(|snapshot| &snapshot.head) {
-        Some(Head::Branch { name }) => {
+    // Who holds the active marker (issue #95): a named changelist, or
+    // unassigned when capture is off (ADR 0015). Dressed as the
+    // Changelists panel dresses the same item.
+    let holder = |active: Option<&String>| {
+        let name = active.cloned().unwrap_or_else(|| UNASSIGNED.to_owned());
+        vec![
+            Span::raw(" "),
+            active_span(theme),
+            Span::styled(name, changelist_color(active.is_some(), theme)),
+        ]
+    };
+    let line = match app.snapshot.as_ref() {
+        Some(snapshot) => {
             let mut spans = lead(theme);
-            spans.push(Span::styled(name.clone(), theme.colors.branch));
-            Line::from(spans)
-        }
-        Some(Head::Detached { short_id }) => {
-            let mut spans = lead(theme);
-            spans.push(Span::styled(format!("@{short_id}"), theme.colors.branch));
-            spans.push(Span::styled(" (detached)", theme.colors.warn));
-            Line::from(spans)
-        }
-        Some(Head::Unborn { name }) => {
-            let mut spans = lead(theme);
-            spans.push(Span::styled(name.clone(), theme.colors.branch));
-            spans.push(Span::styled(" (no commits yet)", theme.colors.dim));
+            match &snapshot.head {
+                Head::Branch { name } => {
+                    spans.push(Span::styled(name.clone(), theme.colors.branch));
+                }
+                Head::Detached { short_id } => {
+                    spans.push(Span::styled(format!("@{short_id}"), theme.colors.branch));
+                    spans.push(Span::styled(" (detached)", theme.colors.warn));
+                }
+                Head::Unborn { name } => {
+                    spans.push(Span::styled(name.clone(), theme.colors.branch));
+                    spans.push(Span::styled(" (no commits yet)", theme.colors.dim));
+                }
+            }
+            spans.extend(holder(snapshot.active.as_ref()));
             Line::from(spans)
         }
         None => Line::styled(
@@ -278,6 +290,16 @@ fn select_row(
     }
 }
 
+/// The active-changelist marker, with the trailing gap that keeps a name
+/// off it: the Changelists row and the Status panel's suffix (issue #95)
+/// wear the same mark.
+fn active_span(theme: &Theme) -> Span<'static> {
+    Span::styled(
+        format!("{} ", theme.glyphs.active),
+        Style::new().fg(theme.colors.active).bold(),
+    )
+}
+
 /// The selection cursor's leading column: glyph on the selected row, a
 /// same-width blank elsewhere so glyph columns stay aligned.
 fn cursor_span(selected: bool, theme: &Theme) -> Span<'static> {
@@ -307,10 +329,7 @@ fn draw_changelists(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                 ],
                 Scope::Changelist(name) => vec![
                     if row.active {
-                        Span::styled(
-                            format!("{} ", theme.glyphs.active),
-                            Style::new().fg(theme.colors.active).bold(),
-                        )
+                        active_span(theme)
                     } else {
                         Span::raw("  ")
                     },
