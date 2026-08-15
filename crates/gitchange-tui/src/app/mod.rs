@@ -154,14 +154,11 @@ pub enum Op {
     SetActive {
         changelist: Option<String>,
     },
-    /// Assign snapshot hunks to a changelist. `create` makes the target
-    /// first — the assign popup's "+ create new changelist…" escape
-    /// hatch.
+    /// Assign snapshot hunks to an [`AssignTarget`].
     Assign {
         path: String,
         hunks: Vec<Hunk>,
-        target: String,
-        create: bool,
+        target: AssignTarget,
     },
     /// `space` on a Files row: whole-file staging, `git add` semantics.
     StageFile {
@@ -191,6 +188,22 @@ pub enum Op {
     UnstageChangelist {
         changelist: Option<String>,
     },
+}
+
+/// Where an [`Op::Assign`] sends its hunks. Three cases rather than a
+/// name plus a create flag, so "create a changelist *and* target
+/// unassigned" cannot be spelled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AssignTarget {
+    /// A changelist the snapshot already lists.
+    Existing(String),
+    /// The popup's "+ create new changelist…" escape hatch: create the
+    /// name first, then assign into it. An already-taken name is an
+    /// ordinary target, not a failure.
+    New(String),
+    /// Release to unassigned — core deletes the records and the hunks
+    /// rejoin the uniform flow (ADR 0016).
+    Unassigned,
 }
 
 /// The commit flow's IO steps (ADR 0004), executed by the main loop on

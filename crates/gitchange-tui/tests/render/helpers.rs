@@ -121,7 +121,13 @@ pub(crate) fn text_of(buffer: &Buffer) -> String {
 
 /// The (x, y) of the first occurrence of `needle` in the buffer.
 pub(crate) fn find_text(buffer: &Buffer, needle: &str) -> (u16, u16) {
-    for y in 0..buffer.area.height {
+    find_text_below(buffer, needle, 0)
+}
+
+/// [`find_text`] from row `from_y` down — for text an overlay repeats
+/// over panel content that names the same thing above it.
+pub(crate) fn find_text_below(buffer: &Buffer, needle: &str, from_y: u16) -> (u16, u16) {
+    for y in from_y..buffer.area.height {
         let symbols: Vec<&str> = (0..buffer.area.width)
             .map(|x| buffer[(x, y)].symbol())
             .collect();

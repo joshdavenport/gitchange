@@ -739,6 +739,14 @@ fn mixed_app() -> App {
     app
 }
 
+/// Walk the open popup's cursor down onto "+ create new changelist…",
+/// however many targets precede it.
+fn select_create_new(app: &mut App) {
+    for _ in 1..app.assign_rows().len() {
+        app.on_key(key(KeyCode::Char('j')));
+    }
+}
+
 /// The payload the open popup carries, resolved to hunk positions.
 fn payload_starts(app: &App) -> Vec<u32> {
     let Some(Overlay::Assign { payload, .. }) = &app.overlay else {
@@ -749,7 +757,7 @@ fn payload_starts(app: &App) -> Vec<u32> {
 }
 
 #[test]
-fn assign_rows_list_changelists_with_active_annotated_then_create_new() {
+fn assign_rows_list_changelists_then_unassigned_then_create_new() {
     let app = app();
     assert_eq!(
         app.assign_rows(),
@@ -762,9 +770,34 @@ fn assign_rows_list_changelists_with_active_annotated_then_create_new() {
                 name: "chores".into(),
                 active: false,
             },
+            AssignRow::Unassigned,
             AssignRow::CreateNew,
         ]
     );
+}
+
+/// Unassigned is a target like any other (CONTEXT.md): the popup
+/// reaches it, releasing the payload with no target (ADR 0016).
+#[test]
+fn enter_on_the_unassigned_row_releases_the_hunks() {
+    let mut app = app();
+    app.on_key(key(KeyCode::Char('3'))); // print.css under 'fixes'
+    app.on_key(key(KeyCode::Char('a')));
+    app.on_key(key(KeyCode::Char('j')));
+    app.on_key(key(KeyCode::Char('j'))); // 'unassigned'
+    let action = app.on_key(key(KeyCode::Enter));
+    assert!(
+        matches!(
+            action,
+            Some(Action::Op(Op::Assign {
+                ref path,
+                ref hunks,
+                target: AssignTarget::Unassigned,
+            })) if path == "src/print.css" && hunks.len() == 2
+        ),
+        "expected a release op, got {action:?}"
+    );
+    assert!(app.overlay.is_none(), "confirming closes the popup");
 }
 
 #[test]
@@ -786,14 +819,12 @@ fn a_in_files_opens_the_popup_and_enter_assigns_the_rows_group_hunks() {
         path,
         hunks,
         target,
-        create,
     })) = action
     else {
         panic!("expected an assign op, got {action:?}");
     };
     assert_eq!(path, "src/print.css");
-    assert_eq!(target, "chores");
-    assert!(!create);
+    assert_eq!(target, AssignTarget::Existing("chores".into()));
     assert_eq!(
         hunks.iter().map(|hunk| hunk.new_start).collect::<Vec<_>>(),
         vec![14, 41],
@@ -818,7 +849,7 @@ fn a_in_hunk_mode_targets_the_selected_hunk() {
     assert!(matches!(
         action,
         Some(Action::Op(Op::Assign { ref hunks, ref target, .. }))
-            if hunks.len() == 1 && target == "fixes"
+            if hunks.len() == 1 && *target == AssignTarget::Existing("fixes".into())
     ));
 }
 
@@ -1076,8 +1107,7 @@ fn m_is_unbound() {
 fn the_create_new_escape_hatch_yields_a_create_and_assign_op() {
     let mut app = hunk_mode_app();
     app.on_key(key(KeyCode::Char('a'))); // open popup (selected hunk)
-    app.on_key(key(KeyCode::Char('j')));
-    app.on_key(key(KeyCode::Char('j'))); // '+ create new changelist…'
+    select_create_new(&mut app);
     app.on_key(key(KeyCode::Enter));
     assert!(matches!(
         app.overlay,
@@ -1092,7 +1122,8 @@ fn the_create_new_escape_hatch_yields_a_create_and_assign_op() {
     let action = app.on_key(key(KeyCode::Enter));
     assert!(matches!(
         action,
-        Some(Action::Op(Op::Assign { ref target, create: true, .. })) if target == "docs"
+        Some(Action::Op(Op::Assign { ref target, .. }))
+            if *target == AssignTarget::New("docs".into())
     ));
 }
 
@@ -1100,8 +1131,7 @@ fn the_create_new_escape_hatch_yields_a_create_and_assign_op() {
 fn esc_from_the_escape_hatch_returns_to_the_assign_popup() {
     let mut app = hunk_mode_app();
     app.on_key(key(KeyCode::Char('a')));
-    app.on_key(key(KeyCode::Char('j')));
-    app.on_key(key(KeyCode::Char('j')));
+    select_create_new(&mut app);
     app.on_key(key(KeyCode::Enter)); // into the input
     app.on_key(key(KeyCode::Esc));
     assert!(matches!(app.overlay, Some(Overlay::Assign { .. })));

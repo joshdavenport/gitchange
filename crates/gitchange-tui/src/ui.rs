@@ -912,6 +912,12 @@ fn draw_overlay(frame: &mut Frame, area: Rect, app: &App, overlay: &Overlay, the
                         }
                         Line::from(spans)
                     }
+                    // No glyph and never "(active)": capture-off is a
+                    // property of the marker, not of this target.
+                    AssignRow::Unassigned => Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(UNASSIGNED, theme.colors.warn),
+                    ]),
                     AssignRow::CreateNew => Line::from(vec![
                         Span::raw("  "),
                         Span::styled("+", theme.colors.staged),

@@ -29,7 +29,7 @@ use ratatui::backend::Backend;
 use ratatui::crossterm::event::{DisableFocusChange, EnableFocusChange, Event, KeyEventKind};
 use ratatui::crossterm::execute;
 
-use app::{Action, App, CommitDraft, CommitStep, Op, PanelHeights, Severity};
+use app::{Action, App, AssignTarget, CommitDraft, CommitStep, Op, PanelHeights, Severity};
 use theme::Theme;
 
 /// Error-modal titles reused across several ops' failure paths, so each
@@ -255,22 +255,25 @@ fn run_op(repo: &Repo, app: &mut App, op: Op) {
             path,
             hunks,
             target,
-            create,
         } => {
-            // A name that already exists is a valid target: fall through
-            // to the assign rather than stranding it behind the create.
-            if create
-                && let Err(error) = repo.create_changelist(&target)
-                && !matches!(error, gitchange_core::Error::ChangelistExists { .. })
-            {
-                app.show_error(CREATE_CHANGELIST_FAILED, error.to_string());
-                return;
-            }
-            op_outcome(
-                app,
-                "Assign failed",
-                repo.assign_hunks(&path, &hunks, Some(&target)),
-            );
+            // `None` releases to unassigned (ADR 0016).
+            let name = match &target {
+                AssignTarget::Existing(name) => Some(name.as_str()),
+                AssignTarget::New(name) => {
+                    // A name that already exists is a valid target: fall
+                    // through to the assign rather than stranding it
+                    // behind the create.
+                    if let Err(error) = repo.create_changelist(name)
+                        && !matches!(error, gitchange_core::Error::ChangelistExists { .. })
+                    {
+                        app.show_error(CREATE_CHANGELIST_FAILED, error.to_string());
+                        return;
+                    }
+                    Some(name.as_str())
+                }
+                AssignTarget::Unassigned => None,
+            };
+            op_outcome(app, "Assign failed", repo.assign_hunks(&path, &hunks, name));
         }
     }
 }

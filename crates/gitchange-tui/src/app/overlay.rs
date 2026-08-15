@@ -7,7 +7,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::selection::step;
 use super::view::{FileEntry, owned_hunks, owns};
-use super::{Action, App, CommitStep, Op, Panel, Severity};
+use super::{Action, App, AssignTarget, CommitStep, Op, Panel, Severity};
 
 /// Everything the commit dialog holds:
 /// the target changelist, the inspected payload, the independent
@@ -152,6 +152,10 @@ pub enum AssignRow {
         name: String,
         active: bool,
     },
+    /// Release to unassigned — a target like any other (CONTEXT.md), so
+    /// the popup carries it rather than a separate un-assign key. Pinned
+    /// after the changelists, mirroring the All view's ordering.
+    Unassigned,
     /// "+ create new changelist…", pinned last.
     CreateNew,
 }
@@ -186,7 +190,7 @@ impl App {
                             Some(Action::Op(Op::RenameChangelist { from, to: name }))
                         }
                         InputKind::NewChangelistForAssign { payload } => {
-                            self.assign_op(payload, name, true)
+                            self.assign_op(payload, AssignTarget::New(name))
                         }
                     }
                 }
@@ -275,7 +279,10 @@ impl App {
                     }
                     KeyCode::Enter => match rows.into_iter().nth(row) {
                         Some(AssignRow::Changelist { name, .. }) => {
-                            self.assign_op(payload, name, false)
+                            self.assign_op(payload, AssignTarget::Existing(name))
+                        }
+                        Some(AssignRow::Unassigned) => {
+                            self.assign_op(payload, AssignTarget::Unassigned)
                         }
                         Some(AssignRow::CreateNew) => {
                             self.overlay = Some(Overlay::Input {
@@ -494,12 +501,7 @@ impl App {
     /// Resolve a payload against the current snapshot and emit the assign
     /// op. A payload that no longer resolves closes silently — the op
     /// content-validates again at apply anyway.
-    fn assign_op(
-        &mut self,
-        payload: AssignPayload,
-        target: String,
-        create: bool,
-    ) -> Option<Action> {
+    fn assign_op(&mut self, payload: AssignPayload, target: AssignTarget) -> Option<Action> {
         let (path, hunks) = self.resolve_payload(&payload)?;
         if hunks.is_empty() {
             return None;
@@ -508,7 +510,6 @@ impl App {
             path,
             hunks,
             target,
-            create,
         }))
     }
 
@@ -525,8 +526,8 @@ impl App {
         Some((path.to_owned(), hunks))
     }
 
-    /// The assign popup's rows: every changelist,
-    /// the active one annotated, then the create-new escape hatch.
+    /// The assign popup's rows: every changelist, the active one
+    /// annotated, then unassigned, then the create-new escape hatch.
     pub fn assign_rows(&self) -> Vec<AssignRow> {
         let mut rows: Vec<AssignRow> = self
             .snapshot
@@ -542,6 +543,7 @@ impl App {
                     .collect()
             })
             .unwrap_or_default();
+        rows.push(AssignRow::Unassigned);
         rows.push(AssignRow::CreateNew);
         rows
     }

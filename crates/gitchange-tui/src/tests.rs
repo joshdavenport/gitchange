@@ -275,8 +275,7 @@ fn assign_treats_an_existing_target_as_a_valid_target_rather_than_a_create_failu
         Op::Assign {
             path: "a.txt".into(),
             hunks,
-            target: "wip".into(),
-            create: true,
+            target: AssignTarget::New("wip".into()),
         },
     );
 
@@ -287,6 +286,40 @@ fn assign_treats_an_existing_target_as_a_valid_target_rather_than_a_create_failu
         snapshot.files[0].hunks[0].changelist.as_deref(),
         Some("wip")
     );
+}
+
+#[test]
+fn assign_to_unassigned_releases_the_hunks_records() {
+    // ADR 0016: the unassigned target carries no name, so core deletes
+    // the records. Capture is off here, so the released hunks stay put
+    // instead of bouncing to an active changelist.
+    let (fixture, repo) = repo_with_commit();
+    repo.create_changelist("wip").unwrap();
+    repo.switch(Some("wip")).unwrap();
+    fixture.write("a.txt", "line 1\nedited\nline 3\n");
+    let hunks = repo.refresh().unwrap().files[0].hunks.clone();
+    assert_eq!(hunks[0].changelist.as_deref(), Some("wip"), "captured");
+    repo.switch(None).unwrap();
+    let mut app = App::new("repo");
+
+    run_op(
+        &repo,
+        &mut app,
+        Op::Assign {
+            path: "a.txt".into(),
+            hunks,
+            target: AssignTarget::Unassigned,
+        },
+    );
+
+    assert!(app.error_modal.is_none());
+    assert_eq!(
+        entries(&app, Severity::Info),
+        vec!["released 1 hunk — a.txt"],
+        "the echo states a release, not an assignment"
+    );
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(snapshot.files[0].hunks[0].changelist, None);
 }
 
 #[test]
@@ -304,8 +337,7 @@ fn assign_stops_at_the_create_modal_when_the_target_name_is_refused() {
             hunks,
             // A reserved name: the create refuses for a reason that is
             // not "it already exists", so the assign must not run.
-            target: gitchange_core::UNASSIGNED.into(),
-            create: true,
+            target: AssignTarget::New(gitchange_core::UNASSIGNED.into()),
         },
     );
 

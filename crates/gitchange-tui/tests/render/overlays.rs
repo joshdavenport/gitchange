@@ -1,12 +1,15 @@
 //! Overlays and modals: the help sheet, the assign popup, text inputs,
 //! the delete confirmation, and the error modal.
 
+use gitchange_core::UNASSIGNED;
 use ratatui::crossterm::event::KeyCode;
 
 use gitchange_tui::app::App;
 use gitchange_tui::theme::Theme;
 
-use crate::helpers::{key, render, render_buffer_themed, snapshot, text_of};
+use crate::helpers::{
+    fg_at, find_text, find_text_below, key, render, render_buffer_themed, snapshot, text_of,
+};
 
 #[test]
 fn help_overlay_lists_bindings() {
@@ -66,6 +69,37 @@ fn the_assign_popup_lists_changelists_and_the_escape_hatch() {
     assert!(text.contains("fixes (active)"));
     assert!(text.contains("+ create new changelist…"));
     assert!(text.contains("enter assign · esc cancel"));
+}
+
+#[test]
+fn the_assign_popup_pins_unassigned_after_the_changelists() {
+    // Unassigned is a target like any other (CONTEXT.md), reachable
+    // through the popup — releasing per ADR 0016.
+    let theme = Theme::default();
+    let mut app = App::new("repo");
+    app.apply_snapshot(snapshot());
+    app.on_key(key(KeyCode::Char('3')));
+    app.on_key(key(KeyCode::Char('a')));
+    let buffer = render_buffer_themed(&app, &theme);
+    // Searched below the popup's title border: the panels behind it name
+    // "unassigned" too, and one of those rows shares the title's line.
+    let (_, title) = find_text(&buffer, "Assign to changelist");
+    let (x, y) = find_text_below(&buffer, UNASSIGNED, title + 1);
+    let row_after = |needle: &str| find_text_below(&buffer, needle, title + 1).1;
+    assert!(row_after("chores") < y, "after the changelists");
+    assert!(y < row_after("+ create new changelist"), "before the hatch");
+
+    let text = text_of(&buffer);
+    let row = text.lines().nth(y as usize).expect("the row is drawn");
+    assert!(
+        !row.contains("(active)"),
+        "capture-off is the marker's business, not this row's"
+    );
+    // The warn tint every unassigned surface carries. No glyph either:
+    // the popup's rows are targets, not the state readout the
+    // Changelists panel draws.
+    assert_eq!(fg_at(&buffer, x, y), theme.colors.warn);
+    assert_eq!(buffer[(x - 1, y)].symbol(), " ", "no glyph prefix");
 }
 
 #[test]
