@@ -791,9 +791,23 @@ fn draw_overlay(frame: &mut Frame, area: Rect, app: &App, overlay: &Overlay, the
             frame.render_widget(Paragraph::new(line).block(modal_block(title, theme)), popup);
         }
         Overlay::ConfirmDelete { name } => {
+            // The hunks' real destination (ADR 0016): released records
+            // are pruned, so the next refresh captures the hunks into
+            // the active changelist — unless capture is off, or the
+            // active changelist is the one being deleted (its deletion
+            // leaves unassigned active).
+            let destination = app
+                .snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.active.as_deref())
+                .filter(|active| active != name);
+            let fate = match destination {
+                Some(active) => format!("Its hunks are captured into '{active}'."),
+                None => "Its hunks become unassigned.".to_owned(),
+            };
             let lines = vec![
                 Line::raw(format!("Delete '{name}'?")),
-                Line::styled("Its hunks become unassigned.", theme.colors.dim),
+                Line::styled(fate, theme.colors.dim),
                 Line::raw(""),
                 modal_hints("delete", theme),
             ];

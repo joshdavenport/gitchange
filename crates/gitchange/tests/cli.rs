@@ -255,18 +255,19 @@ fn switch_unassigned_turns_capture_off_and_marks_the_group() {
 
 #[test]
 fn status_groups_files_by_changelist_with_unassigned_last() {
-    // A null-owner record claims tracked.txt for unassigned (an orphan
-    // of a deleted changelist); the untracked file captures to active.
+    // A record claims tracked.txt for 'bugfix'; capture is off
+    // (unassigned active, ADR 0015), so the untracked file stays loose
+    // and the unassigned group renders last, wearing the marker.
     let repo = dirty_repo();
     seed_state_raw(
         repo.path(),
         r#"{
-  "version": 1, "active": "feature",
+  "version": 1, "active": null,
   "changelists": [{ "name": "feature" }, { "name": "bugfix" }],
   "records": [
     {
       "path": "tracked.txt", "old_start": 1, "old_lines": 1,
-      "new_start": 1, "new_lines": 1, "changelist": null,
+      "new_start": 1, "new_lines": 1, "changelist": "bugfix",
       "anchor": ["-one\n", "+two\n"], "dormant_since": null
     }
   ]
@@ -280,11 +281,11 @@ fn status_groups_files_by_changelist_with_unassigned_last() {
     assert_eq!(
         lines,
         vec![
-            "* feature",
-            "    ○ ? untracked.txt 0/1",
+            "  feature",
             "  bugfix",
-            "  unassigned",
             "    ○ M tracked.txt 0/1",
+            "* unassigned",
+            "    ○ ? untracked.txt 0/1",
         ]
     );
 }

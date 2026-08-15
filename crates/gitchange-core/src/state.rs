@@ -31,9 +31,9 @@ pub struct MembershipRecord {
     /// Worktree-side coordinates at record time.
     pub new_start: u32,
     pub new_lines: u32,
-    /// Owning changelist; `None` claims the hunk for unassigned (orphans
-    /// of deleted changelists, explicit assignment to it).
-    pub changelist: Option<String>,
+    /// Owning changelist — always a real name (ADR 0016): unassigned is
+    /// the absence of a record, so nothing ever writes a nobody-owner.
+    pub changelist: String,
     /// Verbatim hunk lines (`origin` + content), context included — the
     /// identity evidence for tier-1 exact matching. Empty for binary
     /// records, whose identity lives in `oid_anchor` instead.
@@ -173,8 +173,8 @@ impl State {
             }
         }
         for record in &mut self.records {
-            if record.changelist.as_deref() == Some(from) {
-                record.changelist = Some(to.into());
+            if record.changelist == from {
+                record.changelist = to.into();
             }
         }
         if self.active.as_deref() == Some(from) {
@@ -186,22 +186,15 @@ impl State {
     /// Remove a changelist. Deleting the active one leaves unassigned
     /// active (ADR 0015): promoting a neighbour would point capture at a
     /// changelist nobody named — in a shared tree, quite possibly
-    /// another actor's. The deleted changelist's live records become
-    /// unassigned orphans —
-    /// never captured by another changelist — and its dormant records are
-    /// pruned (ADR 0002).
+    /// another actor's. All of the changelist's records are pruned, live
+    /// and dormant (ADR 0016): its hunks are released recordless, to
+    /// flow under ADR 0001's uniform rule on the next refresh.
     pub fn delete(&mut self, name: &str) -> Result<(), Error> {
         if !self.contains(name) {
             return Err(Error::UnknownChangelist { name: name.into() });
         }
         self.changelists.retain(|cl| cl.name != name);
-        self.records
-            .retain(|record| !(record.changelist.as_deref() == Some(name) && record.is_dormant()));
-        for record in &mut self.records {
-            if record.changelist.as_deref() == Some(name) {
-                record.changelist = None;
-            }
-        }
+        self.records.retain(|record| record.changelist != name);
         if self.active.as_deref() == Some(name) {
             self.active = None;
         }
@@ -210,27 +203,22 @@ impl State {
 
     /// Apply delete semantics to records naming a changelist that no
     /// longer exists (a hand-edited file, or a delete racing a refresh's
-    /// unlocked read): live records orphan to unassigned, dormant ones
-    /// are pruned — a deleted changelist must never claim hunks again.
-    pub(crate) fn orphan_records_of_unknown_changelists(&mut self) {
+    /// unlocked read): pruned wholesale, like [`State::delete`] — a
+    /// deleted changelist must never claim hunks again (ADR 0016).
+    pub(crate) fn prune_records_of_unknown_changelists(&mut self) {
         let known: Vec<String> = self.changelists.iter().map(|cl| cl.name.clone()).collect();
-        let unknown = |record: &MembershipRecord| matches!(&record.changelist, Some(name) if !known.contains(name));
         self.records
-            .retain(|record| !(unknown(record) && record.is_dormant()));
-        for record in &mut self.records {
-            if unknown(record) {
-                record.changelist = None;
-            }
-        }
+            .retain(|record| known.contains(&record.changelist));
     }
 
     /// Point `path`'s records at `target` for the given fresh hunks —
-    /// the explicit assign op (ticket #32). `target: None` claims them
-    /// for unassigned, the same sticky claim delete-orphans carry.
-    /// Competing claims are replaced: records anchor-matching an
-    /// assigned hunk, and live records overlapping its HEAD-side range,
-    /// are removed so neither matching tier re-claims the hunk for its
-    /// old owner.
+    /// the explicit assign op (ticket #32). Competing claims are
+    /// replaced: records anchor-matching an assigned hunk, and live
+    /// records overlapping its HEAD-side range, are removed so neither
+    /// matching tier re-claims the hunk for its old owner. `target:
+    /// None` is a release (ADR 0016): the deletion happens and nothing
+    /// is written back — the hunks are recordless afterwards, so
+    /// releasing already-recordless hunks changes nothing.
     pub(crate) fn assign_records(
         &mut self,
         path: &str,
@@ -250,13 +238,11 @@ impl State {
                         || (!record.is_dormant() && matcher::overlap_claim(record, hunk))
                 })
         });
-        for (hunk, anchor) in hunks.iter().zip(&anchors) {
-            self.records.push(matcher::record_for(
-                path,
-                hunk,
-                anchor,
-                target.map(str::to_owned),
-            ));
+        if let Some(name) = target {
+            for (hunk, anchor) in hunks.iter().zip(&anchors) {
+                self.records
+                    .push(matcher::record_for(path, hunk, anchor, name.to_owned()));
+            }
         }
         Ok(())
     }

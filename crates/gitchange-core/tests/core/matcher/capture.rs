@@ -196,6 +196,16 @@ fn with_unassigned_active_an_ambiguous_overlap_lands_unassigned_and_notices() {
             assigned_to: None,
         }]
     );
+    assert_eq!(
+        state_json(&fixture)["records"].as_array().unwrap().len(),
+        0,
+        "the dropped claims leave nothing behind: unassigned is recordless (ADR 0016)"
+    );
+
+    // Recordless and capture-off: the next refresh decides nothing.
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(owners(&snapshot, "a.txt"), vec![None]);
+    assert!(snapshot.advisories.is_empty());
 }
 
 #[test]
@@ -265,7 +275,7 @@ fn dormant_revival_notices_with_a_per_changelist_count() {
         snapshot.advisories,
         vec![Advisory::DormantRevival {
             path: "a.txt".into(),
-            changelist: Some("one".into()),
+            changelist: "one".into(),
             hunks: 2,
         }],
         "exact-match revival is an automatic decision: one notice, counted"

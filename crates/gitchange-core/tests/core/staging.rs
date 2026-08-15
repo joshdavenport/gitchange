@@ -647,7 +647,9 @@ fn stages(snapshot: &Snapshot, path: &str) -> Vec<HunkStage> {
 /// A repo where `one` owns a.txt's top hunk and b.txt's only hunk,
 /// `two` owns a.txt's bottom hunk, and c.txt's hunk is unassigned. The
 /// split file is the point: a bulk op must move its own changelist's
-/// hunks and leave the other's in place.
+/// hunks and leave the other's in place. Capture stays off after the
+/// setup (ADR 0016): with a changelist active, the released c.txt hunk
+/// would be recaptured on the next refresh.
 fn bulk_fixture() -> (RepoFixture, Repo) {
     let fixture = RepoFixture::new();
     fixture
@@ -666,12 +668,14 @@ fn bulk_fixture() -> (RepoFixture, Repo) {
     repo.create_changelist("two").unwrap();
     repo.switch(Some("one")).unwrap();
     // Everything auto-captures into `one` (the active changelist);
-    // a.txt's bottom hunk then moves to `two` and c.txt's to unassigned.
+    // a.txt's bottom hunk then moves to `two` and c.txt's is released
+    // to unassigned under capture-off, where it stays recordless.
     let snapshot = repo.refresh().unwrap();
     let bottom = hunks(&snapshot, "a.txt")[1].clone();
     repo.assign_hunks("a.txt", &[bottom], Some("two")).unwrap();
-    let orphan = hunks(&snapshot, "c.txt");
-    repo.assign_hunks("c.txt", &orphan, None).unwrap();
+    repo.switch(None).unwrap();
+    let released = hunks(&snapshot, "c.txt");
+    repo.assign_hunks("c.txt", &released, None).unwrap();
     (fixture, repo)
 }
 

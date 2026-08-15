@@ -11,9 +11,10 @@ use super::helpers::{numbered, owners, repo, state_json};
 #[test]
 fn records_naming_an_unknown_changelist_get_delete_semantics() {
     // A hand-edited state file (or a delete racing a refresh) can leave
-    // records naming a changelist that no longer exists: live ones
-    // orphan to unassigned — never captured by a survivor — and dormant
-    // ones are pruned.
+    // records naming a changelist that no longer exists: all of them are
+    // pruned, live and dormant alike (ADR 0016) — a deleted changelist
+    // must never claim hunks again. The freed hunk is then recordless
+    // and flows to the active changelist like any new hunk.
     let fixture = RepoFixture::new();
     fixture
         .write("a.txt", &numbered(20, &[]))
@@ -46,19 +47,22 @@ fn records_naming_an_unknown_changelist_get_delete_semantics() {
     let repo = repo(&fixture);
     let snapshot = repo.refresh().unwrap();
 
-    assert_eq!(owners(&snapshot, "a.txt"), vec![None]);
+    assert_eq!(owners(&snapshot, "a.txt"), vec![Some("feature".into())]);
     let json = state_json(&fixture);
     let records = json["records"].as_array().unwrap();
-    assert_eq!(records.len(), 1, "the dormant ghost record is pruned");
-    assert_eq!(records[0]["changelist"], serde_json::Value::Null);
+    assert_eq!(records.len(), 1, "both ghost records are pruned");
+    assert_eq!(
+        records[0]["changelist"], "feature",
+        "the only surviving record is the freed hunk's capture"
+    );
 }
 
 #[test]
 fn deleting_a_changelist_prunes_its_dormant_records() {
-    // The delete-time half of the ADR 0002 dormant prune. Without it,
-    // the record would survive the delete as an unassigned dormant
-    // ghost and later revive its hunk to unassigned instead of the
-    // active changelist capturing it.
+    // Deletion prunes all of a changelist's records, dormant included
+    // (ADR 0016/0002). Without this, the record would survive the
+    // delete as a dormant ghost and later revive its hunk to a
+    // changelist that no longer exists.
     let mut fixture = RepoFixture::new();
     fixture
         .write("a.txt", &numbered(20, &[]))
@@ -77,13 +81,12 @@ fn deleting_a_changelist_prunes_its_dormant_records() {
     assert_eq!(json["records"][0]["changelist"], "one");
     assert!(json["records"][0]["dormant_since"].is_u64());
 
-    // A survivor is active when "one" dies, as in the orphan test: the
+    // A survivor is active when "one" dies, as in the release test: the
     // prune must not depend on the delete promoting a new active.
     repo.create_changelist("two").unwrap();
     repo.switch(Some("two")).unwrap();
     repo.delete_changelist("one").unwrap();
 
-    // Pruned outright — not orphaned to unassigned like a live record.
     let json = state_json(&fixture);
     assert_eq!(
         json["records"].as_array().unwrap().len(),
@@ -93,7 +96,10 @@ fn deleting_a_changelist_prunes_its_dormant_records() {
 }
 
 #[test]
-fn deleting_a_changelist_orphans_its_hunks_to_unassigned() {
+fn deleting_a_changelist_releases_its_hunks_to_the_active_changelist() {
+    // ADR 0016: deletion prunes all of the changelist's records. Its
+    // hunks are then recordless, and the uniform rule captures them into
+    // whatever is active on the next refresh — loudly.
     let fixture = RepoFixture::new();
     fixture
         .write("a.txt", &numbered(20, &[]))
@@ -105,22 +111,57 @@ fn deleting_a_changelist_orphans_its_hunks_to_unassigned() {
     fixture.write("a.txt", &numbered(20, &[(10, "ten!")]));
     repo.refresh().unwrap();
 
-    // Another changelist is active when "one" dies: its hunks must land
-    // in unassigned, never be captured by the survivor.
     repo.create_changelist("two").unwrap();
     repo.switch(Some("two")).unwrap();
     repo.delete_changelist("one").unwrap();
 
     let snapshot = repo.refresh().unwrap();
-    assert_eq!(owners(&snapshot, "a.txt"), vec![None]);
-    let unassigned: Vec<&str> = snapshot
-        .files_in(None)
-        .iter()
-        .map(|file| file.path.as_str())
-        .collect();
-    assert_eq!(unassigned, vec!["a.txt"]);
+    assert_eq!(owners(&snapshot, "a.txt"), vec![Some("two".into())]);
+    assert_eq!(
+        snapshot.advisories,
+        vec![gitchange_core::Advisory::AutoCaptured {
+            path: "a.txt".into(),
+            new_start: 7,
+            changelist: "two".into(),
+        }],
+        "the released hunk's capture is visible, never silent"
+    );
+    assert_eq!(
+        state_json(&fixture)["records"][0]["changelist"],
+        "two",
+        "none of the deleted changelist's records survive"
+    );
+}
 
-    // The orphan claim is sticky: editing the hunk keeps it unassigned.
+#[test]
+fn deleting_a_changelist_with_unassigned_active_leaves_its_hunks_unassigned() {
+    // The capture-off case (ADR 0015/0016): with unassigned active,
+    // nothing captures the released hunks. They stay unassigned and
+    // recordless — across refreshes and edits.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("a.txt", &numbered(20, &[]))
+        .commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("one").unwrap();
+    repo.create_changelist("keep").unwrap();
+    repo.switch(Some("one")).unwrap();
+
+    fixture.write("a.txt", &numbered(20, &[(10, "ten!")]));
+    repo.refresh().unwrap();
+
+    repo.switch(None).unwrap();
+    repo.delete_changelist("one").unwrap();
+
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(owners(&snapshot, "a.txt"), vec![None]);
+    assert!(snapshot.advisories.is_empty(), "nothing was decided");
+    assert_eq!(
+        state_json(&fixture)["records"].as_array().unwrap().len(),
+        0,
+        "the released hunk is recordless"
+    );
+
     fixture.write("a.txt", &numbered(20, &[(10, "ten!!"), (11, "eleven!")]));
     let snapshot = repo.refresh().unwrap();
     assert_eq!(owners(&snapshot, "a.txt"), vec![None]);

@@ -42,8 +42,8 @@ commit, rebase):
   `git stash` → `git stash pop` therefore round-trips membership cleanly.
 - gitchange-initiated commits remove their own records explicitly (the
   tool knows those hunks were committed).
-- Dormant records are pruned when their changelist is deleted or after
-  14 days.
+- All of a deleted changelist's records are pruned, live and dormant
+  (ADR 0016); dormant records also prune after 14 days.
 
 ## Considered options
 

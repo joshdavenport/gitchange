@@ -167,7 +167,9 @@ fn stage_all_stages_only_the_changelists_unstaged_hunks() {
     repo.switch(Some("one")).unwrap();
 
     // Both edits land in the active changelist; b.txt's hunk is then
-    // moved out to unassigned so stage_all must leave it behind.
+    // released to unassigned so stage_all must leave it behind. The
+    // release happens under capture-off (ADR 0016): with 'one' still
+    // active, stage_all's own refresh would recapture it.
     let mut worktree_a = head.clone();
     worktree_a[4] = "five-edited".into();
     fixture.write("a.txt", &text(&worktree_a));
@@ -182,6 +184,7 @@ fn stage_all_stages_only_the_changelists_unstaged_hunks() {
         .unwrap()
         .hunks
         .clone();
+    repo.switch(None).unwrap();
     repo.assign_hunks("b.txt", &b_hunks, None).unwrap();
 
     let outcome = repo.stage_all(Some("one")).unwrap();

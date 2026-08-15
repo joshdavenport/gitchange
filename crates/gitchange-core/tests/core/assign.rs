@@ -1,7 +1,8 @@
 //! Explicit membership assignment (tickets #32/#41): `Repo::assign_hunks`
-//! re-anchors records under the locked state cycle; membership is asserted
-//! through the public `Repo::refresh()` on real temp repos (ADR 0008),
-//! never record internals.
+//! re-anchors records under the locked state cycle; an unassigned target
+//! releases — deletes records, writes nothing (ADR 0016). Membership is
+//! asserted through the public `Repo::refresh()` on real temp repos
+//! (ADR 0008); the state file is read only to prove recordlessness.
 
 use crate::support::RepoFixture;
 use gitchange_core::{Advisory, Error, Repo, Snapshot};
@@ -102,23 +103,99 @@ fn assigning_every_hunk_empties_the_source_changelist() {
     assert!(after.files_in(Some("fixes")).is_empty());
 }
 
+/// The persisted records' owners, in file order — read straight off the
+/// state file (ADR 0002's `cat`-debuggable shape).
+fn stored_owners(fixture: &RepoFixture) -> Vec<serde_json::Value> {
+    let raw = std::fs::read_to_string(fixture.path().join(".git/gitchange/state.json")).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    json["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|record| record["changelist"].clone())
+        .collect()
+}
+
 #[test]
-fn an_explicit_assign_to_unassigned_is_sticky_across_edits() {
+fn an_explicit_assign_to_unassigned_releases_to_the_active_changelist() {
+    // ADR 0016: assigning to unassigned deletes the record and writes
+    // nothing back. The hunk is then recordless, and the next refresh
+    // runs the uniform rule on it: 'fixes' is active, so it captures —
+    // loudly, like any auto-capture.
+    let (_fixture, repo, snapshot) = two_hunk_fixture();
+    let hunk = snapshot.files[0].hunks[1].clone();
+
+    let outcome = repo.assign_hunks("a.txt", &[hunk], None).unwrap();
+    assert_eq!(
+        outcome.echo.as_deref(),
+        Some("released 1 hunk — a.txt"),
+        "the echo states a release, not an assignment"
+    );
+
+    let after = repo.refresh().unwrap();
+    assert_eq!(
+        owners(&after, "a.txt"),
+        vec![Some("fixes".into()), Some("fixes".into())]
+    );
+    assert_eq!(
+        after.advisories,
+        vec![Advisory::AutoCaptured {
+            path: "a.txt".into(),
+            new_start: 22,
+            changelist: "fixes".into(),
+        }],
+        "the released hunk's re-capture is visible, never silent"
+    );
+}
+
+#[test]
+fn with_unassigned_active_a_release_stays_unassigned_across_edits() {
+    // The supported way to keep hunks loose (ADR 0016): capture off
+    // first. The release deletes the record; with unassigned active,
+    // nothing re-claims the recordless hunk — not even an edit.
     let (fixture, repo, snapshot) = two_hunk_fixture();
     let hunk = snapshot.files[0].hunks[1].clone();
 
+    repo.switch(None).unwrap();
     repo.assign_hunks("a.txt", &[hunk], None).unwrap();
+
     let after = repo.refresh().unwrap();
     assert_eq!(owners(&after, "a.txt"), vec![Some("fixes".into()), None]);
+    assert_eq!(
+        stored_owners(&fixture),
+        vec![serde_json::json!("fixes")],
+        "the released hunk is recordless: only the other hunk's record remains"
+    );
 
-    // Editing the unassigned hunk keeps the claim — it is not captured
-    // back by the active changelist (delete-orphan semantics).
     fixture.write(
         "a.txt",
         &numbered(30, &[(5, "five!"), (25, "twentyfive, edited!")]),
     );
     let edited = repo.refresh().unwrap();
     assert_eq!(owners(&edited, "a.txt"), vec![Some("fixes".into()), None]);
+}
+
+#[test]
+fn releasing_recordless_hunks_is_a_true_no_op() {
+    // Assigning already-recordless hunks to unassigned deletes nothing
+    // and writes nothing — a changelist-less repo must not even grow a
+    // state file from it (ADR 0016).
+    let fixture = RepoFixture::new();
+    fixture
+        .write("a.txt", &numbered(30, &[]))
+        .commit_all("init")
+        .write("a.txt", &numbered(30, &[(5, "five!")]));
+    let repo = repo(&fixture);
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(owners(&snapshot, "a.txt"), vec![None]);
+
+    let hunk = snapshot.files[0].hunks[0].clone();
+    let outcome = repo.assign_hunks("a.txt", &[hunk], None).unwrap();
+    assert_eq!(outcome.echo.as_deref(), Some("released 1 hunk — a.txt"));
+    assert!(
+        !fixture.path().join(".git/gitchange/state.json").exists(),
+        "a no-op release writes no state file"
+    );
 }
 
 #[test]

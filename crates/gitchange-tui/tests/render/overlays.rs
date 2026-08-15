@@ -82,13 +82,31 @@ fn text_inputs_frame_their_label_on_the_border() {
 }
 
 #[test]
-fn the_delete_confirmation_names_the_unassigned_aftermath() {
+fn the_delete_confirmation_names_the_active_changelist_as_destination() {
+    // ADR 0016: deletion releases the hunks to the uniform flow, so the
+    // copy names where the next refresh will actually put them — the
+    // active changelist while capture is on.
     let mut app = App::new("repo");
     app.apply_snapshot(snapshot());
-    app.on_key(key(KeyCode::Char('j'))); // select 'fixes'
+    app.on_key(key(KeyCode::Char('j')));
+    app.on_key(key(KeyCode::Char('j'))); // select 'chores'; 'fixes' stays active
     app.on_key(key(KeyCode::Char('d')));
     let text = render(&app);
     assert!(text.contains("Delete changelist"));
+    assert!(text.contains("Delete 'chores'?"));
+    assert!(text.contains("Its hunks are captured into 'fixes'."));
+}
+
+#[test]
+fn deleting_the_active_changelist_confirms_the_unassigned_aftermath() {
+    // Deleting the active changelist leaves unassigned active
+    // (ADR 0015), so nothing captures the released hunks: the copy says
+    // unassigned, not a survivor's name.
+    let mut app = App::new("repo");
+    app.apply_snapshot(snapshot());
+    app.on_key(key(KeyCode::Char('j'))); // select 'fixes', the active one
+    app.on_key(key(KeyCode::Char('d')));
+    let text = render(&app);
     assert!(text.contains("Delete 'fixes'?"));
     assert!(text.contains("Its hunks become unassigned."));
 }

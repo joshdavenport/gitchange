@@ -51,9 +51,13 @@ narrowing either one fails a test naming that diff (issue #68).
 - New hunk overlapping records from **two or more** changelists → the
   **active changelist + a notification** (IntelliJ's rule; presentation is
   part of the error/notification presentation work, not decided here).
-- No changelists exist (so no active target) → **unassigned**. Unassigned
-  therefore holds: the pre-changelist dirty tree, orphans of deleted
-  changelists, and explicit moves.
+- No overlapping record and no active changelist (none exists, or
+  unassigned is active — capture-off, ADR 0015) → **unassigned**,
+  recordless: no record is written (ADR 0016). Unassigned therefore
+  holds: the pre-changelist dirty tree and, while unassigned is active,
+  whatever capture routes there. Orphans of deleted changelists and
+  explicit releases land there only in that capture-off case; otherwise
+  they flow to the active changelist like any recordless hunk.
 
 ## Considered options
 

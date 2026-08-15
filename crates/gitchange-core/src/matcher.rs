@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use crate::diff::ChangeKind;
 use crate::state::{MembershipRecord, RecordIdentity};
 use crate::universe::{ChangedFile, Hunk, HunkIdentity, ranges_overlap};
-use crate::vocabulary::{ARROW, UNASSIGNED, count_noun};
+use crate::vocabulary::{ARROW, count_noun};
 
 /// Dormant records prune after 14 days (ADR 0002).
 const DORMANT_TTL_SECS: u64 = 14 * 24 * 60 * 60;
@@ -55,10 +55,10 @@ pub enum Advisory {
     },
     /// Dormant records revived by exact anchor match this refresh
     /// (ADR 0002) — "restored 3 hunks to api-refactor". One advisory per
-    /// (path, changelist); `None` is unassigned.
+    /// (path, changelist).
     DormantRevival {
         path: String,
-        changelist: Option<String>,
+        changelist: String,
         hunks: usize,
     },
     /// An external HEAD move stranded this path's record coordinates
@@ -110,12 +110,8 @@ impl Advisory {
                 changelist,
                 hunks,
             } => {
-                let destination = match changelist {
-                    Some(name) => format!("'{name}'"),
-                    None => UNASSIGNED.into(),
-                };
                 format!(
-                    "restored {} to {destination} — {path}",
+                    "restored {} to '{changelist}' — {path}",
                     count_noun(*hunks, "hunk")
                 )
             }
@@ -257,15 +253,16 @@ fn match_file(
     let mut fresh: Vec<Option<MembershipRecord>> = vec![None; file.hunks.len()];
     // Per-hunk decision, spelled out rather than hidden behind an alias
     // because both levels of `None` carry meaning: the outer says no tier
-    // has claimed this hunk yet, the inner says a tier claimed it for
-    // unassigned. Only the outer is a real absence.
+    // has decided this hunk yet, the inner says a tier decided it stays
+    // unassigned — recordless (ADR 0016), under capture-off. Only the
+    // outer is a real absence.
     let mut owners: Vec<Option<Option<String>>> = vec![None; file.hunks.len()];
 
     // Tier 1: exact content-anchor match — live records first, then
     // dormant (revival). Position-independent: catches moved hunks.
     // Revivals are automatic membership decisions (ADR 0007): counted
     // per reviving changelist and advised below.
-    let mut revived: BTreeMap<Option<String>, usize> = BTreeMap::new();
+    let mut revived: BTreeMap<String, usize> = BTreeMap::new();
     for pass_dormant in [false, true] {
         for (i, hunk) in file.hunks.iter().enumerate() {
             if owners[i].is_some() {
@@ -279,7 +276,7 @@ fn match_file(
             if let Some((j, record)) = matched {
                 let owner = record.changelist.clone();
                 consumed[j] = true;
-                owners[i] = Some(owner.clone());
+                owners[i] = Some(Some(owner.clone()));
                 if pass_dormant {
                     *revived.entry(owner.clone()).or_default() += 1;
                 }
@@ -313,7 +310,7 @@ fn match_file(
             guarded_capture = true;
             let owner = active.map(String::from);
             owners[i] = Some(owner.clone());
-            if let Some(name) = &owner {
+            if let Some(name) = owner {
                 // A capture is a capture (ADR 0007): guarded ones get the
                 // same advisory as routine ones, on top of the per-path
                 // dormancy advisory when the guard cost something.
@@ -322,7 +319,7 @@ fn match_file(
                     new_start: hunk.new_start,
                     changelist: name.clone(),
                 });
-                fresh[i] = Some(record_for(&file.path, hunk, &anchors[i], owner));
+                fresh[i] = Some(record_for(&file.path, hunk, &anchors[i], name));
             }
             continue;
         }
@@ -342,7 +339,7 @@ fn match_file(
 
         let candidates: BTreeSet<&str> = overlapping
             .iter()
-            .filter_map(|&j| stored[j].changelist.as_deref())
+            .map(|&j| stored[j].changelist.as_str())
             .collect();
 
         let owner = if overlapping.is_empty() {
@@ -373,16 +370,19 @@ fn match_file(
             });
             active.map(String::from)
         } else {
-            // One changelist (possibly alongside unassigned claims), or
-            // only unassigned claims: inherit. Editing your own hunk
+            // Exactly one changelist: inherit. Editing your own hunk
             // never sheds membership; splits inherit the parent's owner
             // because each fragment overlaps the parent record.
             candidates.iter().next().map(|&name| name.into())
         };
 
         owners[i] = Some(owner.clone());
-        if !overlapping.is_empty() || owner.is_some() {
-            fresh[i] = Some(record_for(&file.path, hunk, &anchors[i], owner));
+        // A record exactly when a changelist owns the hunk (ADR 0016):
+        // a decision for unassigned — capture-off, or an ambiguous
+        // overlap resolved there — writes nothing, and the superseded
+        // claims above are simply dropped.
+        if let Some(name) = owner {
+            fresh[i] = Some(record_for(&file.path, hunk, &anchors[i], name));
         }
     }
 
@@ -400,7 +400,7 @@ fn match_file(
             .iter()
             .enumerate()
             .filter(|(j, record)| !consumed[*j] && !superseded[*j] && !record.is_dormant())
-            .filter_map(|(_, record)| record.changelist.as_ref())
+            .map(|(_, record)| &record.changelist)
             .collect();
         if !newly_dormant.is_empty() {
             out.advisories.push(Advisory::HeadMoveDormancy {
@@ -423,7 +423,7 @@ pub(crate) fn record_for(
     path: &str,
     hunk: &Hunk,
     anchor: &[String],
-    owner: Option<String>,
+    owner: String,
 ) -> MembershipRecord {
     let (_, oid_anchor) = hunk.record_anchors();
     MembershipRecord {

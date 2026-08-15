@@ -28,12 +28,14 @@ unassigned active.
 _Avoid_: current, selected, default
 
 **Unassigned**:
-The pseudo-changelist holding hunks no changelist owns: the dirty tree
-before any changelist exists, orphans of deleted changelists, and hunks
-assigned to it by hand. Rendered as a warning state. A switch target like
-any changelist — while it is the **active changelist**, capture flows
-here and claims nothing, so the hunks stay recordless. `unassigned` is a
-reserved name — user changelists cannot take it.
+The pseudo-changelist holding every hunk with no membership record —
+that absence is the one membership test (ADR 0016). Holds the dirty
+tree before any changelist exists and, while it is the **active
+changelist** (capture off), whatever capture routes there; with a
+changelist active, hunks released to unassigned are recaptured on the
+next refresh. Rendered as a warning state. A switch target like any
+changelist. `unassigned` is a reserved name — user changelists cannot
+take it.
 _Avoid_: unmanaged, inbox, unsorted
 
 **All**:
@@ -58,11 +60,12 @@ _Avoid_: binary hunk, file-level membership (as a general mode)
 
 **Assign**:
 Placing hunks under a changelist's ownership by hand — the manual
-counterpart to the active changelist's automatic capture. The target is any
-changelist or `unassigned`; there is no separate un-assign operation, since
-unassigned is a target like any other. Scope escalates in three steps: the
-selected hunk, a file's unassigned hunks, all of a file's hunks including
-those owned by other changelists.
+counterpart to the active changelist's automatic capture. The target is
+any changelist or `unassigned`; as a target, `unassigned` means release
+(ADR 0016): the hunks' records are deleted, and unless capture is off
+the next refresh captures them into the active changelist. Scope
+escalates in three steps: the selected hunk, a file's unassigned hunks,
+all of a file's hunks including those owned by other changelists.
 _Avoid_: move, add (git's `add` is staging), sort, tag
 
 **Membership record**:

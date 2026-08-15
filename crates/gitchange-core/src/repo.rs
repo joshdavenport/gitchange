@@ -107,7 +107,7 @@ impl Repo {
         let mut state = state_file::load(&dir)?;
         // A hand-edited file may name changelists that don't exist;
         // give such records delete semantics before matching.
-        state.orphan_records_of_unknown_changelists();
+        state.prune_records_of_unknown_changelists();
         let affected = self.affected_paths(&state, head.as_deref())?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -135,9 +135,9 @@ impl Repo {
             current.records = outcome.records;
             current.baseline_head = head;
             // A delete that landed since our read must keep its
-            // orphaning: matched owners re-validate against the
+            // pruning: matched owners re-validate against the
             // reloaded roster before they persist.
-            current.orphan_records_of_unknown_changelists();
+            current.prune_records_of_unknown_changelists();
             state_file::save(&dir, &current)?;
         }
         Ok((
@@ -335,7 +335,7 @@ impl Repo {
         if state != State::default() {
             commit::apply_aftermath(&mut state, &plan.paths, &residual);
             state.baseline_head = Some(committed.oid.clone());
-            state.orphan_records_of_unknown_changelists();
+            state.prune_records_of_unknown_changelists();
             state_file::save(&dir, &state)?;
         }
         Ok(CommitOutcome::Committed {
@@ -449,14 +449,16 @@ impl Repo {
         Ok((moved, advisories))
     }
 
-    /// Assign snapshot hunks of `path` to `target` (`None` =
-    /// unassigned): an explicit membership op, one locked
-    /// load-mutate-save cycle (ADR 0002). Validates at apply like
-    /// staging (ADR 0005): each hunk is content-matched against the live
-    /// tree; a vanished hunk fails soft with a `Advisory::StaleHunk` while
-    /// the rest are still assigned. The caller's follow-up refresh
-    /// re-derives membership from the written records. The echo counts
-    /// what was assigned (`None` when nothing was).
+    /// Assign snapshot hunks of `path` to `target`: an explicit
+    /// membership op, one locked load-mutate-save cycle (ADR 0002).
+    /// `target: None` releases to unassigned — records are deleted,
+    /// nothing is written back (ADR 0016), and the echo states the
+    /// release. Validates at apply like staging (ADR 0005): each hunk is
+    /// content-matched against the live tree; a vanished hunk fails soft
+    /// with an `Advisory::StaleHunk` while the rest are still assigned.
+    /// The caller's follow-up refresh re-derives membership from the
+    /// written records. The echo counts what was acted on (`None` when
+    /// nothing was).
     pub fn assign_hunks(
         &self,
         path: &str,
@@ -472,12 +474,12 @@ impl Repo {
                 None => advisories.push(stale_advisory(path, hunk)),
             }
         }
-        let echo = (!fresh.is_empty()).then(|| {
-            format!(
-                "assigned {} — {path} {ARROW} '{}'",
-                count_noun(fresh.len(), "hunk"),
-                target.unwrap_or(UNASSIGNED)
-            )
+        let echo = (!fresh.is_empty()).then(|| match target {
+            Some(name) => format!(
+                "assigned {} — {path} {ARROW} '{name}'",
+                count_noun(fresh.len(), "hunk")
+            ),
+            None => format!("released {} — {path}", count_noun(fresh.len(), "hunk")),
         });
         if !fresh.is_empty() {
             self.update_state(|state| state.assign_records(path, &fresh, target))?;
@@ -497,8 +499,8 @@ impl Repo {
         self.update_state(|state| state.rename(from, to))
     }
 
-    /// Delete a changelist. Deleting the active one leaves unassigned
-    /// active.
+    /// Delete a changelist, pruning all of its records (ADR 0016).
+    /// Deleting the active one leaves unassigned active.
     pub fn delete_changelist(&self, name: &str) -> Result<(), Error> {
         self.update_state(|state| state.delete(name))
     }
@@ -513,16 +515,22 @@ impl Repo {
     }
 
     /// One locked load-mutate-save cycle (ADR 0002): fail-fast lock,
-    /// atomic replace, nothing persisted when the mutation errors.
+    /// atomic replace, nothing persisted when the mutation errors — or
+    /// when it changes nothing, so a no-op (releasing already-recordless
+    /// hunks, ADR 0016) never grows or rewrites the state file.
     fn update_state(
         &self,
         mutate: impl FnOnce(&mut State) -> Result<(), Error>,
     ) -> Result<(), Error> {
         let dir = self.backend.state_dir();
         let _lock = state_file::lock(&dir)?;
-        let mut state = state_file::load(&dir)?;
-        mutate(&mut state)?;
-        state_file::save(&dir, &state)
+        let state = state_file::load(&dir)?;
+        let mut mutated = state.clone();
+        mutate(&mut mutated)?;
+        if mutated == state {
+            return Ok(());
+        }
+        state_file::save(&dir, &mutated)
     }
 }
 
