@@ -229,8 +229,20 @@ fn run_op(repo: &Repo, app: &mut App, op: Op) {
             SWITCH_CHANGELIST_FAILED,
             repo.switch(changelist.as_deref()),
         ),
-        Op::StageFile { path } => echoed(app, STAGE_FAILED, repo.stage_file(&path)),
-        Op::UnstageFile { path } => echoed(app, UNSTAGE_FAILED, repo.unstage_file(&path)),
+        Op::StageOwnedHunks { path, changelist } => {
+            op_outcome(
+                app,
+                STAGE_FAILED,
+                repo.stage_owned_hunks(&path, changelist.as_deref()),
+            );
+        }
+        Op::UnstageOwnedHunks { path, changelist } => {
+            op_outcome(
+                app,
+                UNSTAGE_FAILED,
+                repo.unstage_owned_hunks(&path, changelist.as_deref()),
+            );
+        }
         Op::StageHunk { path, hunk } => {
             op_outcome(app, STAGE_FAILED, repo.stage_hunk(&path, &hunk));
         }
@@ -275,14 +287,6 @@ fn run_op(repo: &Repo, app: &mut App, op: Op) {
             };
             op_outcome(app, "Assign failed", repo.assign_hunks(&path, &hunks, name));
         }
-    }
-}
-
-/// A non-fail-soft op's result: core's echo at `·`, or the modal.
-fn echoed(app: &mut App, title: &str, result: Result<String, gitchange_core::Error>) {
-    match result {
-        Ok(echo) => app.push_log(Severity::Info, echo),
-        Err(error) => app.show_error(title, error.to_string()),
     }
 }
 

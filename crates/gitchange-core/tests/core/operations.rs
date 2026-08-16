@@ -116,16 +116,16 @@ fn assert_guard_holds(fixture: &RepoFixture, expected: GitOperation) {
         "hunk staging is never operation-guarded"
     );
 
-    // Whole-file staging is the other unguarded op: a further edit, then
-    // the index catches up to the whole worktree file.
+    // The Files-row scope is the other unguarded op: a further edit,
+    // then the index catches up to the row's hunks.
     fixture.write(BYSTANDER, "bystander edited\nand again\n");
     repo.refresh().unwrap();
-    repo.stage_file(BYSTANDER).unwrap();
+    repo.stage_owned_hunks(BYSTANDER, None).unwrap();
 
     assert_eq!(
         fixture.index_content(BYSTANDER).as_deref(),
         Some("bystander edited\nand again\n"),
-        "file staging is never operation-guarded"
+        "row staging is never operation-guarded"
     );
 }
 

@@ -149,8 +149,9 @@ fn a_successful_op_echoes_cores_line_to_the_log_at_info() {
     run_op(
         &repo,
         &mut app,
-        Op::StageFile {
+        Op::StageOwnedHunks {
             path: "a.txt".into(),
+            changelist: None,
         },
     );
 
@@ -158,13 +159,13 @@ fn a_successful_op_echoes_cores_line_to_the_log_at_info() {
     // channel it lands on (ADR 0006/0007). Pinned as the whole string
     // rather than a substring, because that is the claim: a frontend
     // that composed its own wording mentioning the path would pass a
-    // looser assertion. Core rewording `stage_file`'s echo is a one-line
-    // update here, and should be.
+    // looser assertion. Core rewording `stage_owned_hunks`'s echo is a
+    // one-line update here, and should be.
     assert_eq!(
         app.log,
         vec![LogEntry {
             severity: Severity::Info,
-            text: "staged file — a.txt".into(),
+            text: "staged 1 hunk — a.txt in 'unassigned'".into(),
         }]
     );
     assert!(app.error_modal.is_none());

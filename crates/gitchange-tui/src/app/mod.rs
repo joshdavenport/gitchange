@@ -160,13 +160,20 @@ pub enum Op {
         hunks: Vec<Hunk>,
         target: AssignTarget,
     },
-    /// `space` on a Files row: whole-file staging, `git add` semantics.
-    StageFile {
+    /// `space` on a Files row: index := worktree over the hunks the
+    /// row's group owns in the file (issue #97). A row is a (changelist,
+    /// file) cell, so the same path under two changelists is two targets
+    /// and neither sweeps the other's hunks into the index.
+    StageOwnedHunks {
         path: String,
+        /// The row's group; `None` is unassigned.
+        changelist: Option<String>,
     },
-    /// `space` on a `●` Files row: `git reset -- <path>` semantics.
-    UnstageFile {
+    /// `space` on a Files row whose owned hunks are all `●`: index :=
+    /// HEAD over that same set.
+    UnstageOwnedHunks {
         path: String,
+        changelist: Option<String>,
     },
     /// `space` on a `○`/`◑` hunk: index := worktree for its region.
     StageHunk {
@@ -598,7 +605,7 @@ impl App {
 
     /// `space`'s decide-by-current-state toggle (ticket #33): in hunk
     /// mode the selected hunk (`○`/`◑` → stage, `●` → unstage), in the
-    /// Files panel the whole file (`●` → unstage, else stage), in the
+    /// Files panel the selected row's owned hunks (issue #97), in the
     /// Changelists panel every hunk of the scoped row (issue #90). Core
     /// exposes stage and unstage separately; the toggle lives here.
     fn stage_toggle(&mut self) -> Option<Action> {
@@ -619,19 +626,37 @@ impl App {
         if self.focus != Panel::Files {
             return None;
         }
-        let file = self.selected_file()?;
-        let path = file.path.clone();
+        self.stage_toggle_file_row()
+    }
+
+    /// `space` on a Files row (issue #97): the same toggle over the hunks
+    /// the row's group owns in the file, and only those — a row is a
+    /// (changelist, file) cell, so a path under two changelists gives two
+    /// targets. The direction reads that owned set exactly as
+    /// [`App::stage_toggle_changelist`] reads a changelist's: any `○`/`◑`
+    /// stages, only an all-`●` set unstages, and an empty set takes the
+    /// stage direction so core answers instead of going quiet.
+    fn stage_toggle_file_row(&mut self) -> Option<Action> {
+        let entry = self.file_sel.clone()?;
         // `space` on quarantined content politely refuses (ADR 0007) —
         // three index stages are a workflow gitchange doesn't serve.
-        if file.kind == ChangeKind::Conflicted {
-            self.push_log(Severity::Info, gitchange_core::conflicted_hint(&path));
+        if self.selected_file()?.kind == ChangeKind::Conflicted {
+            let hint = gitchange_core::conflicted_hint(&entry.path);
+            self.push_log(Severity::Info, hint);
             return None;
         }
-        let op = match file.stage() {
-            FileStage::Staged => Op::UnstageFile { path },
-            FileStage::Unstaged | FileStage::PartiallyStaged => Op::StageFile { path },
-        };
-        Some(Action::Op(op))
+        // Past the refusal every group has an owner: Conflicts is the
+        // only ownerless one, and its rows never get here.
+        let owner = entry.group.owner()?;
+        let file = self.selected_file()?;
+        let all_staged = row_is_fully_staged(file.owned_hunks(owner));
+        let path = file.path.clone();
+        let changelist = owner.map(str::to_owned);
+        Some(Action::Op(if all_staged {
+            Op::UnstageOwnedHunks { path, changelist }
+        } else {
+            Op::StageOwnedHunks { path, changelist }
+        }))
     }
 
     /// `space` on a Changelists row (issue #90): the same toggle at
@@ -646,14 +671,12 @@ impl App {
         // the Stage capability disabled it before dispatch got here.
         let owner = scope.owner()?;
         let snapshot = self.snapshot.as_ref()?;
-        let mut owned = snapshot
+        let owned = snapshot
             .files
             .iter()
             .flat_map(|file| &file.hunks)
-            .filter(|hunk| view::owns(hunk, owner))
-            .peekable();
-        let all_staged =
-            owned.peek().is_some() && owned.all(|hunk| hunk.stage == HunkStage::Staged);
+            .filter(|hunk| hunk.owned_by(owner));
+        let all_staged = row_is_fully_staged(owned);
         let changelist = owner.map(str::to_owned);
         Some(Action::Op(if all_staged {
             Op::UnstageChangelist { changelist }
@@ -661,4 +684,13 @@ impl App {
             Op::StageChangelist { changelist }
         }))
     }
+}
+
+/// Which way `space` toggles a bulk selection (ADR 0003): only a fully
+/// `●` set unstages, so anything else — including a set that owns nothing
+/// — takes the stage direction and lets core answer. Read through core's
+/// own `●◐○` derivation, so the direction can never disagree with the
+/// glyph the row drew.
+fn row_is_fully_staged<'a>(hunks: impl IntoIterator<Item = &'a Hunk>) -> bool {
+    gitchange_core::file_stage(hunks) == FileStage::Staged
 }

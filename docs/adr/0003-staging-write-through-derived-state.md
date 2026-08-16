@@ -35,22 +35,38 @@ counts toward `◐`.
 
 ## What `space` acts on
 
-*Amended (issue #90): the changelist scope.*
+*Amended (issue #97): the file scope. Amended (issue #90): the changelist
+scope.*
 
 `space` is one decide-by-current-state toggle at three scopes, each set by
-the focused panel: the selected hunk, the selected file (whole-file
-`git add`/`git reset` semantics), and every hunk of the selected
-changelist — `unassigned` included, `all` refused as a view over many
-changelists rather than one of them. Anything `○` or `◑` stages, and only
-a fully `●` selection unstages.
+the focused panel: the selected hunk, the selected file row's hunks under
+the row's changelist (issue #97), and every hunk of the selected
+changelist (issue #90) — `unassigned` included, `all` refused as a view
+over many changelists rather than one of them. Anything `○` or `◑` stages,
+and only a fully `●` selection unstages.
 
-The changelist scope is a bulk application of the per-hunk semantic, not a
-second staging mechanic: it is hunk-granular, so a file split between two
-changelists keeps the other's hunks out of the index, and each hunk
-fails soft on its own (ADR 0005's validate-at-apply) while the rest
-proceed. It moves no membership records — staging never does — and it
-answers even when it moves nothing, so a changelist with no hunks to stage
-says so instead of going quiet (ADR 0007).
+Every scope above the hunk is a bulk application of the per-hunk semantic,
+never a second staging mechanic: hunk-granular, so a file split between
+two changelists keeps the other's hunks out of the index whichever panel
+the key lands in, and each hunk fails soft on its own (ADR 0005's
+validate-at-apply) while the rest proceed. It moves no membership records
+— staging never does — and it answers even when it moves nothing, so a
+target with nothing to stage says so instead of going quiet (ADR 0007).
+
+A Files row is a (changelist, file) cell, not a bare path: the same path
+under two changelists is two rows, two selections, and two `space`
+targets, and each row's staging glyph and counts derive from the hunks its
+changelist owns. For a file wholly owned by one changelist — the common
+case — the row's toggle and whole-file staging coincide, with one
+exception: a change carrying no hunks at all (a mode-only change, an empty
+untracked file) has an empty row scope, so `space` moves nothing and says
+so. Such a change is outside every changelist's commit payload whether the
+index holds it or not, so nothing gitchange could act on is lost.
+gitchange has no whole-file stage op of its own: `git add <path>` is that
+op, stays valid under write-through, and is absorbed at the next refresh
+like any external staging (below). A binary file presents one whole-file
+hunk (ADR 0009), so its row's toggle is that hunk's whole-file index
+write.
 
 ## External staging is absorbed, never an error
 

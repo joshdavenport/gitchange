@@ -301,9 +301,10 @@ fn generate(sandbox: &mut Sandbox, spec: &CaseSpec) -> Result<()> {
         }
     }
 
+    // Whole-file staging is raw `git add` (ADR 0003) — the fixture wants
+    // the index loaded, not a changelist-scoped op.
     for f in 0..spec.staged_files {
-        repo.stage_file(&module_path(f))
-            .map_err(|err| anyhow::anyhow!("stage {}: {err}", module_path(f)))?;
+        sandbox.git(&["add", &module_path(f)])?;
     }
     Ok(())
 }
@@ -342,10 +343,7 @@ fn generate_huge(sandbox: &mut Sandbox, root: &Path, spec: &CaseSpec) -> Result<
         // Stage the first rewrite, then rewrite again: HEAD, index, and
         // worktree all differ, so BOTH diffs carry the huge content at
         // once — the full both-diffs-load-in-full memory shape.
-        sandbox
-            .repo()?
-            .stage_file("data/generated.rs")
-            .map_err(|err| anyhow::anyhow!("stage huge file: {err}"))?;
+        sandbox.git(&["add", "data/generated.rs"])?;
         bytes += write_huge(&path, spec.huge_lines, 2)?;
     }
     Ok(bytes)

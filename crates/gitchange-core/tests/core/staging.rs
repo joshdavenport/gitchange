@@ -1,7 +1,8 @@
-//! Write-through staging ops (ticket 26, ADR 0003): stage/unstage hunk
-//! and file perform a real apply on the live index — asserted through
-//! public `Repo` ops against real index content per ADR 0008. Stale
-//! hunks fail soft with a notice datum (ADR 0005's validate-at-apply).
+//! Write-through staging ops (ticket 26, ADR 0003): stage/unstage of a
+//! hunk and of a Files row's owned hunks perform a real apply on the
+//! live index — asserted through public `Repo` ops against real index
+//! content per ADR 0008. Stale hunks fail soft with a notice datum
+//! (ADR 0005's validate-at-apply).
 
 use crate::support::RepoFixture;
 use gitchange_core::{Advisory, Error, FileStage, Hunk, HunkStage, Repo, Snapshot};
@@ -285,13 +286,19 @@ fn unstaging_an_unstaged_hunk_is_a_no_op() {
 }
 
 #[test]
-fn stage_file_stages_every_hunk() {
+fn stage_owned_hunks_stages_every_hunk_of_a_single_owner_file() {
+    // The common case: one changelist owns the whole file, so the row's
+    // scope and the whole file coincide (issue #97).
     let fixture = two_hunk_fixture();
     let repo = Repo::discover(fixture.path()).unwrap();
     repo.refresh().unwrap();
 
-    repo.stage_file("a.txt").unwrap();
+    let echo = repo.stage_owned_hunks("a.txt", None).unwrap().echo;
 
+    assert_eq!(
+        echo.as_deref(),
+        Some("staged 2 hunks — a.txt in 'unassigned'")
+    );
     assert_eq!(
         fixture.index_content("a.txt").as_deref(),
         Some(numbered(&[(2, "edit near top"), (18, "edit near bottom")]).as_str())
@@ -303,14 +310,18 @@ fn stage_file_stages_every_hunk() {
 }
 
 #[test]
-fn unstage_file_resets_every_hunk() {
+fn unstage_owned_hunks_resets_every_hunk_of_a_single_owner_file() {
     let fixture = two_hunk_fixture();
     fixture.stage("a.txt");
     let repo = Repo::discover(fixture.path()).unwrap();
     repo.refresh().unwrap();
 
-    repo.unstage_file("a.txt").unwrap();
+    let echo = repo.unstage_owned_hunks("a.txt", None).unwrap().echo;
 
+    assert_eq!(
+        echo.as_deref(),
+        Some("unstaged 2 hunks — a.txt in 'unassigned'")
+    );
     assert_eq!(
         fixture.index_content("a.txt").as_deref(),
         Some(numbered(&[]).as_str())
@@ -319,8 +330,82 @@ fn unstage_file_resets_every_hunk() {
     assert_eq!(snapshot.files[0].stage(), FileStage::Unstaged);
 }
 
+/// A file split between two changelists: the row op stages one side and
+/// leaves the other out of the index — the whole point of issue #97.
 #[test]
-fn stage_file_stages_an_untracked_file() {
+fn stage_owned_hunks_leaves_another_changelists_hunks_out_of_the_index() {
+    let fixture = two_hunk_fixture();
+    let repo = Repo::discover(fixture.path()).unwrap();
+    repo.create_changelist("fixes").unwrap();
+    let snapshot = repo.refresh().unwrap();
+    let first = snapshot.files[0].hunks[0].clone();
+    repo.assign_hunks("a.txt", &[first], Some("fixes")).unwrap();
+
+    let echo = repo.stage_owned_hunks("a.txt", Some("fixes")).unwrap().echo;
+
+    assert_eq!(echo.as_deref(), Some("staged 1 hunk — a.txt in 'fixes'"));
+    assert_eq!(
+        fixture.index_content("a.txt").as_deref(),
+        Some(numbered(&[(2, "edit near top")]).as_str()),
+        "only the hunk 'fixes' owns reached the index"
+    );
+}
+
+/// The other row over the same path is a distinct target, and staging it
+/// adds to — never replaces — what the first row put in the index.
+#[test]
+fn the_unassigned_row_of_a_split_file_stages_only_the_unowned_hunk() {
+    let fixture = two_hunk_fixture();
+    let repo = Repo::discover(fixture.path()).unwrap();
+    repo.create_changelist("fixes").unwrap();
+    let snapshot = repo.refresh().unwrap();
+    let first = snapshot.files[0].hunks[0].clone();
+    repo.assign_hunks("a.txt", &[first], Some("fixes")).unwrap();
+
+    let echo = repo.stage_owned_hunks("a.txt", None).unwrap().echo;
+
+    assert_eq!(
+        echo.as_deref(),
+        Some("staged 1 hunk — a.txt in 'unassigned'")
+    );
+    assert_eq!(
+        fixture.index_content("a.txt").as_deref(),
+        Some(numbered(&[(18, "edit near bottom")]).as_str())
+    );
+}
+
+/// A row that owns nothing to move still answers (ADR 0007) — and names
+/// the file it stayed inside.
+#[test]
+fn stage_owned_hunks_answers_when_it_moves_nothing() {
+    let fixture = two_hunk_fixture();
+    fixture.stage("a.txt");
+    let repo = Repo::discover(fixture.path()).unwrap();
+    repo.refresh().unwrap();
+
+    let echo = repo.stage_owned_hunks("a.txt", None).unwrap().echo;
+
+    assert_eq!(
+        echo.as_deref(),
+        Some("nothing to stage — a.txt in 'unassigned'")
+    );
+}
+
+#[test]
+fn stage_owned_hunks_names_an_unknown_changelist_as_an_error() {
+    let fixture = two_hunk_fixture();
+    let repo = Repo::discover(fixture.path()).unwrap();
+
+    let result = repo.stage_owned_hunks("a.txt", Some("ghost"));
+
+    assert!(
+        matches!(result, Err(Error::UnknownChangelist { ref name }) if name == "ghost"),
+        "unknown changelist is a hard error: {result:?}"
+    );
+}
+
+#[test]
+fn stage_owned_hunks_stages_an_untracked_file() {
     let fixture = RepoFixture::new();
     fixture
         .write("a.txt", "one\n")
@@ -328,7 +413,7 @@ fn stage_file_stages_an_untracked_file() {
         .write("new.txt", "alpha\nbeta\n");
     let repo = Repo::discover(fixture.path()).unwrap();
 
-    repo.stage_file("new.txt").unwrap();
+    repo.stage_owned_hunks("new.txt", None).unwrap();
 
     assert_eq!(
         fixture.index_content("new.txt").as_deref(),
@@ -381,13 +466,13 @@ fn unstage_hunk_removes_a_staged_new_file_from_the_index() {
 }
 
 #[test]
-fn stage_file_stages_a_deletion() {
+fn stage_owned_hunks_stages_a_deletion() {
     let fixture = RepoFixture::new();
     fixture.write("doomed.txt", "gone\n").commit_all("init");
     std::fs::remove_file(fixture.path().join("doomed.txt")).unwrap();
     let repo = Repo::discover(fixture.path()).unwrap();
 
-    repo.stage_file("doomed.txt").unwrap();
+    repo.stage_owned_hunks("doomed.txt", None).unwrap();
 
     assert_eq!(fixture.index_content("doomed.txt"), None);
     let snapshot = repo.refresh().unwrap();
@@ -395,14 +480,14 @@ fn stage_file_stages_a_deletion() {
 }
 
 #[test]
-fn unstage_file_restores_a_staged_deletion() {
+fn unstage_owned_hunks_restores_a_staged_deletion() {
     let fixture = RepoFixture::new();
     fixture.write("doomed.txt", "gone\n").commit_all("init");
+    fixture.stage_removal("doomed.txt");
     std::fs::remove_file(fixture.path().join("doomed.txt")).unwrap();
     let repo = Repo::discover(fixture.path()).unwrap();
-    repo.stage_file("doomed.txt").unwrap();
 
-    repo.unstage_file("doomed.txt").unwrap();
+    repo.unstage_owned_hunks("doomed.txt", None).unwrap();
 
     assert_eq!(
         fixture.index_content("doomed.txt").as_deref(),
@@ -520,6 +605,32 @@ fn staging_a_binary_whole_file_hunk_is_a_whole_file_index_write() {
     let snapshot = repo.refresh().unwrap();
     let hunk = snapshot.files[0].hunks[0].clone();
     repo.unstage_hunk("blob.bin", &hunk).unwrap();
+    assert_eq!(fixture.index_bytes("blob.bin").unwrap(), vec![0u8, 1, 2, 3]);
+}
+
+/// A binary's Files row holds its one whole-file hunk (ADR 0009), so the
+/// row op reduces to that same whole-file index write — unchanged by
+/// issue #97, and pinned here rather than left to composition.
+#[test]
+fn a_binary_row_toggle_is_the_whole_file_index_write() {
+    let fixture = RepoFixture::new();
+    fixture
+        .write_bytes("blob.bin", &[0u8, 1, 2, 3])
+        .commit_all("init")
+        .write_bytes("blob.bin", &[0u8, 9, 9]);
+    let repo = Repo::discover(fixture.path()).unwrap();
+
+    let echo = repo.stage_owned_hunks("blob.bin", None).unwrap().echo;
+
+    assert_eq!(
+        echo.as_deref(),
+        Some("staged 1 hunk — blob.bin in 'unassigned'")
+    );
+    assert_eq!(fixture.index_bytes("blob.bin").unwrap(), vec![0u8, 9, 9]);
+    assert_eq!(repo.refresh().unwrap().files[0].stage(), FileStage::Staged);
+
+    repo.unstage_owned_hunks("blob.bin", None).unwrap();
+
     assert_eq!(fixture.index_bytes("blob.bin").unwrap(), vec![0u8, 1, 2, 3]);
 }
 

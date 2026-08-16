@@ -56,8 +56,12 @@ pub(crate) fn snapshot() -> Snapshot {
                 kind: ChangeKind::Modified,
                 binary: false,
                 binary_sides: None,
+                // Split across two changelists, and partial within
+                // 'fixes' — so a Files row under 'fixes' is ◐ 1/2 while
+                // the whole file is 1/3 (issue #97).
                 hunks: vec![
                     hunk(14, Some("fixes"), HunkStage::Staged),
+                    hunk(41, Some("fixes"), HunkStage::Unstaged),
                     hunk(63, Some("chores"), HunkStage::Unstaged),
                 ],
             },

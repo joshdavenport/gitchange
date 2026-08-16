@@ -76,7 +76,7 @@ fn a_merge_in_progress_is_reported_and_guards_commit() {
     // Staging is never operation-guarded: the clean file still stages.
     fixture.write("b.txt", "b edited\n");
     repo.refresh().unwrap();
-    repo.stage_file("b.txt").unwrap();
+    repo.stage_owned_hunks("b.txt", None).unwrap();
     assert_eq!(
         fixture.index_content("b.txt").as_deref(),
         Some("b edited\n")

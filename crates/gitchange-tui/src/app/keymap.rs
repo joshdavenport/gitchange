@@ -256,7 +256,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         id: BindingId::StageToggle,
         keys: &[Key::Char(' ')],
         capability: Capability::Stage,
-        help: HelpLabel::Plain("toggle stage changelist/file/hunk"),
+        help: HelpLabel::Plain("toggle stage changelist/file row/hunk"),
     },
     Binding {
         id: BindingId::Commit,
