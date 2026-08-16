@@ -237,23 +237,6 @@ impl Repo {
         )))
     }
 
-    /// Stage a whole file, `git add` semantics: index := worktree,
-    /// including untracked files and deletions. Unconditional — whatever
-    /// the worktree holds now is what an external `git add` would stage.
-    /// Returns the transparency echo (ADR 0007); not fail-soft, so no
-    /// [`OpOutcome`] — failure is the error.
-    pub fn stage_file(&self, path: &str) -> Result<String, Error> {
-        self.backend.stage_path(path)?;
-        Ok(format!("staged file — {path}"))
-    }
-
-    /// Unstage a whole file, `git reset -- <path>` semantics: index
-    /// entry := HEAD's. Echo contract as [`Repo::stage_file`].
-    pub fn unstage_file(&self, path: &str) -> Result<String, Error> {
-        self.backend.unstage_path(path)?;
-        Ok(format!("unstaged file — {path}"))
-    }
-
     /// The payload committing `changelist` (`None` = unassigned) would
     /// carry right now, behind a synchronous refresh — what the confirm
     /// flow shows and what [`Repo::commit`] later compares against for
@@ -352,7 +335,7 @@ impl Repo {
     /// stale-hunk advisories alongside.
     pub fn align(&self, changelist: Option<&str>) -> Result<OpOutcome, Error> {
         let (_, advisories) = self.bulk_apply(
-            changelist,
+            BulkScope::changelist(changelist),
             |stage| stage == HunkStage::StagedStale,
             Self::stage_hunk,
         )?;
@@ -373,14 +356,15 @@ impl Repo {
     /// [`Repo::stage_hunk`]; the echo counts what was staged (`None`
     /// when nothing was), with any stale-hunk advisories alongside.
     pub fn stage_all(&self, changelist: Option<&str>) -> Result<OpOutcome, Error> {
+        let scope = BulkScope::changelist(changelist);
         let (staged, advisories) = self.bulk_apply(
-            changelist,
+            scope,
             |stage| stage == HunkStage::Unstaged,
             Self::stage_hunk,
         )?;
         // Silent when nothing staged: the offer's caller is mid-flow
         // towards a dialog, and has no use for a nothing-to-do line.
-        let echo = (staged > 0).then(|| bulk_echo("stage", staged, changelist));
+        let echo = (staged > 0).then(|| bulk_echo("stage", staged, scope));
         Ok(OpOutcome { echo, advisories })
     }
 
@@ -392,15 +376,7 @@ impl Repo {
     /// [`Repo::stage_hunk`]; the echo counts what was staged, and says
     /// so when that is nothing.
     pub fn stage_changelist(&self, changelist: Option<&str>) -> Result<OpOutcome, Error> {
-        let (staged, advisories) = self.bulk_apply(
-            changelist,
-            |stage| matches!(stage, HunkStage::Unstaged | HunkStage::StagedStale),
-            Self::stage_hunk,
-        )?;
-        Ok(OpOutcome {
-            echo: Some(bulk_echo("stage", staged, changelist)),
-            advisories,
-        })
+        self.stage_scope(BulkScope::changelist(changelist))
     }
 
     /// The unstage direction of `space` on a changelist: set index :=
@@ -408,36 +384,87 @@ impl Repo {
     /// [`Repo::stage_changelist`], with the same fail-soft, echo and
     /// membership contracts.
     pub fn unstage_changelist(&self, changelist: Option<&str>) -> Result<OpOutcome, Error> {
+        self.unstage_scope(BulkScope::changelist(changelist))
+    }
+
+    /// The stage direction of `space` on a Files row (issue #97): the
+    /// changelist scope narrowed to one file — set index := worktree for
+    /// each hunk of `path` that `changelist` owns and the index does not
+    /// already hold. Hunks of the same file owned elsewhere stay out of
+    /// the index, so a row can never stage another changelist's work.
+    /// gitchange has no whole-file stage of its own; `git add <path>` is
+    /// that op and refresh absorbs it (ADR 0003).
+    pub fn stage_owned_hunks(
+        &self,
+        path: &str,
+        changelist: Option<&str>,
+    ) -> Result<OpOutcome, Error> {
+        self.stage_scope(BulkScope::file(path, changelist))
+    }
+
+    /// The unstage direction of `space` on a Files row: set index :=
+    /// HEAD for each staged hunk of `path` that `changelist` owns — the
+    /// mirror of [`Repo::stage_owned_hunks`].
+    pub fn unstage_owned_hunks(
+        &self,
+        path: &str,
+        changelist: Option<&str>,
+    ) -> Result<OpOutcome, Error> {
+        self.unstage_scope(BulkScope::file(path, changelist))
+    }
+
+    /// `space`'s stage direction over any bulk scope: `○` unstaged and
+    /// `◑` staged-stale alike, the same pair per-hunk `space` stages
+    /// (ADR 0003). Wider than [`Repo::stage_all`], which serves the
+    /// commit flow's offer. Fail-soft per hunk like [`Repo::stage_hunk`];
+    /// the echo counts what was staged, and says so when that is nothing.
+    fn stage_scope(&self, scope: BulkScope<'_>) -> Result<OpOutcome, Error> {
+        let (staged, advisories) = self.bulk_apply(
+            scope,
+            |stage| matches!(stage, HunkStage::Unstaged | HunkStage::StagedStale),
+            Self::stage_hunk,
+        )?;
+        Ok(OpOutcome {
+            echo: Some(bulk_echo("stage", staged, scope)),
+            advisories,
+        })
+    }
+
+    /// `space`'s unstage direction over any bulk scope: the mirror of
+    /// [`Repo::stage_scope`], over its staged hunks.
+    fn unstage_scope(&self, scope: BulkScope<'_>) -> Result<OpOutcome, Error> {
         let (unstaged, advisories) = self.bulk_apply(
-            changelist,
+            scope,
             |stage| stage == HunkStage::Staged,
             Self::unstage_hunk,
         )?;
         Ok(OpOutcome {
-            echo: Some(bulk_echo("unstage", unstaged, changelist)),
+            echo: Some(bulk_echo("unstage", unstaged, scope)),
             advisories,
         })
     }
 
     /// The body every bulk staging op shares: over one snapshot, run
-    /// `apply` on each of `changelist`'s hunks whose staging state
-    /// `include` accepts — hunks another changelist owns are never
-    /// touched, and conflicted files carry none at all (ADR 0007).
-    /// Returns how many hunks moved, plus the advisories of those that
-    /// failed soft.
+    /// `apply` on each hunk in `scope` whose staging state `include`
+    /// accepts — hunks another changelist owns are never touched, and
+    /// conflicted files carry none at all (ADR 0007). Returns how many
+    /// hunks moved, plus the advisories of those that failed soft.
     fn bulk_apply(
         &self,
-        changelist: Option<&str>,
+        scope: BulkScope<'_>,
         include: impl Fn(HunkStage) -> bool,
         apply: impl Fn(&Self, &str, &Hunk) -> Result<OpOutcome, Error>,
     ) -> Result<(usize, Vec<Advisory>), Error> {
         let snapshot = self.refresh()?;
-        validate_changelist(&snapshot, changelist)?;
+        validate_changelist(&snapshot, scope.changelist)?;
         let mut moved = 0;
         let mut advisories = Vec::new();
         for file in &snapshot.files {
-            for hunk in &file.hunks {
-                if hunk.changelist.as_deref() == changelist && include(hunk.stage) {
+            if scope.path.is_some_and(|path| path != file.path) {
+                continue;
+            }
+            for hunk in file.owned_hunks(scope.changelist) {
+                if include(hunk.stage) {
                     let outcome = apply(self, &file.path, hunk)?;
                     if outcome.advisories.is_empty() {
                         moved += 1;
@@ -538,11 +565,50 @@ impl Repo {
 /// always answers (ADR 0007): a count when hunks moved, the quiet
 /// nothing-to-do line when none did. `verb` is the plain form —
 /// `stage`/`unstage`, whose past tense is the same word plus `d`.
-fn bulk_echo(verb: &str, moved: usize, changelist: Option<&str>) -> String {
-    let name = changelist.unwrap_or(UNASSIGNED);
+fn bulk_echo(verb: &str, moved: usize, scope: BulkScope<'_>) -> String {
+    let target = scope.target();
     match moved {
-        0 => format!("nothing to {verb} — '{name}'"),
-        moved => format!("{verb}d {} — '{name}'", count_noun(moved, "hunk")),
+        0 => format!("nothing to {verb} — {target}"),
+        moved => format!("{verb}d {} — {target}", count_noun(moved, "hunk")),
+    }
+}
+
+/// What a bulk staging op ranges over: one changelist's hunks, optionally
+/// narrowed to a single file. The two scopes `space` has above the hunk
+/// (ADR 0003) differ only in that narrowing, so they share one traversal
+/// and one echo shape.
+#[derive(Debug, Clone, Copy)]
+struct BulkScope<'a> {
+    /// `None` is unassigned, as everywhere.
+    changelist: Option<&'a str>,
+    /// `Some` narrows to a Files row — the (changelist, file) cell.
+    path: Option<&'a str>,
+}
+
+impl<'a> BulkScope<'a> {
+    fn changelist(changelist: Option<&'a str>) -> Self {
+        Self {
+            changelist,
+            path: None,
+        }
+    }
+
+    fn file(path: &'a str, changelist: Option<&'a str>) -> Self {
+        Self {
+            changelist,
+            path: Some(path),
+        }
+    }
+
+    /// The scope as the echo names it: `'feature'`, or `a.txt in
+    /// 'feature'` — a file-scoped echo says which changelist it stayed
+    /// inside, since that is exactly what it did not sweep past.
+    fn target(&self) -> String {
+        let name = self.changelist.unwrap_or(UNASSIGNED);
+        match self.path {
+            None => format!("'{name}'"),
+            Some(path) => format!("{path} in '{name}'"),
+        }
     }
 }
 

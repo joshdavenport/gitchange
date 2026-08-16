@@ -6,7 +6,7 @@ use gitchange_core::{ChangeKind, CommitPayload, Hunk, UNASSIGNED, count_noun};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::selection::step;
-use super::view::{FileEntry, owned_hunks, owns};
+use super::view::{FileEntry, owned_hunks};
 use super::{Action, App, AssignTarget, CommitStep, Op, Panel, Severity};
 
 /// Everything the commit dialog holds:
@@ -608,7 +608,7 @@ impl App {
         };
         let mut sources: Vec<(String, usize)> = Vec::new();
         for hunk in hunks {
-            if owns(hunk, owner.as_deref()) {
+            if hunk.owned_by(owner.as_deref()) {
                 continue;
             }
             let label = match &hunk.changelist {

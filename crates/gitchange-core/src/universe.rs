@@ -41,22 +41,39 @@ impl ChangedFile {
             .count()
     }
 
-    /// Per-file marker per ADR 0003: `●` all staged, `○` all unstaged,
-    /// `◐` any mix — staged-stale counts toward `◐`.
+    /// Per-file marker per ADR 0003 over the whole file — what the
+    /// file-level surfaces (Diff title, CLI file list) show.
     pub fn stage(&self) -> FileStage {
-        let mut all_staged = !self.hunks.is_empty();
-        let mut all_unstaged = true;
-        for hunk in &self.hunks {
-            all_staged &= hunk.stage == HunkStage::Staged;
-            all_unstaged &= hunk.stage == HunkStage::Unstaged;
-        }
-        if all_staged {
-            FileStage::Staged
-        } else if all_unstaged {
-            FileStage::Unstaged
-        } else {
-            FileStage::PartiallyStaged
-        }
+        file_stage(&self.hunks)
+    }
+
+    /// This file's hunks owned by `owner` ([`Hunk::owned_by`]), in file
+    /// order — a Files row's scope (issue #97).
+    pub fn owned_hunks(&self, owner: Option<&str>) -> impl Iterator<Item = &Hunk> {
+        self.hunks.iter().filter(move |hunk| hunk.owned_by(owner))
+    }
+}
+
+/// Per-file marker per ADR 0003 for an arbitrary hunk set: `●` all
+/// staged, `○` all unstaged, `◐` any mix — staged-stale counts toward
+/// `◐`, and an empty set is `○`. Takes a set rather than a file, because
+/// a Files row derives its marker from the hunks its changelist owns
+/// rather than from the whole file (issue #97).
+pub fn file_stage<'a>(hunks: impl IntoIterator<Item = &'a Hunk>) -> FileStage {
+    let mut any = false;
+    let mut all_staged = true;
+    let mut all_unstaged = true;
+    for hunk in hunks {
+        any = true;
+        all_staged &= hunk.stage == HunkStage::Staged;
+        all_unstaged &= hunk.stage == HunkStage::Unstaged;
+    }
+    if any && all_staged {
+        FileStage::Staged
+    } else if all_unstaged {
+        FileStage::Unstaged
+    } else {
+        FileStage::PartiallyStaged
     }
 }
 
@@ -133,6 +150,14 @@ pub struct Hunk {
 }
 
 impl Hunk {
+    /// Whether `owner` holds this hunk; `None` is unassigned. The one
+    /// ownership test — a Files row's marker and its `space` scope, the
+    /// diff's foreign tagging and the assign payloads all read it, so no
+    /// surface can disagree with another about who holds a hunk.
+    pub fn owned_by(&self, owner: Option<&str>) -> bool {
+        self.changelist.as_deref() == owner
+    }
+
     /// The identity projected into the shape [`MembershipRecord`] stores
     /// it: `(anchor, oid_anchor)`. The record is a serde type whose
     /// on-disk layout keeps the two as independent fields (ADR 0002

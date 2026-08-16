@@ -33,7 +33,7 @@ to the fake project.
 | `fresh` | Clean repo with history, no dirty tree, no state file. First-launch experience. |
 | `unassigned-only` | Dirty tree, no changelists. Pre-adoption warning-state view. |
 | `sorted` | Three changelists, hunks distributed, `src/timer.rs` split across two, `fix-timeout-retry` active. |
-| `mid-staging` | `sorted` plus mixed staged states: `●` config.rs, `◐` timer.rs with a staged-stale `◑` hunk, `○` main.rs/report.rs. |
+| `mid-staging` | `sorted` plus mixed staged states: `●` config.rs, `○` main.rs/report.rs, and timer.rs split across two changelists — `●` under `debug-logging`, `◐` under `fix-timeout-retry` (its hunk is staged-stale `◑`). The two timer.rs rows disagree on purpose: a row's marker reads only the hunks its changelist owns. |
 | `conflicted` | Mid-merge: `src/report.rs` quarantined in the conflicts group, commit guarded, one changelist of unrelated dirty work. |
 | `binary` | Changed PNG auto-captured into an `assets-refresh` changelist as one whole-file hunk (`0/1`), next to a text change for contrast. The two revisions differ in size so the ADR 0009 placeholder has an arrow worth eyeballing; `enter` on the PNG is a deliberate no-op. |
 | `large` | 45 generated modules + split timer.rs across two changelists — scroll/refresh/layout under volume. |

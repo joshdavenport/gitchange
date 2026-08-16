@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use gitchange_core::{
-    BinarySides, BlobInfo, ChangedFile, Changelist, CommitInfo, CommitPayload, Head, Hunk,
-    HunkIdentity, HunkLine, OidAnchor, PayloadFile,
+    BinarySides, BlobInfo, ChangedFile, Changelist, CommitInfo, CommitPayload, FileStage, Head,
+    Hunk, HunkIdentity, HunkLine, OidAnchor, PayloadFile,
 };
 
 use super::*;
@@ -145,6 +145,70 @@ fn all_view_groups_files_by_changelist_with_unassigned_last() {
             "src/nav.astro",
         ],
         "a file with hunks in two changelists appears in both groups"
+    );
+}
+
+/// Each row of a split file reports its own group's progress, never the
+/// whole file's (issue #97) — the glyph a row draws is exactly what its
+/// `space` acts on.
+#[test]
+fn a_split_files_rows_each_count_only_their_own_groups_hunks() {
+    let app = app();
+    let counted: Vec<(String, String, FileStage, usize, usize)> = app
+        .files_rows()
+        .into_iter()
+        .filter_map(|row| match row {
+            FilesRow::File {
+                entry,
+                stage,
+                staged,
+                total,
+                ..
+            } => Some((
+                entry.group.label().to_owned(),
+                entry.path,
+                stage,
+                staged,
+                total,
+            )),
+            FilesRow::Header { .. } => None,
+        })
+        .collect();
+
+    // print.css holds ● at 14 and ○ at 41 for 'fixes', ○ at 63 for
+    // 'chores' — 1/3 staged as a whole file, which no row reports.
+    assert_eq!(
+        counted,
+        vec![
+            (
+                "fixes".into(),
+                "src/print.css".into(),
+                FileStage::PartiallyStaged,
+                1,
+                2
+            ),
+            (
+                "chores".into(),
+                "src/print.css".into(),
+                FileStage::Unstaged,
+                0,
+                1
+            ),
+            (
+                "chores".into(),
+                "src/session.ts".into(),
+                FileStage::Unstaged,
+                0,
+                1
+            ),
+            (
+                "unassigned".into(),
+                "src/nav.astro".into(),
+                FileStage::Unstaged,
+                0,
+                1
+            ),
+        ]
     );
 }
 
@@ -532,7 +596,7 @@ fn the_operation_guard_makes_c_a_soft_noop() {
     app.on_key(key(KeyCode::Char('3')));
     assert!(matches!(
         app.on_key(key(KeyCode::Char(' '))),
-        Some(Action::Op(Op::StageFile { .. }))
+        Some(Action::Op(Op::StageOwnedHunks { .. }))
     ));
 }
 
@@ -1144,29 +1208,101 @@ fn esc_from_the_escape_hatch_returns_to_the_assign_popup() {
 // ── space staging (ticket #33) ──────────────────────────────────
 
 #[test]
-fn space_in_files_toggles_whole_file_by_its_marker() {
+fn space_in_files_toggles_the_rows_owned_hunks_by_its_marker() {
     let mut app = app();
-    app.on_key(key(KeyCode::Char('3'))); // print.css (◐ partial)
+    // print.css under 'fixes': ● at 14, ○ at 41 — ◐ at row scope.
+    app.on_key(key(KeyCode::Char('3')));
     assert_eq!(
         app.on_key(key(KeyCode::Char(' '))),
-        Some(Action::Op(Op::StageFile {
-            path: "src/print.css".into()
+        Some(Action::Op(Op::StageOwnedHunks {
+            path: "src/print.css".into(),
+            changelist: Some("fixes".into()),
         })),
         "◐ stages the rest"
     );
 
-    // A fully-staged file toggles the other way.
+    // A row whose owned hunks are all ● toggles the other way — even
+    // though 'chores' still holds an ○ hunk in the same file.
     let mut staged = snapshot();
     for hunk in &mut staged.files[1].hunks {
-        hunk.stage = HunkStage::Staged;
+        if hunk.changelist.as_deref() == Some("fixes") {
+            hunk.stage = HunkStage::Staged;
+        }
     }
     app.apply_snapshot(staged);
     assert_eq!(
         app.on_key(key(KeyCode::Char(' '))),
-        Some(Action::Op(Op::UnstageFile {
-            path: "src/print.css".into()
+        Some(Action::Op(Op::UnstageOwnedHunks {
+            path: "src/print.css".into(),
+            changelist: Some("fixes".into()),
         })),
         "● unstages"
+    );
+}
+
+/// The design's own claim, now true of the op too: the same path under
+/// two changelists is two rows, two selections, and two distinct targets
+/// (issue #97).
+#[test]
+fn the_same_path_under_two_changelists_gives_two_space_targets() {
+    let mut app = app();
+    app.on_key(key(KeyCode::Char('3'))); // print.css under 'fixes'
+    let first = app.on_key(key(KeyCode::Char(' ')));
+    app.on_key(key(KeyCode::Char('j'))); // print.css under 'chores'
+    let second = app.on_key(key(KeyCode::Char(' ')));
+
+    assert_eq!(
+        first,
+        Some(Action::Op(Op::StageOwnedHunks {
+            path: "src/print.css".into(),
+            changelist: Some("fixes".into()),
+        }))
+    );
+    assert_eq!(
+        second,
+        Some(Action::Op(Op::StageOwnedHunks {
+            path: "src/print.css".into(),
+            changelist: Some("chores".into()),
+        })),
+        "same path, different row, different target"
+    );
+}
+
+#[test]
+fn space_on_an_unassigned_files_row_targets_the_unowned_hunks() {
+    let mut app = app();
+    app.on_key(key(KeyCode::Char('3')));
+    // print.css/fixes, print.css/chores, session.ts/chores, then
+    // nav.astro under the unassigned group.
+    for _ in 0..3 {
+        app.on_key(key(KeyCode::Char('j')));
+    }
+    assert_eq!(
+        app.on_key(key(KeyCode::Char(' '))),
+        Some(Action::Op(Op::StageOwnedHunks {
+            path: "src/nav.astro".into(),
+            changelist: None,
+        })),
+        "unassigned is core's None changelist"
+    );
+}
+
+/// A drilled scope renders one row per file, and that row still carries
+/// its group — the op must not fall back to the whole file.
+#[test]
+fn space_in_a_drilled_scope_stays_scoped_to_that_changelist() {
+    let mut app = app();
+    app.on_key(key(KeyCode::Char('2')));
+    app.on_key(key(KeyCode::Char('j'))); // 'fixes'
+    assert_eq!(app.scope(), Scope::Changelist("fixes".into()));
+    app.on_key(key(KeyCode::Char('3')));
+
+    assert_eq!(
+        app.on_key(key(KeyCode::Char(' '))),
+        Some(Action::Op(Op::StageOwnedHunks {
+            path: "src/print.css".into(),
+            changelist: Some("fixes".into()),
+        }))
     );
 }
 
@@ -1828,7 +1964,9 @@ fn enter_on_a_binary_is_a_polite_no_op() {
 #[test]
 fn space_on_a_stale_binary_restages_the_file() {
     // `space` reads the derived marker: a `\u{25d1}` binary file is `\u{25d0}` at
-    // file level, so the toggle re-stages (index := worktree).
+    // row scope, so the toggle re-stages (index := worktree). A binary
+    // is one whole-file hunk (ADR 0009), so the row op reduces to the
+    // same whole-file index write core's hunk path already makes.
     let mut app = binary_app(binary_file(
         ChangeKind::Modified,
         Some(blob(10)),
@@ -1837,8 +1975,9 @@ fn space_on_a_stale_binary_restages_the_file() {
     ));
     assert_eq!(
         app.on_key(key(KeyCode::Char(' '))),
-        Some(Action::Op(Op::StageFile {
-            path: "assets/logo.png".into()
+        Some(Action::Op(Op::StageOwnedHunks {
+            path: "assets/logo.png".into(),
+            changelist: None,
         }))
     );
 }
@@ -1903,7 +2042,7 @@ fn the_files_bar_reflects_what_the_scoped_row_affords() {
     assert_eq!(
         bar(&app),
         [
-            "space toggle stage file",
+            "space toggle stage row",
             "enter hunks",
             "a/A/ctrl+a assign group / unassigned / all",
             "n new",
@@ -1920,7 +2059,7 @@ fn the_files_bar_reflects_what_the_scoped_row_affords() {
     assert_eq!(
         bar(&app),
         [
-            "space toggle stage file",
+            "space toggle stage row",
             "enter hunks",
             "a/A/ctrl+a assign group / unassigned / all",
             "c commit",

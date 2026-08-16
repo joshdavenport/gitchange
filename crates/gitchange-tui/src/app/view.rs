@@ -377,7 +377,7 @@ impl App {
         let scope = self.scope();
         let owner = scope.owner();
         for (index, hunk) in file.hunks.iter().enumerate() {
-            let foreign = owner.is_some_and(|owner| !owns(hunk, owner));
+            let foreign = owner.is_some_and(|owner| !hunk.owned_by(owner));
             let selected = self.hunk_sel == Some(index);
             let tag = if owner.is_none() || foreign {
                 let unassigned = hunk.changelist.is_none();
@@ -473,7 +473,7 @@ impl App {
                     (ASSIGN_TRIO, ASSIGN_HUNK),
                 ],
                 Panel::Files => vec![
-                    (&[StageToggle], "toggle stage file"),
+                    (&[StageToggle], "toggle stage row"),
                     (&[DrillIn], "hunks"),
                     (ASSIGN_TRIO, "assign group / unassigned / all"),
                     (&[Commit], "commit"),
@@ -509,34 +509,38 @@ impl App {
     }
 }
 
+/// A Files row is a (changelist, file) cell, so its marker and counts
+/// read only the hunks its group owns (issue #97) — a file split across
+/// changelists shows each row its own progress, and each row's `space`
+/// acts on exactly what its glyph reported. The Conflicts group owns no
+/// hunks and its files carry none either (ADR 0007), so its rows land on
+/// the empty set that the renderer already draws without a marker.
 fn file_row(file: &ChangedFile, group: Group, indent: bool) -> FilesRow {
+    let owned: Vec<&Hunk> = match group.owner() {
+        Some(owner) => file.owned_hunks(owner).collect(),
+        None => Vec::new(),
+    };
     FilesRow::File {
         entry: FileEntry {
             group,
             path: file.path.clone(),
         },
-        stage: file.stage(),
+        stage: gitchange_core::file_stage(owned.iter().copied()),
         kind: file.kind,
-        staged: file.staged_hunks(),
-        total: file.total_hunks(),
+        staged: owned
+            .iter()
+            .filter(|hunk| hunk.stage == HunkStage::Staged)
+            .count(),
+        total: owned.len(),
         indent,
     }
 }
 
-/// Whether `owner` (`None` = unassigned) owns `hunk` — the one ownership
-/// test the diff view-model tags foreign hunks by and the assign payloads
-/// select by, so the popup can never disagree with what the panel drew.
-pub(super) fn owns(hunk: &Hunk, owner: Option<&str>) -> bool {
-    hunk.changelist.as_deref() == owner
-}
-
-/// A file's hunks owned by `owner`, in file order.
+/// A file's hunks owned by `owner`, in file order — core's ownership
+/// test ([`ChangedFile::owned_hunks`]) as the owned copies an assign
+/// payload carries.
 pub(super) fn owned_hunks(file: &ChangedFile, owner: Option<&str>) -> Vec<Hunk> {
-    file.hunks
-        .iter()
-        .filter(|hunk| owns(hunk, owner))
-        .cloned()
-        .collect()
+    file.owned_hunks(owner).cloned().collect()
 }
 
 /// The Diff panel's one-line binary placeholder (ADR 0009):

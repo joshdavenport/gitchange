@@ -56,8 +56,8 @@ fn a_drilled_view_tags_only_foreign_hunks() {
     // print.css's foreign hunk (chores) is tagged; own hunks are not.
     assert!(text.contains("⟨chores ○⟩"));
     assert!(!text.contains("⟨fixes"));
-    // Scoped title counts: 1 own hunk staged of 1, 1 elsewhere.
-    assert!(text.contains("print.css (1/1 staged · 1 hunk elsewhere)"));
+    // Scoped title counts: 1 own hunk staged of 2, 1 elsewhere.
+    assert!(text.contains("print.css (1/2 staged · 1 hunk elsewhere)"));
 }
 
 #[test]
@@ -183,7 +183,7 @@ fn hunk_mode_swaps_the_title_and_keybar() {
     app.on_key(key(KeyCode::Char('3')));
     app.on_key(key(KeyCode::Enter));
     let text = render(&app);
-    assert!(text.contains("print.css — hunk 1 of 2"));
+    assert!(text.contains("print.css — hunk 1 of 3"));
     // The bar advertises exactly the bindings the keymap has (ADR 0013).
     assert!(text.contains("a/A/ctrl+a"));
     assert!(text.contains("assign hunk / unassigned / all"));
@@ -229,7 +229,7 @@ fn the_keybar_shows_staging_and_commit_hints() {
     app.apply_snapshot(snapshot());
     app.on_key(key(KeyCode::Char('3')));
     let text = render(&app);
-    assert!(text.contains("space toggle stage file"), "{text}");
+    assert!(text.contains("space toggle stage row"), "{text}");
     // 'all' is scoped: commit isn't afforded, so the bar doesn't lie
     // about it (ADR 0014).
     assert!(!text.contains("c commit"), "{text}");
@@ -238,6 +238,6 @@ fn the_keybar_shows_staging_and_commit_hints() {
     app.on_key(key(KeyCode::Char('j'))); // drill into 'fixes'
     app.on_key(key(KeyCode::Enter));
     let text = render(&app);
-    assert!(text.contains("space toggle stage file"), "{text}");
+    assert!(text.contains("space toggle stage row"), "{text}");
     assert!(text.contains("c commit"));
 }

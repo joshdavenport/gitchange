@@ -64,8 +64,8 @@ fn the_assign_popup_lists_changelists_and_the_escape_hatch() {
     let text = render(&app);
     assert!(text.contains("Assign to changelist"));
     // The payload states itself before it lands: the row is print.css
-    // under 'fixes', which owns one of its two hunks.
-    assert!(text.contains("1 hunk in src/print.css"));
+    // under 'fixes', which owns two of its three hunks.
+    assert!(text.contains("2 hunks in src/print.css"));
     assert!(text.contains("fixes (active)"));
     assert!(text.contains("+ create new changelist…"));
     assert!(text.contains("enter assign · esc cancel"));

@@ -24,7 +24,7 @@ pub use matcher::Advisory;
 pub use repo::{OpOutcome, Repo};
 pub use snapshot::{CommitInfo, FileGroup, GitOperation, GroupKind, Head, Snapshot};
 pub use state::{Changelist, MembershipRecord, OidAnchor, RESERVED_NAMES};
-pub use universe::{ChangedFile, FileStage, Hunk, HunkIdentity, HunkStage};
+pub use universe::{ChangedFile, FileStage, Hunk, HunkIdentity, HunkStage, file_stage};
 pub use vocabulary::{
     ACTIVE_MARKER, ALL, ARROW, CONFLICTS, PARTIALLY_STAGED, RESOLVE_OUTSIDE_GITCHANGE, SEPARATOR,
     STAGED, STAGED_STALE, UNASSIGNED, UNSTAGED, conflicted_hint, count_noun, target_named,

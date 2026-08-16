@@ -314,15 +314,19 @@ fn sorted(sandbox: &mut Sandbox) -> Result<()> {
     build_sorted_state(sandbox)
 }
 
-/// `sorted` plus mixed staged states: ● config.rs, ◐ timer.rs (region B
-/// staged, region A staged-stale ◑), ○ main.rs and report.rs.
+/// `sorted` plus mixed staged states: ● config.rs, ○ main.rs and
+/// report.rs, and a timer.rs split across two changelists — region B
+/// staged under 'debug-logging' (● there), region A staged-stale ◑ under
+/// 'fix-timeout-retry' (◐ there). Rows are ownership-scoped (issue #97),
+/// so the two timer.rs rows deliberately disagree.
 fn mid_staging(sandbox: &mut Sandbox) -> Result<()> {
     build_sorted_state(sandbox)?;
     let repo = sandbox.repo()?;
     let snapshot = refresh(&repo)?;
-    // ● fully staged file.
-    repo.stage_file("src/config.rs")
-        .map_err(|err| anyhow::anyhow!("stage config.rs: {err}"))?;
+    // ● fully staged file. Whole-file staging is raw `git add` (ADR 0003)
+    // — gitchange has no op of its own for it, and refresh absorbs this
+    // exactly as it would a user's.
+    sandbox.git(&["add", "src/config.rs"])?;
     // ◐ partially staged file: stage region B, leave region A unstaged.
     stage_hunk(&repo, &snapshot, "src/timer.rs", 1)?;
     // ◑ staged-stale: stage region A, then edit the same region again.

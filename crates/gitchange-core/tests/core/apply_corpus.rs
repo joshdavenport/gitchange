@@ -84,8 +84,11 @@ enum Op {
         path: &'static str,
         hunk: usize,
     },
-    StageFile(&'static str),
-    UnstageFile(&'static str),
+    /// `space` on the Files row for `path` under the case's changelist
+    /// (its first, the one `run` switches to): the hunks that changelist
+    /// owns in the file, and no others (issue #97).
+    StageRow(&'static str),
+    UnstageRow(&'static str),
     /// Commit the changelist (`None` = unassigned) per ADR 0004.
     Commit(Option<&'static str>),
 }
@@ -143,13 +146,15 @@ fn run(case: Case) {
                 .unwrap()
                 .advisories
         }
-        Op::StageFile(path) => {
-            repo.stage_file(path).unwrap();
-            Vec::new()
+        Op::StageRow(path) => {
+            repo.stage_owned_hunks(path, case.changelists.first().copied())
+                .unwrap()
+                .advisories
         }
-        Op::UnstageFile(path) => {
-            repo.unstage_file(path).unwrap();
-            Vec::new()
+        Op::UnstageRow(path) => {
+            repo.unstage_owned_hunks(path, case.changelists.first().copied())
+                .unwrap()
+                .advisories
         }
         Op::Commit(changelist) => {
             let outcome = repo
@@ -543,12 +548,12 @@ line 9\nline 10\nline 11\nline 14\nline 15\nline 16\n"
 
     // ——— file creation / deletion ———
 
-    stage_file_creates_an_index_entry_for_an_untracked_file:
+    stage_row_creates_an_index_entry_for_an_untracked_file:
         Case {
             base: vec![("keep.txt", b"keep\n".to_vec())],
             worktree_writes: vec![("new.txt", b"alpha\nbeta\n".to_vec())],
             index: vec![("new.txt", Some(b"alpha\nbeta\n".to_vec()))],
-            ..Case::new(Op::StageFile("new.txt"))
+            ..Case::new(Op::StageRow("new.txt"))
         };
 
     stage_hunk_of_an_untracked_file_stages_it_whole:
@@ -567,12 +572,12 @@ line 9\nline 10\nline 11\nline 14\nline 15\nline 16\n"
             ..Case::new(Op::UnstageHunk { path: "new.txt", hunk: 0 })
         };
 
-    stage_file_of_a_deletion_removes_the_entry:
+    stage_row_of_a_deletion_removes_the_entry:
         Case {
             base: vec![("doomed.txt", b"gone\n".to_vec())],
             worktree_removals: vec!["doomed.txt"],
             index: vec![("doomed.txt", None)],
-            ..Case::new(Op::StageFile("doomed.txt"))
+            ..Case::new(Op::StageRow("doomed.txt"))
         };
 
     stage_hunk_of_a_deletion_stages_it_whole:
@@ -583,23 +588,28 @@ line 9\nline 10\nline 11\nline 14\nline 15\nline 16\n"
             ..Case::new(Op::StageHunk { path: "doomed.txt", hunk: 0 })
         };
 
-    unstage_file_restores_a_staged_deletion:
+    unstage_row_restores_a_staged_deletion:
         Case {
             base: vec![("doomed.txt", b"gone\n".to_vec())],
             stage_removals: vec!["doomed.txt"],
             worktree_removals: vec!["doomed.txt"],
             index: vec![("doomed.txt", Some(b"gone\n".to_vec()))],
-            ..Case::new(Op::UnstageFile("doomed.txt"))
+            ..Case::new(Op::UnstageRow("doomed.txt"))
         };
 
     // ——— empty-file edges ———
 
-    stage_file_of_an_empty_untracked_file:
+    // An empty untracked file presents no hunks at all, so the row's
+    // scope is empty and nothing reaches the index (issue #97). Nothing
+    // is lost that gitchange could have used: a hunkless file is outside
+    // every changelist's commit payload whether staged or not. `git add`
+    // is the whole-file op for it (ADR 0003).
+    stage_row_of_an_empty_untracked_file_writes_nothing:
         Case {
             base: vec![("keep.txt", b"keep\n".to_vec())],
             worktree_writes: vec![("empty.txt", Vec::new())],
-            index: vec![("empty.txt", Some(Vec::new()))],
-            ..Case::new(Op::StageFile("empty.txt"))
+            index: vec![("empty.txt", None)],
+            ..Case::new(Op::StageRow("empty.txt"))
         };
 
     stage_hunk_truncating_a_file_to_empty:
@@ -628,35 +638,38 @@ line 9\nline 10\nline 11\nline 14\nline 15\nline 16\n"
 
     // ——— mode changes (unix: filemode is off on Windows) ———
 
+    // A mode-only change carries no hunks either — same empty row scope,
+    // same `git add` escape hatch as the empty file above. The index
+    // keeps the mode it already had, in both directions.
     #[cfg(unix)]
-    stage_file_stages_a_mode_change:
+    stage_row_of_a_mode_only_change_leaves_the_index_mode:
         Case {
             base: vec![("tool.sh", b"#!/bin/sh\n".to_vec())],
             worktree_exec: vec!["tool.sh"],
             index: vec![("tool.sh", Some(b"#!/bin/sh\n".to_vec()))],
-            index_modes: vec![("tool.sh", 0o100755)],
-            ..Case::new(Op::StageFile("tool.sh"))
+            index_modes: vec![("tool.sh", 0o100644)],
+            ..Case::new(Op::StageRow("tool.sh"))
         };
 
     #[cfg(unix)]
-    unstage_file_restores_the_head_mode:
+    unstage_row_of_a_staged_mode_change_leaves_the_index_mode:
         Case {
             base: vec![("tool.sh", b"#!/bin/sh\n".to_vec())],
             stage_exec: vec!["tool.sh"],
             index: vec![("tool.sh", Some(b"#!/bin/sh\n".to_vec()))],
-            index_modes: vec![("tool.sh", 0o100644)],
-            ..Case::new(Op::UnstageFile("tool.sh"))
+            index_modes: vec![("tool.sh", 0o100755)],
+            ..Case::new(Op::UnstageRow("tool.sh"))
         };
 
     #[cfg(unix)]
-    stage_file_stages_mode_and_content_together:
+    stage_row_stages_mode_and_content_together:
         Case {
             base: vec![("tool.sh", b"#!/bin/sh\n".to_vec())],
             worktree_writes: vec![("tool.sh", b"#!/bin/sh\nset -e\n".to_vec())],
             worktree_exec: vec!["tool.sh"],
             index: vec![("tool.sh", Some(b"#!/bin/sh\nset -e\n".to_vec()))],
             index_modes: vec![("tool.sh", 0o100755)],
-            ..Case::new(Op::StageFile("tool.sh"))
+            ..Case::new(Op::StageRow("tool.sh"))
         };
 
     // ——— non-UTF-8 text (the #25 heads-up: hunk strings are lossily
