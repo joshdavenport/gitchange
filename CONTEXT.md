@@ -79,6 +79,15 @@ membership record — the identity evidence hunks are matched against on
 refresh. The width is fixed, not incidental: see ADR 0001.
 _Avoid_: hunk hash, fingerprint
 
+**Hunk ID**:
+The snapshot-scoped address frontends use to name one hunk — a hash of
+the file path plus content anchor, printed with an `h` prefix so it reads
+as neither a commit nor a blob OID. An address, not identity: identity
+stays with membership records and matching (ADR 0001), so an ID from an
+aged snapshot fails loud as not-found. Identical hunks in a file share a
+base ID, told apart by an ordinal suffix (`/0`, `/1`).
+_Avoid_: hunk hash (that names the anchor mistake), hunk ref, durable ID
+
 **Drift**:
 Divergence between stored membership records and the fresh diff, caused by
 working-tree edits. Resolved at refresh by matching, never tracked live.
