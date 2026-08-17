@@ -14,7 +14,12 @@ One item per session. Do not batch.
 
 ## 1. Pick the item
 
-Read the issue and its comments: `gh issue view 51 --comments`.
+Read the issue and its comments: `gh issue view 51`.
+
+Don't read the issue comments (i.e. `gh issue view 51 --comments`) unless it is
+clear they are needed (information seems missing or the body describes
+comments/discussion that needs referencing). There are long comments on the
+issue so loading all by default will bloat the session immediately.
 
 Take the first item, in this order of precedence:
 
