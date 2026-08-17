@@ -293,6 +293,16 @@ criterion; also the certification suite any future `GitBackend` adapter
 must pass.
 _Avoid_: edge-case tests, apply tests (alone)
 
+**Sandbox**:
+A named, persistent fake repo under `.sandbox/<scenario>/` holding one
+state worth eyeballing in the TUI, reached only through core's real ops. A
+development artifact, never asserted against: the *scenario* — the code
+that builds it — is the definition, and the repo on disk is only its
+latest output, so a rebuild is the way back to a known state. Distinct
+from a **fixture** (`RepoFixture`), the throwaway repo a test builds for
+itself.
+_Avoid_: fixture, playground, demo repo
+
 **Tripwire**:
 An error mapping whose firing is the evidence a held decision waits on —
 the report, not the recovery, is the variant's point. Sole instance

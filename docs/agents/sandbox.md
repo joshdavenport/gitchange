@@ -37,6 +37,7 @@ to the fake project.
 | `conflicted` | Mid-merge: `src/report.rs` quarantined in the conflicts group, commit guarded, one changelist of unrelated dirty work. |
 | `binary` | Changed PNG auto-captured into an `assets-refresh` changelist as one whole-file hunk (`0/1`), next to a text change for contrast. The two revisions differ in size so the ADR 0009 placeholder has an arrow worth eyeballing; `enter` on the PNG is a deliberate no-op. |
 | `zero-hunk` | The three ADR 0017 shapes side by side: a chmod +x on `scripts/release.sh`, an empty `NOTES` added (staged, so `● 1/1`), an empty `PLACEHOLDER` deleted. Each is one whole-file hunk (`0/1`, not the old inert `0/0`) with its own diff placeholder; the mode row shows on unix only. |
+| `crossing` | Twelve files across four changelists plus unassigned, one row per crossing shape: `src/daemon.rs` split three ways with a different staged marker on each of its rows, `src/summary.rs` split four ways, `src/format.rs` two ways interleaved, `src/storage.rs` and `src/session.rs` straddling a changelist and unassigned, `src/history.rs` and `src/labels.rs` not crossing at all, `src/timer.rs` `◑` under one owner and `●` under the other, and an `assets/logo.png` whole-file hunk that cannot cross. Unassigned is active on purpose: capture must stay off or the launch refresh would sweep every unassigned hunk into a changelist. |
 | `large` | 45 generated modules + split timer.rs across two changelists — scroll/refresh/layout under volume. |
 
 ## Semantics

@@ -46,6 +46,10 @@ pub fn all() -> Vec<Scenario> {
             build: zero_hunk,
         },
         Scenario {
+            name: "crossing",
+            build: crossing,
+        },
+        Scenario {
             name: "large",
             build: large,
         },
@@ -428,6 +432,170 @@ fn png_bytes(seed: u8, len: usize) -> Vec<u8> {
         bytes.push((i as u8).wrapping_mul(seed));
     }
     bytes
+}
+
+// --- crossing ----------------------------------------------------------
+
+const SESSION: Option<&str> = Some("session-rework");
+const OUTPUT: Option<&str> = Some("output-format");
+const PERF: Option<&str> = Some("perf-tuning");
+const DOCS: Option<&str> = Some("docs-pass");
+
+/// Display order of the crossing scenario's changelists.
+const CROSSING_CHANGELISTS: &[&str] = &[
+    "session-rework",
+    "output-format",
+    "perf-tuning",
+    "docs-pass",
+];
+
+/// Which changelist owns each hunk of each generated module, hunk 0
+/// first: one entry per hunk, so the row also fixes how many hunks the
+/// module has. `None` leaves the hunk unassigned — with capture off it
+/// stays there, which is how one file straddles a changelist and the
+/// unassigned group. Between them the rows cover every crossing shape:
+/// none, two-way contiguous, two-way interleaved, three-way, four-way,
+/// changelist-plus-unassigned, and unassigned-only.
+const CROSSING_FILES: &[(&str, &[Option<&str>])] = &[
+    // Three-way, in contiguous blocks.
+    ("daemon", &[SESSION, SESSION, OUTPUT, OUTPUT, PERF, PERF]),
+    // Two-way, interleaved — ownership is not contiguity.
+    ("format", &[OUTPUT, DOCS, OUTPUT, DOCS]),
+    // Four-way: one file, one row per changelist.
+    ("summary", &[SESSION, OUTPUT, PERF, DOCS]),
+    // Non-contiguous, with an unassigned hunk in the middle.
+    ("session", &[DOCS, DOCS, None, DOCS, SESSION]),
+    // Does not cross: several hunks, one owner.
+    ("history", &[PERF, PERF, PERF, PERF]),
+    // A changelist and unassigned in the same file.
+    ("storage", &[PERF, None, PERF]),
+    // Does not cross: unassigned only.
+    ("labels", &[None, None, None]),
+];
+
+/// Files whose hunks cross changelist boundaries every way they can,
+/// next to files that don't cross at all — the shape the Files panel's
+/// (changelist, file) rows and their ownership-scoped markers
+/// (issue #97) are read against.
+///
+/// Ends with **unassigned active**, so capture is off (ADR 0015). That
+/// is load-bearing, not incidental: with a changelist active, the TUI's
+/// launch refresh would sweep every deliberately unassigned hunk into it
+/// and the changelist-plus-unassigned crossings would be gone before
+/// anyone saw them.
+fn crossing(sandbox: &mut Sandbox) -> Result<()> {
+    baseline(sandbox)?;
+    for (stem, owners) in CROSSING_FILES {
+        sandbox.write(
+            &crossing_path(stem),
+            &crossing_module(stem, owners.len(), 31),
+        )?;
+    }
+    sandbox.write_bytes("assets/logo.png", &png_bytes(0x11, 9_216))?;
+    sandbox.commit_all("Add pipeline modules and logo asset")?;
+
+    // Every module's factor lines move, so each yields exactly one hunk
+    // per step — the fan-out the table distributes.
+    for (stem, owners) in CROSSING_FILES {
+        sandbox.write(
+            &crossing_path(stem),
+            &crossing_module(stem, owners.len(), 37),
+        )?;
+    }
+    sandbox.write_bytes("assets/logo.png", &png_bytes(0x2e, 11_540))?;
+    edit_timer_region_a(sandbox)?;
+    edit_timer_region_b(sandbox)?;
+    edit_config_timeout(sandbox)?;
+    edit_report_cleanup(sandbox)?;
+    edit_main_debug_logging(sandbox)?;
+
+    let repo = sandbox.repo()?;
+    for name in CROSSING_CHANGELISTS {
+        repo.create_changelist(name)
+            .map_err(|err| anyhow::anyhow!("create changelist: {err}"))?;
+    }
+    // Deliberately no switch: creation leaves the marker alone
+    // (ADR 0015), so unassigned stays active and nothing auto-captures.
+    // Every membership record below is a manual assign.
+    let snapshot = refresh(&repo)?;
+    for (stem, owners) in CROSSING_FILES {
+        let path = crossing_path(stem);
+        for (index, owner) in owners.iter().enumerate() {
+            if let Some(owner) = owner {
+                assign_hunk(&repo, &snapshot, &path, index, owner)?;
+            }
+        }
+    }
+    // The hand-written files carry the small shapes: timer.rs split two
+    // ways, config.rs multi-hunk under one changelist, report.rs a
+    // single hunk under one changelist, logo.png a whole-file hunk that
+    // cannot cross at all, main.rs left unassigned.
+    assign_hunk(&repo, &snapshot, "src/timer.rs", 0, "session-rework")?;
+    assign_hunk(&repo, &snapshot, "src/timer.rs", 1, "perf-tuning")?;
+    assign_file(&repo, &snapshot, "src/config.rs", "output-format")?;
+    assign_file(&repo, &snapshot, "src/report.rs", "docs-pass")?;
+    assign_file(&repo, &snapshot, "assets/logo.png", "perf-tuning")?;
+
+    // Staging is spread so crossing rows of one file disagree: a row's
+    // marker reads only the hunks its changelist owns.
+    let snapshot = refresh(&repo)?;
+    // daemon.rs: ● session-rework (2/2), ○ output-format (0/2),
+    // ◐ perf-tuning (1/2).
+    stage_hunk(&repo, &snapshot, "src/daemon.rs", 0)?;
+    stage_hunk(&repo, &snapshot, "src/daemon.rs", 1)?;
+    stage_hunk(&repo, &snapshot, "src/daemon.rs", 4)?;
+    // summary.rs: ● on two of its four single-hunk rows.
+    stage_hunk(&repo, &snapshot, "src/summary.rs", 0)?;
+    stage_hunk(&repo, &snapshot, "src/summary.rs", 2)?;
+    // storage.rs: the staged hunk is the unassigned one, so the
+    // unassigned group holds a ● row for a file that also has a
+    // perf-tuning row.
+    stage_hunk(&repo, &snapshot, "src/storage.rs", 1)?;
+    // config.rs fully staged the way a user would: raw `git add`.
+    sandbox.git(&["add", "src/config.rs"])?;
+    // timer.rs: ● under perf-tuning (region B), and region A staged then
+    // re-edited so its session-rework row reads ◑ staged-stale.
+    stage_hunk(&repo, &snapshot, "src/timer.rs", 1)?;
+    stage_hunk(&repo, &snapshot, "src/timer.rs", 0)?;
+    sandbox.replace(
+        "src/timer.rs",
+        "self.elapsed = self.elapsed.saturating_add(started.elapsed());",
+        "self.elapsed = self\n                .elapsed\n                .checked_add(started.elapsed())\n                .unwrap_or(Duration::MAX);",
+    )?;
+    refresh(&repo)?;
+    Ok(())
+}
+
+fn crossing_path(stem: &str) -> String {
+    format!("src/{stem}.rs")
+}
+
+/// A module of `steps` well-separated functions, each with one `factor`
+/// line the next revision rewrites. The gap between two factor lines is
+/// wider than git's context skirts, so changing every factor yields
+/// exactly `steps` hunks — which is what makes an N-way split
+/// deterministic.
+fn crossing_module(stem: &str, steps: usize, factor: u64) -> String {
+    let mut out = format!(
+        "//! `{stem}` — synthetic pipeline for the crossing scenario.\n\
+         \n\
+         use std::time::Duration;\n"
+    );
+    for step in 1..=steps {
+        out.push_str(&format!(
+            "\n\
+             /// Step {step} of the {stem} pipeline.\n\
+             pub fn {stem}_step_{step}(input: u64) -> Duration {{\n\
+             \x20   let mut acc = input;\n\
+             \x20   let factor = {factor};\n\
+             \x20   for round in 0..{step}u64 {{\n\
+             \x20       acc = acc.wrapping_mul(factor).wrapping_add(round);\n\
+             \x20   }}\n\
+             \x20   Duration::from_millis(acc)\n\
+             }}\n"
+        ));
+    }
+    out
 }
 
 /// Many changed files for scroll, refresh feel, and layout under
