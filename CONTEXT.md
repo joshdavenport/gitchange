@@ -116,8 +116,10 @@ _Avoid_: hunk hash, fingerprint
 
 **Hunk ID**:
 The snapshot-scoped address frontends use to name one hunk — a hash of
-the file path plus content anchor, printed with an `h` prefix so it reads
-as neither a commit nor a blob OID. An address, not identity: identity
+the file path plus content anchor (a degenerate hunk hashes its kind in
+place of the anchor, keeping a file's mode and whole-file hunks
+distinct), printed with an `h` prefix so it reads as neither a commit
+nor a blob OID. An address, not identity: identity
 stays with membership records and matching (ADR 0001), so an ID from an
 aged snapshot fails loud as not-found. Identical hunks in a file share a
 base ID, told apart by an ordinal suffix (`/0`, `/1`).
