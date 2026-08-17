@@ -578,11 +578,14 @@ impl App {
         }
     }
 
-    /// `enter` on a file: focus the Diff panel
-    /// with its first hunk selected. Hunk-less files (quarantined ones)
-    /// have nothing to select, and a lone degenerate hunk — a binary, an
-    /// empty add or delete, a mode-only change — is a state that can only
-    /// keypresses: polite no-op, no log event (ADR 0009, ADR 0017).
+    /// `enter` on a file: focus the Diff panel with its first hunk
+    /// selected. Hunk-less files (quarantined ones) have nothing to
+    /// select, and a *lone* degenerate hunk — a binary, an empty add or
+    /// delete, a mode-only change — has nothing to drill into that the
+    /// file level doesn't already afford: polite no-op, no log event
+    /// (ADR 0009, ADR 0017). A degenerate hunk with siblings does open —
+    /// a chmod beside an edit is two hunks the user has to reach
+    /// separately (issue #104).
     fn enter_hunk_mode(&mut self) {
         let has_hunks = self
             .selected_file()

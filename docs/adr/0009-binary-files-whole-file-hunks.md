@@ -80,7 +80,10 @@ toggle — issue #106 research).
   placeholder text is what says "binary".
 - Hunk-mode entry on a binary selection: **polite no-op** (the established
   idiom) — one degenerate hunk, and every action already works at file
-  level. No log event.
+  level. No log event. *Amended (issue #104):* where the binary was
+  chmod'd too, a mode hunk sits beside it (ADR 0017) and entry opens on
+  two rows — the sized placeholder becomes the whole-file hunk's header
+  row, because the two hunks stage separately.
 
 ## Considered options
 
@@ -94,7 +97,10 @@ toggle — issue #106 research).
   tier real extents), a binary anchor can only ever answer exact-match — a
   hash suffices.
 - **Hunk-mode entry showing one whole-file hunk row** — rejected: a state
-  that can only waste a keypress to enter and another to leave.
+  that can only waste a keypress to enter and another to leave. *Amended
+  (issue #104):* the rejection is about the lone row. A chmod'd binary has
+  two hunks, so entry there reaches a choice — the mode hunk or the bytes —
+  and the whole-file row is what makes the bytes reachable.
 - **Auto-unify a split entry at refresh** — rejected: a forced ownership
   move needs an attribution answer (whose changelist absorbs whose?) that
   ADR 0015's multi-actor rules don't give; the commit-time refusal names

@@ -1908,7 +1908,19 @@ fn binary_file(
     }
 }
 
-fn whole_file_app(file: ChangedFile) -> App {
+/// The diff panel's hunk header rows in order — the hunk list as the
+/// user reads it, degenerate rows included.
+fn hunk_headers(app: &App) -> Vec<String> {
+    app.diff_lines()
+        .into_iter()
+        .filter_map(|line| match line {
+            DiffLine::HunkHeader { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect()
+}
+
+fn single_file_app(file: ChangedFile) -> App {
     let mut snapshot = snapshot();
     snapshot.files = vec![file];
     let mut app = App::new("repo");
@@ -1921,7 +1933,7 @@ fn whole_file_app(file: ChangedFile) -> App {
 fn binary_diff_placeholder_shows_sizes_per_variant() {
     // ADR 0009: one-line sized placeholder, added/deleted variants
     // with a single size; the text is what says "binary".
-    let modified = whole_file_app(binary_file(
+    let modified = single_file_app(binary_file(
         ChangeKind::Modified,
         Some(blob(12_698)),
         Some(blob(15_462)),
@@ -1932,7 +1944,7 @@ fn binary_diff_placeholder_shows_sizes_per_variant() {
         DiffLine::Placeholder(text) if text == "Binary file changed (12.4 KB \u{2192} 15.1 KB)"
     )));
 
-    let added = whole_file_app(binary_file(
+    let added = single_file_app(binary_file(
         ChangeKind::Untracked,
         None,
         Some(blob(512)),
@@ -1943,7 +1955,7 @@ fn binary_diff_placeholder_shows_sizes_per_variant() {
         DiffLine::Placeholder(text) if text == "Binary file added (512 B)"
     )));
 
-    let deleted = whole_file_app(binary_file(
+    let deleted = single_file_app(binary_file(
         ChangeKind::Deleted,
         Some(blob(2 * 1024 * 1024)),
         None,
@@ -1959,7 +1971,7 @@ fn binary_diff_placeholder_shows_sizes_per_variant() {
 fn enter_on_a_binary_is_a_polite_no_op() {
     // ADR 0009: hunk-mode entry on a binary selection does nothing —
     // no focus change, no selection, no log event.
-    let mut app = whole_file_app(binary_file(
+    let mut app = single_file_app(binary_file(
         ChangeKind::Modified,
         Some(blob(10)),
         Some(blob(20)),
@@ -1978,7 +1990,7 @@ fn space_on_a_stale_binary_restages_the_file() {
     // row scope, so the toggle re-stages (index := worktree). A binary
     // is one whole-file hunk (ADR 0009), so the row op reduces to the
     // same whole-file index write core's hunk path already makes.
-    let mut app = whole_file_app(binary_file(
+    let mut app = single_file_app(binary_file(
         ChangeKind::Modified,
         Some(blob(10)),
         Some(blob(20)),
@@ -2067,13 +2079,13 @@ fn zero_hunk_diff_placeholders_name_the_change() {
     // ADR 0017: one-line placeholders on the binary/conflicted channel,
     // modes octal as git prints them. The lone mode hunk's placeholder
     // text is its header — there are no coordinates to frame.
-    let mode_only = whole_file_app(mode_only_file(0o100644, 0o100755));
+    let mode_only = single_file_app(mode_only_file(0o100644, 0o100755));
     assert!(mode_only.diff_lines().iter().any(|line| matches!(
         line,
         DiffLine::Placeholder(text) if text == "Mode changed (100644 \u{2192} 100755)"
     )));
 
-    let added = whole_file_app(zero_hunk_file(
+    let added = single_file_app(zero_hunk_file(
         ChangeKind::Untracked,
         None,
         Some(side()),
@@ -2084,7 +2096,7 @@ fn zero_hunk_diff_placeholders_name_the_change() {
         DiffLine::Placeholder(text) if text == "Empty file added"
     )));
 
-    let deleted = whole_file_app(zero_hunk_file(
+    let deleted = single_file_app(zero_hunk_file(
         ChangeKind::Deleted,
         Some(side()),
         None,
@@ -2097,7 +2109,7 @@ fn zero_hunk_diff_placeholders_name_the_change() {
 
     // A file swapped for a symlink is zero-hunk too, and the object-kind
     // bits say so: calling it a mode change would read as a chmod.
-    let type_changed = whole_file_app(zero_hunk_file(
+    let type_changed = single_file_app(zero_hunk_file(
         ChangeKind::TypeChanged,
         Some(side()),
         Some(side()),
@@ -2121,13 +2133,210 @@ fn enter_on_a_lone_degenerate_hunk_is_a_polite_no_op() {
         mode_only_file(0o100644, 0o100755),
         zero_hunk_file(ChangeKind::Untracked, None, Some(side()), None),
     ] {
-        let mut app = whole_file_app(file);
+        let mut app = single_file_app(file);
         let logged = app.log.len();
         app.on_key(key(KeyCode::Enter));
         assert_eq!(app.focus, Panel::Files);
         assert!(app.hunk_sel.is_none());
         assert_eq!(app.log.len(), logged);
     }
+}
+
+// ── mixed files: a mode hunk beside content hunks (issue #104) ──────
+
+/// A mode hunk as core reports it (ADR 0017): no lines and no blob pair,
+/// identity carried by the path alone.
+fn mode_hunk(stage: HunkStage, changelist: Option<&str>) -> Hunk {
+    Hunk {
+        old_start: 0,
+        old_lines: 0,
+        new_start: 0,
+        new_lines: 0,
+        stage,
+        index_only: false,
+        identity: HunkIdentity::ModeChange,
+        changelist: changelist.map(str::to_owned),
+    }
+}
+
+/// A chmod'd, content-edited file — issue #101's mixed shape as core
+/// reports it: the mode hunk first, then the content hunks, with the
+/// file's delta carrying the mode bits.
+fn mixed_mode_file(hunks: Vec<Hunk>) -> ChangedFile {
+    ChangedFile {
+        mode_delta: Some(ModeDelta::Mode {
+            before: 0o100644,
+            after: 0o100755,
+        }),
+        ..file("tool.sh", hunks)
+    }
+}
+
+#[test]
+fn a_mixed_files_mode_hunk_is_a_hunk_row_first() {
+    // ADR 0017: no file-level placeholder for a mixed file — the mode
+    // hunk is a sibling row, positioned first, and its placeholder text
+    // *is* its header. The `@@` framing belongs to the content hunks.
+    let app = single_file_app(mixed_mode_file(vec![
+        mode_hunk(HunkStage::Unstaged, None),
+        hunk(14, None, HunkStage::Unstaged),
+    ]));
+    assert_eq!(
+        hunk_headers(&app),
+        vec!["Mode changed (100644 \u{2192} 100755)", "@@ -14,1 +14,2 @@"]
+    );
+    assert!(
+        !app.diff_lines()
+            .iter()
+            .any(|line| matches!(line, DiffLine::Placeholder(_))),
+        "a mixed file has hunks to drill into, so nothing stands in for them"
+    );
+    assert_eq!(app.diff_title(), "tool.sh (0/2 staged)");
+}
+
+#[test]
+fn a_mixed_files_mode_row_takes_the_tag_and_stage_glyph() {
+    // The mode row is a hunk row in every respect: it carries the
+    // changelist tag with its own derived glyph, and it dims as foreign
+    // when its owner is not the drilled one.
+    let mut snapshot = snapshot();
+    snapshot.files = vec![mixed_mode_file(vec![
+        mode_hunk(HunkStage::Staged, Some("chores")),
+        hunk(14, Some("fixes"), HunkStage::Unstaged),
+    ])];
+    let mut app = App::new("repo");
+    app.apply_snapshot(snapshot);
+    app.on_key(key(KeyCode::Char('j'))); // drill into 'fixes'
+    app.on_key(key(KeyCode::Char('3')));
+
+    let headers: Vec<(String, Option<HunkTag>, bool)> = app
+        .diff_lines()
+        .into_iter()
+        .filter_map(|line| match line {
+            DiffLine::HunkHeader {
+                text, tag, foreign, ..
+            } => Some((text, tag, foreign)),
+            _ => None,
+        })
+        .collect();
+    let (text, tag, foreign) = &headers[0];
+    assert_eq!(text, "Mode changed (100644 \u{2192} 100755)");
+    assert!(foreign, "the mode hunk belongs to 'chores', not the drill");
+    let tag = tag.as_ref().expect("a foreign mode hunk carries its tag");
+    assert_eq!(tag.label, "chores");
+    assert_eq!(tag.stage, Some(HunkStage::Staged));
+    assert!(tag.dim);
+    assert_eq!(headers[1].1, None, "the own content hunk stays untagged");
+}
+
+#[test]
+fn a_chmodded_binary_edit_renders_both_hunk_rows() {
+    // Content and mode are separate deltas (ADR 0017): the binary's
+    // whole-file row keeps its sized placeholder as its header, and the
+    // mode row sits above it. Neither is a file-level early return.
+    let mut file = binary_file(
+        ChangeKind::Modified,
+        Some(blob(12_698)),
+        Some(blob(15_462)),
+        HunkStage::Unstaged,
+    );
+    file.mode_delta = Some(ModeDelta::Mode {
+        before: 0o100644,
+        after: 0o100755,
+    });
+    file.hunks.insert(0, mode_hunk(HunkStage::Unstaged, None));
+    let app = single_file_app(file);
+    assert_eq!(
+        hunk_headers(&app),
+        vec![
+            "Mode changed (100644 \u{2192} 100755)",
+            "Binary file changed (12.4 KB \u{2192} 15.1 KB)",
+        ]
+    );
+}
+
+#[test]
+fn enter_on_a_mixed_file_opens_hunk_mode_on_the_mode_hunk() {
+    // The polite no-op is for a *lone* degenerate hunk. A mode hunk
+    // beside content hunks is drillable, and `space` on it drives the
+    // core op for that hunk alone.
+    let mut app = single_file_app(mixed_mode_file(vec![
+        mode_hunk(HunkStage::Unstaged, None),
+        hunk(14, None, HunkStage::StagedStale),
+    ]));
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(app.focus, Panel::Diff);
+    assert_eq!(app.hunk_sel, Some(0));
+    assert_eq!(app.diff_title(), "tool.sh — hunk 1 of 2");
+    assert_eq!(
+        app.on_key(key(KeyCode::Char(' '))),
+        Some(Action::Op(Op::StageHunk {
+            path: "tool.sh".into(),
+            hunk: mode_hunk(HunkStage::Unstaged, None),
+        })),
+        "staging the mode row drives the mode hunk's own op"
+    );
+}
+
+#[test]
+fn the_assign_popup_frames_no_coordinates_for_a_mode_hunk() {
+    // A mode delta has no coordinates, so the subject line names the
+    // file and nothing more — `@@ -0,0 +0,0` would be a lie about which
+    // lines move.
+    let mut app = single_file_app(mixed_mode_file(vec![
+        mode_hunk(HunkStage::Unstaged, None),
+        hunk(14, None, HunkStage::Unstaged),
+    ]));
+    app.on_key(key(KeyCode::Enter));
+    app.on_key(key(KeyCode::Char('a')));
+    let Some(Overlay::Assign { payload, .. }) = app.overlay.clone() else {
+        panic!("expected the assign popup");
+    };
+    assert_eq!(app.assign_description(&payload), "1 hunk in tool.sh");
+}
+
+#[test]
+fn a_mixed_files_row_counts_the_mode_hunk() {
+    // ADR 0017: no new glyphs — the mode hunk is counted like any other,
+    // so a chmod+edit reads `0/2` where the bare edit reads `0/1`, and a
+    // staged flip beside an unstaged edit reads `◐`.
+    let row_counts = |file: ChangedFile| {
+        let app = single_file_app(file);
+        app.files_rows()
+            .into_iter()
+            .find_map(|row| match row {
+                FilesRow::File {
+                    stage,
+                    staged,
+                    total,
+                    ..
+                } => Some((stage, staged, total)),
+                FilesRow::Header { .. } => None,
+            })
+            .expect("the single file's row")
+    };
+
+    assert_eq!(
+        row_counts(file("tool.sh", vec![hunk(14, None, HunkStage::Unstaged)])),
+        (FileStage::Unstaged, 0, 1),
+        "the bare edit"
+    );
+    assert_eq!(
+        row_counts(mixed_mode_file(vec![
+            mode_hunk(HunkStage::Unstaged, None),
+            hunk(14, None, HunkStage::Unstaged),
+        ])),
+        (FileStage::Unstaged, 0, 2),
+        "the chmod counts as a hunk of its own"
+    );
+    assert_eq!(
+        row_counts(mixed_mode_file(vec![
+            mode_hunk(HunkStage::Staged, None),
+            hunk(14, None, HunkStage::Unstaged),
+        ])),
+        (FileStage::PartiallyStaged, 1, 2),
+        "issue #101's mirror corner: never wholly unstaged"
+    );
 }
 
 // ── the binding core & its disabled reasons (ADR 0014, issue #65) ───

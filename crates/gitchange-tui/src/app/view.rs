@@ -364,10 +364,12 @@ impl App {
             )));
             return lines;
         }
-        if file.presents_lone_degenerate_hunk() {
-            // The one-line placeholder (ADR 0009, ADR 0017) — the text is
-            // what says binary, mode change or empty file; no new glyphs.
-            lines.push(DiffLine::Placeholder(degenerate_placeholder(file)));
+        if let Some(hunk) = file.lone_degenerate_hunk() {
+            // Nothing to drill into, so the file's whole diff body is the
+            // one-line placeholder (ADR 0009, ADR 0017) — the text is what
+            // says binary, mode change or empty file; no new glyphs. A
+            // degenerate hunk with siblings renders as a row instead.
+            lines.push(DiffLine::Placeholder(degenerate_placeholder(file, hunk)));
             return lines;
         }
         if file.hunks.is_empty() {
@@ -394,14 +396,14 @@ impl App {
                 lines.push(DiffLine::Spacer);
             }
             lines.push(DiffLine::HunkHeader {
-                text: format!("@@ {} {} @@", hunk.old_coords(), hunk.new_coords()),
+                text: hunk_header_text(file, hunk),
                 tag,
                 foreign,
                 selected,
             });
-            // Whole-file hunks left through the placeholder branch above,
-            // so everything here is text; an empty slice would just
-            // render no content rows anyway.
+            // A degenerate hunk among siblings — a mode hunk, or the
+            // whole-file hunk of a chmod'd binary — carries its whole
+            // change in the header above and has no lines to show.
             for line in hunk.identity.text_lines().unwrap_or_default() {
                 lines.push(DiffLine::Content {
                     origin: line.origin,
@@ -543,26 +545,40 @@ pub(super) fn owned_hunks(file: &ChangedFile, owner: Option<&str>) -> Vec<Hunk> 
     file.owned_hunks(owner).cloned().collect()
 }
 
-/// The Diff panel's one-line placeholder for a file whose whole change is
-/// one degenerate hunk: sizes for a binary (ADR 0009) —
-/// `Binary file changed (12.4 KB → 15.1 KB)` — and for a zero-hunk change
-/// the shape its sides name (ADR 0017): `Mode changed (100644 → 100755)`,
-/// `Empty file added`, `Empty file deleted`. Modes print octal, as git
-/// prints them.
+/// The header row one hunk carries: a text hunk's unified `@@`
+/// coordinates, or a degenerate hunk's placeholder — which is its header,
+/// since neither a mode delta nor a whole file has coordinates to frame
+/// (ADR 0017). Asked per hunk, because a mixed file's rows disagree: a
+/// chmod'd binary edit shows `Mode changed …` above
+/// `Binary file changed …`, and a chmod beside an edit shows the mode row
+/// above a `@@` one.
+fn hunk_header_text(file: &ChangedFile, hunk: &Hunk) -> String {
+    if hunk.is_degenerate() {
+        return degenerate_placeholder(file, hunk);
+    }
+    format!("@@ {} {} @@", hunk.old_coords(), hunk.new_coords())
+}
+
+/// The Diff panel's one-line text for a degenerate hunk: sizes for a
+/// binary (ADR 0009) — `Binary file changed (12.4 KB → 15.1 KB)` — and
+/// for a zero-hunk change the shape its sides name (ADR 0017):
+/// `Mode changed (100644 → 100755)`, `Empty file added`,
+/// `Empty file deleted`. Modes print octal, as git prints them. It reads
+/// as the file's whole diff body where the hunk is the file's only one,
+/// and as that hunk's header row where it has siblings.
 ///
-/// The hunk's flavour is asked first, and the file's binary flag only
+/// The hunk in hand decides the flavour, and the file's binary flag only
 /// after: a chmod'd binary whose bytes never moved is a mode change, and
 /// naming it by size would report a change it doesn't have. Within the
 /// whole-file flavours, side presence rather than change kind picks the
 /// variant — an index-only change has no worktree kind to trust.
-fn degenerate_placeholder(file: &ChangedFile) -> String {
+fn degenerate_placeholder(file: &ChangedFile, hunk: &Hunk) -> String {
     let sides = file.sides.as_ref();
     let delta = file.mode_delta;
-    if file.hunks.iter().any(Hunk::is_mode_change) {
-        // The mode hunk's placeholder text *is* its header: a mode delta
-        // has no coordinates to frame. A mode hunk exists because the
-        // modes differ, so the delta is always there; naming the change
-        // without them still beats saying nothing.
+    if hunk.is_mode_change() {
+        // A mode hunk exists because the modes differ, so the delta is
+        // always there; naming the change without them still beats saying
+        // nothing.
         return delta
             .map(mode_delta_text)
             .unwrap_or_else(|| "Mode changed".into());

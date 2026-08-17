@@ -179,6 +179,21 @@ pub fn assign_hunk(
     Ok(())
 }
 
+/// Assign the mode hunk of `path` — the stand-alone hunk a chmod
+/// presents (ADR 0017) — to `target`, by flavour rather than position, so
+/// a scenario says which hunk it means. A no-op where the file has none:
+/// off unix git reads `core.filemode` as false, so a scenario's chmod
+/// produces no mode hunk to move.
+pub fn assign_mode_hunk(repo: &Repo, snapshot: &Snapshot, path: &str, target: &str) -> Result<()> {
+    let hunks = file_hunks(snapshot, path)?;
+    let Some(hunk) = hunks.iter().find(|hunk| hunk.is_mode_change()) else {
+        return Ok(());
+    };
+    repo.assign_hunks(path, std::slice::from_ref(hunk), Some(target))
+        .map_err(|err| anyhow!("assign `{path}`'s mode hunk to `{target}`: {err}"))?;
+    Ok(())
+}
+
 /// Stage one hunk of `path` by snapshot position.
 pub fn stage_hunk(repo: &Repo, snapshot: &Snapshot, path: &str, index: usize) -> Result<()> {
     let hunks = file_hunks(snapshot, path)?;

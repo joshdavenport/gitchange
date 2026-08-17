@@ -8,7 +8,7 @@
 
 use anyhow::Result;
 
-use super::builder::{Sandbox, assign_file, assign_hunk, refresh, stage_hunk};
+use super::builder::{Sandbox, assign_file, assign_hunk, assign_mode_hunk, refresh, stage_hunk};
 
 pub struct Scenario {
     pub name: &'static str,
@@ -44,6 +44,10 @@ pub fn all() -> Vec<Scenario> {
         Scenario {
             name: "zero-hunk",
             build: zero_hunk,
+        },
+        Scenario {
+            name: "mixed-mode",
+            build: mixed_mode,
         },
         Scenario {
             name: "crossing",
@@ -417,6 +421,78 @@ fn zero_hunk(sandbox: &mut Sandbox) -> Result<()> {
     let repo = sandbox.repo()?;
     repo.create_changelist("housekeeping")
         .map_err(|err| anyhow::anyhow!("create changelist: {err}"))?;
+    refresh(&repo)?;
+    Ok(())
+}
+
+const RELEASE_SH: &str = "\
+#!/bin/sh
+set -eu
+
+cargo fmt --check
+cargo clippy --all-targets
+cargo test --all
+cargo build --release
+";
+
+const BENCH_SH: &str = "\
+#!/bin/sh
+set -eu
+
+cargo build --release
+hyperfine './target/release/tempo focus'
+";
+
+/// Issue #101's two corners side by side (ADR 0017): a mode hunk beside
+/// content hunks, one file per pairing direction, each counting its chmod
+/// (`0/2` and `1/2`) instead of hiding it.
+///
+/// - `scripts/release.sh` — forward: an edit staged, reverted in the
+///   worktree, then chmod +x. The mode hunk is `○` beside the index-only
+///   `◑` edit. It is filed under `permissions` while the edit stays under
+///   `release-tooling`, so the file has a row in each group and the diff
+///   panel shows the mode row foreign and dimmed from one of them.
+/// - `scripts/bench.sh` — mirror: chmod +x staged, then the worktree
+///   edited. The mode hunk is `●` beside the `○` edit, so the file reads
+///   `◐ 1/2`, never wholly `○`.
+///
+/// Both mode hunks show on unix only: elsewhere git reads `core.filemode`
+/// as false and has no mode change to report, leaving one content hunk
+/// per file.
+fn mixed_mode(sandbox: &mut Sandbox) -> Result<()> {
+    baseline(sandbox)?;
+    sandbox.write("scripts/release.sh", RELEASE_SH)?;
+    sandbox.write("scripts/bench.sh", BENCH_SH)?;
+    sandbox.commit_all("Add release and bench scripts")?;
+
+    // Forward corner: stage an edit, revert it in the worktree, chmod.
+    sandbox.replace(
+        "scripts/release.sh",
+        "cargo test --all\n",
+        "cargo test --all --quiet\n",
+    )?;
+    sandbox.git(&["add", "scripts/release.sh"])?;
+    sandbox.write("scripts/release.sh", RELEASE_SH)?;
+    sandbox.set_exec("scripts/release.sh")?;
+
+    // Mirror corner: stage the chmod, then edit the worktree.
+    sandbox.set_exec("scripts/bench.sh")?;
+    sandbox.git(&["add", "scripts/bench.sh"])?;
+    sandbox.replace(
+        "scripts/bench.sh",
+        "hyperfine './target/release/tempo focus'\n",
+        "hyperfine --warmup 3 './target/release/tempo focus'\n",
+    )?;
+
+    let repo = sandbox.repo()?;
+    repo.create_changelist("release-tooling")
+        .map_err(|err| anyhow::anyhow!("create changelist: {err}"))?;
+    repo.create_changelist("permissions")
+        .map_err(|err| anyhow::anyhow!("create changelist: {err}"))?;
+    repo.switch(Some("release-tooling"))
+        .map_err(|err| anyhow::anyhow!("switch: {err}"))?;
+    let snapshot = refresh(&repo)?;
+    assign_mode_hunk(&repo, &snapshot, "scripts/release.sh", "permissions")?;
     refresh(&repo)?;
     Ok(())
 }

@@ -565,7 +565,13 @@ impl App {
             _ => ("hunk", self.assign_provenance(&hunks)),
         };
         let mut line = format!("{} in {path}", count_noun(hunks.len(), noun));
-        if let AssignPayload::Hunk { hunk, .. } = payload {
+        // Coordinates only where the hunk has them: a degenerate hunk —
+        // a mode delta, a whole file — addresses no lines, and framing
+        // its empty coordinates would say the change is at line 0
+        // (ADR 0017). Its row already names it in the diff panel.
+        if let AssignPayload::Hunk { hunk, .. } = payload
+            && !hunk.is_degenerate()
+        {
             line.push_str(&format!(" @@ {} {}", hunk.old_coords(), hunk.new_coords()));
         }
         if !provenance.is_empty() {

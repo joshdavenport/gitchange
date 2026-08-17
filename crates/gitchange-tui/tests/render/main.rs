@@ -18,6 +18,7 @@
 //! | `colours`   | diff origin colours under decoration (issue #46)      |
 //! | `focus`     | focus-conditional tints and persistent cursors (#45)  |
 //! | `binary`    | binary whole-file hunks (ADR 0009, issue #43)         |
+//! | `mode`      | mode hunks beside content hunks (ADR 0017, #104)      |
 //! | `geometry`  | the left column's heights and scroll (issue #87)      |
 
 mod frame;
@@ -29,6 +30,7 @@ mod commit;
 mod focus;
 mod geometry;
 mod log;
+mod mode;
 mod overlays;
 mod panels;
 mod selection;

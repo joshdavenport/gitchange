@@ -78,12 +78,23 @@ bugs about it.
   `Mode changed (100644 → 100755)`, octal, as git prints it. It takes
   the same changelist tag, stage glyph, and dimming treatment as a text
   hunk.
+- *Amended (issue #104):* a degenerate hunk's placeholder text **is** its
+  header. A mode delta and a whole file address no lines, so no surface
+  frames one in `@@` coordinates — the diff row and the assign popup's
+  subject line included.
 - Whole-file placeholders stay on the binary/conflicted channel
-  (ADR 0007): `Empty file added`, `Empty file deleted`.
-- No new glyphs: rows derive `●○` (and `◑`) normally — a chmod+edit
-  counts the mode hunk (`0/2` where a bare edit reads `0/1`). Hunk-mode
-  entry on a lone degenerate hunk — whole-file or mode — stays the
-  polite no-op (ADR 0009 idiom).
+  (ADR 0007): `Empty file added`, `Empty file deleted`. *Amended
+  (issue #104):* the channel is the wording, not the row. A file whose
+  only hunk is degenerate renders that text as its whole diff body, dim
+  and unselectable — there is nothing to reach. Where the hunk has
+  siblings — a chmod'd binary edit — it renders as a selectable row like
+  any other, because its sibling stages separately from it.
+- No new glyphs: the mode hunk's row derives `●○◑` as a hunk row does,
+  and the file rows counting it derive `●○◐` as file rows do — a
+  chmod+edit counts the mode hunk (`0/2` where a bare edit reads `0/1`),
+  so a staged flip beside an unstaged edit reads `◐`, never wholly `○`.
+  Hunk-mode entry on a lone degenerate hunk — whole-file or mode — stays
+  the polite no-op (ADR 0009 idiom).
 
 ## Considered options
 

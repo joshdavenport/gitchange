@@ -59,15 +59,24 @@ impl ChangedFile {
         self.hunks.iter().any(Hunk::is_whole_file)
     }
 
-    /// Whether this file's whole change is one degenerate hunk of either
-    /// flavour — whole-file or mode. The shape with nothing to drill
-    /// into: the diff panel renders its placeholder and hunk-mode entry
-    /// is the polite no-op (ADR 0009's idiom, ADR 0017).
+    /// This file's whole change as one degenerate hunk of either flavour —
+    /// whole-file or mode — where that is all it is. The shape with
+    /// nothing to drill into: the diff panel renders that hunk's
+    /// placeholder as the file's whole body and hunk-mode entry is the
+    /// polite no-op (ADR 0009's idiom, ADR 0017). Returns the hunk rather
+    /// than a bare yes, so a caller rendering it doesn't re-derive which
+    /// one the answer meant.
+    pub fn lone_degenerate_hunk(&self) -> Option<&Hunk> {
+        match self.hunks.as_slice() {
+            [hunk] if hunk.is_degenerate() => Some(hunk),
+            _ => None,
+        }
+    }
+
+    /// [`ChangedFile::lone_degenerate_hunk`] as a yes/no, for the callers
+    /// that only gate on the shape.
     pub fn presents_lone_degenerate_hunk(&self) -> bool {
-        matches!(
-            self.hunks.as_slice(),
-            [hunk] if !matches!(hunk.identity, HunkIdentity::Text { .. })
-        )
+        self.lone_degenerate_hunk().is_some()
     }
 
     /// Cleanly staged hunks (`●`) only — a staged-stale hunk's index
@@ -212,6 +221,15 @@ impl Hunk {
     /// staging to the mode-only index write (ADR 0017).
     pub fn is_mode_change(&self) -> bool {
         matches!(self.identity, HunkIdentity::ModeChange)
+    }
+
+    /// Whether this hunk addresses no lines — either degenerate flavour,
+    /// whole-file or mode. The question a renderer asks: a degenerate hunk
+    /// has no coordinates to frame and no lines to draw, so its
+    /// placeholder text stands as its header (ADR 0017). Staging asks the
+    /// flavours apart instead, since they move by different writes.
+    pub fn is_degenerate(&self) -> bool {
+        !matches!(self.identity, HunkIdentity::Text { .. })
     }
 
     /// Whether this hunk is a file's whole content as one degenerate
