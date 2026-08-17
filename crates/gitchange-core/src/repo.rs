@@ -201,7 +201,7 @@ impl Repo {
             // flavour, where index := worktree restores HEAD's mode
             // because that is the mode the worktree now holds.
             _ if fresh.is_mode_change() => self.backend.stage_worktree_mode(path)?,
-            _ if hunk_ops_are_file_ops(file) => self.backend.stage_path(path)?,
+            _ if hunk_op_is_a_file_op(file, fresh) => self.backend.stage_path(path)?,
             // Worktree matches HEAD across an index-only hunk's range, so
             // index := worktree is a reverse-apply of the staged content.
             HunkStage::StagedStale if fresh.index_only => self
@@ -232,7 +232,7 @@ impl Repo {
             // Nothing of this hunk is in the index.
             HunkStage::Unstaged => {}
             _ if fresh.is_mode_change() => self.backend.unstage_head_mode(path)?,
-            _ if hunk_ops_are_file_ops(file) => self.backend.unstage_path(path)?,
+            _ if hunk_op_is_a_file_op(file, fresh) => self.backend.unstage_path(path)?,
             _ => self
                 .backend
                 .unstage_head_range(path, (fresh.old_start, fresh.old_lines))?,
@@ -304,6 +304,7 @@ impl Repo {
                 path: path.path.clone(),
                 hunks: path.committed.clone(),
                 whole_file: path.whole_file.clone(),
+                mode: path.mode,
             })
             .collect();
         let committed = self
@@ -654,19 +655,27 @@ fn find_fresh<'a>(
     Some((file, fresh))
 }
 
-/// Added, untracked, and deleted files present their whole change as one
-/// hunk, so hunk ops on them are the file ops — routed through the
-/// index-entry primitives, which also cover content libgit2 won't apply
-/// hunk-wise (untracked files aren't in any apply preimage). A whole-file
-/// hunk is that shape by construction (ADR 0009, ADR 0017): `space` on a
-/// changed binary, an empty file's add or delete, or a type change is a
-/// whole-file index write. A mode hunk is *not* — it has its own
-/// mode-only write, checked before this, so staging one never writes an
-/// entry whole (ADR 0017). These whole-entry writes still carry the
-/// worktree's mode with their content; ending that ride-along is issue
-/// #105's.
-fn hunk_ops_are_file_ops(file: &ChangedFile) -> bool {
-    file.presents_whole_file_hunk()
+/// Whether this hunk moves by a whole index-entry write rather than an
+/// apply. A whole-file hunk is that shape by construction (ADR 0009,
+/// ADR 0017): `space` on a changed binary, an empty file's add or delete,
+/// or a type change is a whole-file index write. So is the lone hunk of
+/// an added, untracked or deleted file, whose content libgit2 won't apply
+/// hunk-wise (an untracked file is in no apply preimage). A mode hunk is
+/// *not* — it has its own mode-only write, checked before this, so
+/// staging one never writes an entry whole (ADR 0017).
+///
+/// Asked per hunk, not per file: a chmod'd binary presents a mode hunk
+/// beside its whole-file one, and an index-only text hunk can sit beside
+/// a whole-file hunk when the worktree went binary over staged text —
+/// each moves by its own op.
+///
+/// These whole-entry writes still carry the worktree's mode with their
+/// content, and the range apply below carries it too — so a mode flip
+/// staged by its own hunk is still clobbered by a neighbouring content
+/// stage. ADR 0017 says no stage op carries a mode as a rider; issue
+/// #105 is what makes that true.
+fn hunk_op_is_a_file_op(file: &ChangedFile, hunk: &Hunk) -> bool {
+    hunk.is_whole_file()
         || (matches!(
             file.kind,
             ChangeKind::Added | ChangeKind::Untracked | ChangeKind::Deleted

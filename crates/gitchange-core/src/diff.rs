@@ -17,21 +17,57 @@ pub struct FileDiff {
     /// degenerate hunk in the universe (ADR 0009).
     pub binary: bool,
     pub hunks: Vec<DiffHunk>,
-    /// Blob identity, size and filemode per side (ADR 0009, ADR 0017):
-    /// the whole-file hunk's anchor material, the diff placeholder's
-    /// sizes and modes, and the mode hunk's staging evidence. The
-    /// changed side is the diff's new side. Worktree diffs populate it
-    /// for the files that present a degenerate hunk — binary and
-    /// zero-hunk ones — since the on-disk content hash is the stated
-    /// refresh cost; index diffs populate it for every file (two odb
-    /// header reads), so a binary worktree over staged text still
-    /// derives a committable whole-file payload.
+    /// The filemodes git reports for the two sides — carried for every
+    /// file, because a mode hunk sits beside content hunks and needs
+    /// them wherever it appears (ADR 0017). They cost nothing: the diff
+    /// delta names both, where [`FileDiff::sides`] pays an odb read and
+    /// a content hash.
+    pub modes: FileModes,
+    /// Blob identity and size per side (ADR 0009): the whole-file hunk's
+    /// anchor material and the diff placeholder's sizes. The changed
+    /// side is the diff's new side. Worktree diffs populate it for the
+    /// files that present a whole-file hunk — binary and hunk-less ones
+    /// — since the on-disk content hash is the stated refresh cost;
+    /// index diffs populate it for every file (two odb header reads), so
+    /// a binary worktree over staged text still derives a committable
+    /// whole-file payload.
     pub sides: Option<FileSides>,
 }
 
-/// The two sides of a change presenting a degenerate hunk (ADR 0009,
+/// The filemodes of one diff's two sides. A side is `None` where it does
+/// not exist (added files' HEAD, deletions' changed) or where git reports
+/// no mode for it — a platform with `core.filemode` off, where no mode
+/// change is visible to compare in the first place. Comparisons treat
+/// `None` as unknown rather than as `100644`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FileModes {
+    pub head: Option<u32>,
+    pub changed: Option<u32>,
+}
+
+impl FileModes {
+    /// The difference between the two sides, split by what it changes
+    /// ([`ModeDelta`]) — `None` unless both sides carry a mode and those
+    /// modes differ. The one definition of "a mode delta": the universe
+    /// presents the `Mode` flavour as a mode hunk (ADR 0017) and
+    /// frontends name both flavours from it.
+    pub fn delta(&self) -> Option<ModeDelta> {
+        ModeDelta::between(self.head?, self.changed?)
+    }
+
+    /// The delta this side carries only if it is a permission flip — the
+    /// mode hunk's material. A `Type` delta stays with the whole-file
+    /// hunk (ADR 0017, issue #100), so it reads as no flip here.
+    pub(crate) fn flip(&self) -> Option<ModeDelta> {
+        self.delta()
+            .filter(|delta| matches!(delta, ModeDelta::Mode { .. }))
+    }
+}
+
+/// The two sides of a change presenting a whole-file hunk (ADR 0009,
 /// ADR 0017). A `None` side doesn't exist: no `head` for added/untracked
-/// files, no `changed` for deletions.
+/// files, no `changed` for deletions. Modes are [`FileModes`]' — they are
+/// carried for every file, not only these.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileSides {
     pub head: Option<SideInfo>,
@@ -42,26 +78,6 @@ impl FileSides {
     /// The changed-side content hash, `None` for a deletion.
     pub fn changed_oid(&self) -> Option<String> {
         self.changed.as_ref().map(|side| side.oid.clone())
-    }
-
-    /// The changed-side filemode, `None` for a deletion or where git
-    /// reports none.
-    pub fn changed_mode(&self) -> Option<u32> {
-        self.changed.as_ref().and_then(|side| side.mode)
-    }
-
-    /// The filemode difference between the two sides, split by what it
-    /// changes ([`ModeDelta`]) — `None` unless both sides exist, git
-    /// reported a mode for each (nothing else discriminates a change),
-    /// and those modes differ. The one definition of "a mode delta": the
-    /// universe presents the `Mode` flavour as a mode hunk (ADR 0017) and
-    /// frontends name both flavours from it.
-    pub fn mode_delta(&self) -> Option<ModeDelta> {
-        let (before, after) = (
-            self.head.as_ref().and_then(|side| side.mode)?,
-            self.changed_mode()?,
-        );
-        ModeDelta::between(before, after)
     }
 
     /// Whether both sides name the same blob — the change carries no
@@ -105,6 +121,14 @@ impl ModeDelta {
     /// git's object-kind bits — the high half of a filemode.
     const KIND: u32 = 0o170000;
 
+    /// A mode's object-kind half: what tells a regular file from a
+    /// symlink or a gitlink, with the permission bits masked off. The
+    /// split lives here, beside the delta flavours it defines, so no
+    /// caller re-derives it from a literal.
+    pub(crate) fn kind_bits(mode: u32) -> u32 {
+        mode & Self::KIND
+    }
+
     /// The delta between two modes, `None` when they agree.
     fn between(before: u32, after: u32) -> Option<Self> {
         if before == after {
@@ -118,15 +142,12 @@ impl ModeDelta {
 }
 
 /// One side of a changed file: its blob content hash
-/// (`hash-object`-style), byte size, and git filemode. `mode` is `None`
-/// where git reports none for a present side — nothing then discriminates
-/// a mode change, so comparisons treat it as unknown rather than as
-/// `100644`.
+/// (`hash-object`-style) and byte size. The side's filemode lives in
+/// [`FileModes`], which every file carries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SideInfo {
     pub oid: String,
     pub size: u64,
-    pub mode: Option<u32>,
 }
 
 /// One text hunk. Old coordinates address the HEAD side in both diffs,

@@ -313,6 +313,94 @@ fn a_staged_zero_hunk_change_is_in_the_payload() {
 
 #[test]
 #[cfg(unix)]
+fn a_staged_mode_flip_commits_alone_beside_an_unstaged_edit() {
+    // Issue #101's mirror corner through commit: the flip is staged, the
+    // worktree edit is not. The payload carries the mode hunk and no
+    // content, so the commit lands the mode over HEAD's blob — before
+    // ADR 0017's amendment the path fell out of the payload entirely.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("tool.sh", "one\n")
+        .commit_all("init")
+        .set_exec("tool.sh")
+        .stage("tool.sh")
+        .write("tool.sh", "two\n");
+    let repo = repo(&fixture);
+
+    let payload = repo.commit_payload(None).unwrap();
+    assert_eq!(payload.file_count(), 1);
+    assert_eq!(payload.staged_hunks(), 1, "the mode hunk alone");
+    assert_eq!(payload.stale_hunks(), 0);
+
+    commit(&repo, None, "make it executable");
+    assert_eq!(fixture.head_mode("tool.sh"), Some(0o100755));
+    assert_eq!(
+        fixture.head_bytes("tool.sh"),
+        Some(b"one\n".to_vec()),
+        "the unstaged edit stayed out"
+    );
+
+    // What is left is the edit, unstaged, and no mode hunk: the modes
+    // agree again.
+    let file = &repo.refresh().unwrap().files[0];
+    assert_eq!(file.total_hunks(), 1);
+    assert_eq!(file.hunks[0].stage, HunkStage::Unstaged);
+    assert!(!file.hunks[0].is_mode_change());
+}
+
+#[test]
+#[cfg(unix)]
+fn a_staged_mode_flip_and_edit_commit_together() {
+    // The mode hunk beside a committed content hunk: one temp-index
+    // entry carries both, the staged lines and the staged mode.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("tool.sh", "one\n")
+        .commit_all("init")
+        .write("tool.sh", "two\n")
+        .set_exec("tool.sh")
+        .stage("tool.sh");
+    let repo = repo(&fixture);
+
+    let payload = repo.commit_payload(None).unwrap();
+    assert_eq!(payload.staged_hunks(), 2, "the mode hunk and the edit");
+
+    commit(&repo, None, "edit and chmod");
+    assert_eq!(fixture.head_mode("tool.sh"), Some(0o100755));
+    assert_eq!(fixture.head_bytes("tool.sh"), Some(b"two\n".to_vec()));
+    assert!(
+        repo.refresh().unwrap().files.is_empty(),
+        "nothing left over"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn a_mode_flip_reverted_since_confirmation_drifts_the_commit() {
+    // The mode hunk's freshness guard (ADR 0004): the payload names the
+    // staged mode, so a flip undone between confirm and commit refuses
+    // rather than committing a mode the user never confirmed.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("tool.sh", "one\n")
+        .commit_all("init")
+        .set_exec("tool.sh")
+        .stage("tool.sh")
+        .write("tool.sh", "two\n");
+    let repo = repo(&fixture);
+
+    let confirmed = repo.commit_payload(None).unwrap();
+    fixture.clear_exec("tool.sh").stage("tool.sh");
+
+    let outcome = repo
+        .commit(None, "drifted", &CommitOptions::default(), Some(&confirmed))
+        .unwrap();
+    assert!(matches!(outcome, CommitOutcome::Drifted { .. }));
+    assert_eq!(fixture.commit_count(), 1, "nothing was committed");
+}
+
+#[test]
+#[cfg(unix)]
 fn a_committed_type_change_writes_the_symlink_tree_entry() {
     // End-to-end for the type-change shape (#100): a staged file→symlink
     // swap commits as a symlink — HEAD's tree entry carries link mode

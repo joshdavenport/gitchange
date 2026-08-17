@@ -454,20 +454,16 @@ fn a_mode_only_change_is_one_mode_hunk() {
         "the whole-file treatment collapses into the mode hunk"
     );
 
-    // The sides carry the modes the placeholder and the derivation read.
-    let sides = file.sides.as_ref().expect("mode-change sides");
+    // The file carries the delta the placeholder reads; the blob sides a
+    // whole-file hunk would anchor on are not this change's.
     assert_eq!(
-        sides.head.as_ref().and_then(|side| side.mode),
-        Some(0o100644)
-    );
-    assert_eq!(sides.changed_mode(), Some(0o100755));
-    assert_eq!(
-        sides.mode_delta(),
+        file.mode_delta,
         Some(ModeDelta::Mode {
             before: 0o100644,
             after: 0o100755
         })
     );
+    assert!(file.sides.is_none(), "no whole-file hunk to anchor");
 }
 
 #[test]
@@ -523,6 +519,194 @@ fn mode_only_staging_is_derived_by_mode_compare() {
     assert_eq!(file.hunks[0].stage, HunkStage::StagedStale);
     assert!(file.hunks[0].index_only);
     assert_eq!((file.staged_hunks(), file.total_hunks()), (0, 1));
+}
+
+#[test]
+#[cfg(unix)]
+fn a_mode_hunk_sits_beside_content_hunks() {
+    // A chmod alongside worktree edits: the mode delta is its own hunk,
+    // first, and the edits are theirs — a chmod+edit counts `0/3` where
+    // the bare edits count `0/2` (ADR 0017).
+    let fixture = RepoFixture::new();
+    fixture
+        .write("tool.sh", &numbered(&[]))
+        .commit_all("init")
+        .write(
+            "tool.sh",
+            &numbered(&[(4, "EDIT four"), (16, "EDIT sixteen")]),
+        )
+        .set_exec("tool.sh");
+
+    let repo = Repo::discover(fixture.path()).unwrap();
+    let file = &repo.refresh().unwrap().files[0];
+
+    assert_eq!((file.staged_hunks(), file.total_hunks()), (0, 3));
+    assert_eq!(file.hunks[0].identity, HunkIdentity::ModeChange);
+    assert!(
+        file.hunks[1..]
+            .iter()
+            .all(|hunk| hunk.identity.text_lines().is_some()),
+        "the edits keep their text hunks"
+    );
+    assert_eq!(file.stage(), FileStage::Unstaged);
+    assert_eq!(
+        file.mode_delta,
+        Some(ModeDelta::Mode {
+            before: 0o100644,
+            after: 0o100755
+        })
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn a_worktree_mode_flip_survives_index_only_content_hunks() {
+    // Issue #101's forward corner: an edit staged, reverted in the
+    // worktree, then a chmod. The index diff's hunks survive pairing as
+    // index-only, and the worktree diff — mode delta, no hunks — must
+    // still contribute it. Before ADR 0017's amendment the +x appeared
+    // nowhere at all.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("tool.sh", "one\n")
+        .commit_all("init")
+        .write("tool.sh", "two\n")
+        .stage("tool.sh")
+        .write("tool.sh", "one\n")
+        .set_exec("tool.sh");
+
+    let repo = Repo::discover(fixture.path()).unwrap();
+    let file = &repo.refresh().unwrap().files[0];
+
+    assert_eq!((file.staged_hunks(), file.total_hunks()), (0, 2));
+    assert_eq!(file.hunks[0].identity, HunkIdentity::ModeChange);
+    assert_eq!(
+        file.hunks[0].stage,
+        HunkStage::Unstaged,
+        "the index holds HEAD's mode"
+    );
+    assert!(!file.hunks[0].index_only);
+    assert_eq!(file.hunks[1].stage, HunkStage::StagedStale);
+    assert!(
+        file.hunks[1].index_only,
+        "the staged edit the worktree reverted"
+    );
+    assert_eq!(file.stage(), FileStage::PartiallyStaged);
+    assert_eq!(
+        file.mode_delta,
+        Some(ModeDelta::Mode {
+            before: 0o100644,
+            after: 0o100755
+        })
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn a_staged_mode_flip_survives_a_worktree_edit() {
+    // Issue #101's mirror corner: the flip staged, then the worktree
+    // edited. Both diffs carry the mode delta, so the mode hunk is `●`
+    // beside the `○` edit — the file reads `◐`, never wholly `○`, which
+    // is what made the staged flip invisible.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("tool.sh", "one\n")
+        .commit_all("init")
+        .set_exec("tool.sh")
+        .stage("tool.sh")
+        .write("tool.sh", "two\n");
+
+    let repo = Repo::discover(fixture.path()).unwrap();
+    let file = &repo.refresh().unwrap().files[0];
+
+    assert_eq!((file.staged_hunks(), file.total_hunks()), (1, 2));
+    assert_eq!(file.hunks[0].identity, HunkIdentity::ModeChange);
+    assert_eq!(file.hunks[0].stage, HunkStage::Staged);
+    assert_eq!(file.hunks[1].stage, HunkStage::Unstaged);
+    assert_eq!(file.stage(), FileStage::PartiallyStaged);
+}
+
+#[test]
+#[cfg(unix)]
+fn a_staged_mode_flip_reverted_in_the_worktree_is_index_only_beside_an_edit() {
+    // The third pairing arm with content alongside: only the index diff
+    // carries the mode delta, so the mode hunk is the index-only `◑`
+    // flavour — committable, invisible in the worktree.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("tool.sh", "one\n")
+        .commit_all("init")
+        .set_exec("tool.sh")
+        .stage("tool.sh")
+        .clear_exec("tool.sh")
+        .write("tool.sh", "two\n");
+
+    let repo = Repo::discover(fixture.path()).unwrap();
+    let file = &repo.refresh().unwrap().files[0];
+
+    assert_eq!((file.staged_hunks(), file.total_hunks()), (0, 2));
+    assert_eq!(file.hunks[0].identity, HunkIdentity::ModeChange);
+    assert_eq!(file.hunks[0].stage, HunkStage::StagedStale);
+    assert!(file.hunks[0].index_only);
+    assert_eq!(file.hunks[1].stage, HunkStage::Unstaged);
+}
+
+#[test]
+#[cfg(unix)]
+fn a_chmodded_binary_edit_presents_both_hunks() {
+    // Content and mode are separate deltas even where the content has no
+    // lines to address: the binary keeps its whole-file hunk (ADR 0009)
+    // and the chmod gets its mode hunk beside it (ADR 0017).
+    let fixture = RepoFixture::new();
+    fixture
+        .write_bytes("blob.bin", &[0u8, 1, 2, 3])
+        .commit_all("init")
+        .write_bytes("blob.bin", &[0u8, 9, 9, 9, 9])
+        .set_exec("blob.bin");
+
+    let repo = Repo::discover(fixture.path()).unwrap();
+    let file = &repo.refresh().unwrap().files[0];
+
+    assert!(file.binary);
+    assert_eq!((file.staged_hunks(), file.total_hunks()), (0, 2));
+    assert_eq!(file.hunks[0].identity, HunkIdentity::ModeChange);
+    assert!(
+        matches!(file.hunks[1].identity, HunkIdentity::WholeFile { .. }),
+        "the bytes moved, so the whole-file hunk stays"
+    );
+    assert!(file.presents_whole_file_hunk());
+    assert!(
+        file.sides.is_some(),
+        "the placeholder's sizes come from the sides"
+    );
+}
+
+#[test]
+fn a_staged_binary_over_a_worktree_edit_keeps_both_deltas() {
+    // The same rule with no mode in sight: binary bytes staged, then the
+    // worktree edited as text. The index side has no hunks to pair, so
+    // its rewrite comes through as a whole-file hunk beside the worktree
+    // edit's text hunk — neither delta is dropped for the other
+    // (ADR 0017). Its anchor comes from the index side, the worktree
+    // side carrying no sides for a file with text hunks.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("notes.txt", "original\n")
+        .commit_all("init")
+        .write_bytes("notes.txt", &[0u8, 1, 2, 3])
+        .stage("notes.txt")
+        .write("notes.txt", "edited\n");
+
+    let repo = Repo::discover(fixture.path()).unwrap();
+    let file = &repo.refresh().unwrap().files[0];
+
+    assert_eq!(file.total_hunks(), 2);
+    let HunkIdentity::WholeFile { oids: anchor } = &file.hunks[0].identity else {
+        panic!("whole-file hunk for the staged binary");
+    };
+    assert!(anchor.changed.is_some(), "the staged blob");
+    assert_eq!(file.hunks[0].stage, HunkStage::StagedStale);
+    assert_eq!(file.hunks[1].stage, HunkStage::Unstaged);
 }
 
 #[test]
@@ -666,12 +850,15 @@ fn a_type_change_is_a_zero_hunk_change_too() {
     assert_eq!(file.kind, ChangeKind::TypeChanged);
     assert_eq!((file.staged_hunks(), file.total_hunks()), (0, 1));
     assert!(file.presents_whole_file_hunk());
-    let sides = file.sides.as_ref().expect("type-change sides");
+    assert!(file.sides.is_some(), "type-change sides");
     assert_eq!(
-        sides.head.as_ref().and_then(|side| side.mode),
-        Some(0o100644)
+        file.mode_delta,
+        Some(ModeDelta::Type {
+            before: 0o100644,
+            after: 0o120000
+        }),
+        "the symlink mode, named a type change rather than a chmod"
     );
-    assert_eq!(sides.changed_mode(), Some(0o120000), "the symlink mode");
 }
 
 #[test]
@@ -708,11 +895,12 @@ fn a_symlink_to_file_swap_is_the_same_zero_hunk_shape() {
     };
     assert!(anchor.head.is_some(), "the target-string blob");
     assert!(anchor.changed.is_some(), "the content blob");
-    let sides = file.sides.as_ref().expect("type-change sides");
     assert_eq!(
-        sides.head.as_ref().and_then(|side| side.mode),
-        Some(0o120000),
-        "the symlink mode"
+        file.mode_delta,
+        Some(ModeDelta::Type {
+            before: 0o120000,
+            after: 0o100644
+        }),
+        "away from the symlink mode"
     );
-    assert_eq!(sides.changed_mode(), Some(0o100644));
 }

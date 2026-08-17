@@ -996,6 +996,141 @@ fn staging_a_mode_hunk_writes_the_mode_and_no_object() {
 
 #[test]
 #[cfg(unix)]
+fn a_bulk_stage_carries_the_mode_hunk_like_any_other_hunk() {
+    // Issue #103: the mode hunk is a hunk, so every bulk scope counts it
+    // and moves it. A chmod+edit is two hunks, and `space` on the
+    // changelist stages both — the mode by its own write, the lines by
+    // the apply.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("tool.sh", "#!/bin/sh\n")
+        .commit_all("init")
+        .write("tool.sh", "#!/bin/sh\nset -e\n")
+        .set_exec("tool.sh");
+
+    let repo = Repo::discover(fixture.path()).unwrap();
+    let outcome = repo.stage_changelist(None).unwrap();
+
+    assert_eq!(outcome.echo.unwrap(), "staged 2 hunks — 'unassigned'");
+    assert!(outcome.advisories.is_empty());
+    assert_eq!(fixture.index_mode("tool.sh"), Some(0o100755));
+    assert_eq!(
+        fixture.index_content("tool.sh").as_deref(),
+        Some("#!/bin/sh\nset -e\n")
+    );
+
+    let outcome = repo.unstage_changelist(None).unwrap();
+    assert_eq!(outcome.echo.unwrap(), "unstaged 2 hunks — 'unassigned'");
+    assert_eq!(fixture.index_mode("tool.sh"), Some(0o100644));
+    assert_eq!(
+        fixture.index_content("tool.sh").as_deref(),
+        Some("#!/bin/sh\n"),
+        "HEAD's content back"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn the_commit_flows_stage_all_offer_takes_the_mode_hunk_too() {
+    // `stage_all` stages what the index does not hold (ADR 0004's
+    // offer), and an unstaged mode hunk is exactly that — the offer
+    // would otherwise open the commit dialog with the chmod left behind.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("tool.sh", "#!/bin/sh\n")
+        .commit_all("init")
+        .write("tool.sh", "#!/bin/sh\nset -e\n")
+        .set_exec("tool.sh");
+
+    let repo = Repo::discover(fixture.path()).unwrap();
+    let outcome = repo.stage_all(None).unwrap();
+
+    assert_eq!(outcome.echo.unwrap(), "staged 2 hunks — 'unassigned'");
+    assert_eq!(fixture.index_mode("tool.sh"), Some(0o100755));
+    assert_eq!(
+        fixture.index_content("tool.sh").as_deref(),
+        Some("#!/bin/sh\nset -e\n")
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn align_takes_an_index_only_mode_hunk_and_leaves_staged_content_alone() {
+    // `align` sets index := worktree for the changelist's `◑` hunks
+    // (ADR 0004). Here that is the mode hunk alone — a flip staged then
+    // reverted in the worktree — so the flip is discarded and the
+    // staged edit, which the worktree still matches, stays put.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("tool.sh", "one\n")
+        .commit_all("init")
+        .write("tool.sh", "two\n")
+        .set_exec("tool.sh")
+        .stage("tool.sh")
+        .clear_exec("tool.sh");
+
+    let repo = Repo::discover(fixture.path()).unwrap();
+    let stages: Vec<HunkStage> = repo.refresh().unwrap().files[0]
+        .hunks
+        .iter()
+        .map(|hunk| hunk.stage)
+        .collect();
+    assert_eq!(stages, vec![HunkStage::StagedStale, HunkStage::Staged]);
+
+    let outcome = repo.align(None).unwrap();
+
+    assert!(outcome.advisories.is_empty());
+    assert_eq!(
+        fixture.index_mode("tool.sh"),
+        Some(0o100644),
+        "the worktree's mode, which is HEAD's again"
+    );
+    assert_eq!(
+        fixture.index_content("tool.sh").as_deref(),
+        Some("two\n"),
+        "the staged edit is not what align was aligning"
+    );
+    let file = &repo.refresh().unwrap().files[0];
+    assert_eq!(file.total_hunks(), 1, "only the staged edit is left");
+    assert_eq!(file.stage(), FileStage::Staged);
+}
+
+#[test]
+#[cfg(unix)]
+fn staging_a_mode_hunk_beside_an_index_only_hunk_leaves_the_staged_content() {
+    // Issue #101's forward corner through the ops: an edit staged, the
+    // worktree reverted, then a chmod. The mode hunk stages on its own —
+    // the staged blob is untouched, and the file reads `◐` after, the
+    // index-only content hunk still `◑`.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("tool.sh", "one\n")
+        .commit_all("init")
+        .write("tool.sh", "two\n")
+        .stage("tool.sh")
+        .write("tool.sh", "one\n")
+        .set_exec("tool.sh");
+
+    let repo = Repo::discover(fixture.path()).unwrap();
+    let hunk = repo.refresh().unwrap().files[0].hunks[0].clone();
+    assert!(hunk.is_mode_change());
+
+    repo.stage_hunk("tool.sh", &hunk).unwrap();
+    assert_eq!(fixture.index_mode("tool.sh"), Some(0o100755));
+    assert_eq!(
+        fixture.index_content("tool.sh").as_deref(),
+        Some("two\n"),
+        "the staged edit survives the mode write"
+    );
+
+    let file = &repo.refresh().unwrap().files[0];
+    assert_eq!(file.stage(), FileStage::PartiallyStaged);
+    assert_eq!(file.hunks[0].stage, HunkStage::Staged);
+    assert_eq!(file.hunks[1].stage, HunkStage::StagedStale);
+}
+
+#[test]
+#[cfg(unix)]
 fn staging_a_type_change_writes_the_symlink_to_the_index() {
     // A file↔symlink swap is zero-hunk (ADR 0017), so it routes through
     // the whole-file index write — the op a symlink swap needs anyway,

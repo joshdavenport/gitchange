@@ -61,6 +61,7 @@ fn pins_render_as_a_banner_atop_the_log_stream() {
         kind: ChangeKind::Conflicted,
         binary: false,
         sides: None,
+        mode_delta: None,
         hunks: Vec::new(),
     });
     app.apply_snapshot(busy);

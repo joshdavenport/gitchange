@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use gitchange_core::{
     ChangedFile, Changelist, CommitInfo, CommitPayload, FileSides, FileStage, Head, Hunk,
-    HunkIdentity, HunkLine, OidAnchor, PayloadFile, SideInfo,
+    HunkIdentity, HunkLine, ModeDelta, OidAnchor, PayloadFile, SideInfo,
 };
 
 use super::*;
@@ -41,6 +41,7 @@ fn file(path: &str, hunks: Vec<Hunk>) -> ChangedFile {
         kind: ChangeKind::Modified,
         binary: false,
         sides: None,
+        mode_delta: None,
         hunks,
     }
 }
@@ -536,6 +537,7 @@ fn conditions_pin_and_self_clear() {
         kind: ChangeKind::Conflicted,
         binary: false,
         sides: None,
+        mode_delta: None,
         hunks: Vec::new(),
     });
     app.apply_snapshot(busy);
@@ -611,6 +613,7 @@ fn conflicted_files_group_first_and_space_refuses() {
             kind: ChangeKind::Conflicted,
             binary: false,
             sides: None,
+            mode_delta: None,
             hunks: Vec::new(),
         },
     );
@@ -1070,6 +1073,7 @@ fn assign_on_a_conflicted_row_says_why_rather_than_no_hunks() {
             kind: ChangeKind::Conflicted,
             binary: false,
             sides: None,
+            mode_delta: None,
             hunks: Vec::new(),
         },
     );
@@ -1474,6 +1478,7 @@ fn payload(staged: usize, stale: usize) -> CommitPayload {
             stale_hunks: stale,
             hunks: Vec::new(),
             whole_file: None,
+            mode: None,
         }],
     }
 }
@@ -1709,6 +1714,7 @@ fn payload_counts_pluralizes_hunks_and_files() {
         stale_hunks: 0,
         hunks: Vec::new(),
         whole_file: None,
+        mode: None,
     });
     assert_eq!(payload_counts(&multi), "5 staged hunks in 2 files");
     assert_eq!(payload_counts(&payload(1, 0)), "1 staged hunk in 1 file");
@@ -1866,7 +1872,6 @@ fn blob(size: u64) -> SideInfo {
     SideInfo {
         oid: format!("oid-{size}"),
         size,
-        mode: Some(0o100644),
     }
 }
 
@@ -1884,6 +1889,7 @@ fn binary_file(
             head: head.clone(),
             changed: changed.clone(),
         }),
+        mode_delta: None,
         hunks: vec![Hunk {
             old_start: 0,
             old_lines: 0,
@@ -1988,11 +1994,13 @@ fn space_on_a_stale_binary_restages_the_file() {
 }
 
 /// A zero-hunk change as core reports it (ADR 0017): text, one
-/// whole-file hunk, the sides carrying whatever names its shape.
+/// whole-file hunk, with the sides and the mode delta carrying whatever
+/// names its shape.
 fn zero_hunk_file(
     kind: ChangeKind,
     head: Option<SideInfo>,
     changed: Option<SideInfo>,
+    mode_delta: Option<ModeDelta>,
 ) -> ChangedFile {
     ChangedFile {
         path: "tool.sh".into(),
@@ -2002,6 +2010,7 @@ fn zero_hunk_file(
             head: head.clone(),
             changed: changed.clone(),
         }),
+        mode_delta,
         hunks: vec![Hunk {
             old_start: 0,
             old_lines: 0,
@@ -2020,27 +2029,26 @@ fn zero_hunk_file(
     }
 }
 
-/// A side with an explicit mode — the mode-only change's whole evidence.
-fn side(mode: u32) -> SideInfo {
+/// One side of a degenerate change: a blob, since modes live on the file
+/// now.
+fn side() -> SideInfo {
     SideInfo {
         oid: "same-blob".into(),
         size: 10,
-        mode: Some(mode),
     }
 }
 
 /// A mode-only change as core reports it (ADR 0017): one mode hunk —
 /// identity carried by the path, no lines and no blob pair — with the
-/// sides carrying the modes its placeholder reads.
+/// mode delta its placeholder reads. No sides: a bare chmod presents no
+/// whole-file hunk to anchor them on.
 fn mode_only_file(before: u32, after: u32) -> ChangedFile {
     ChangedFile {
         path: "tool.sh".into(),
         kind: ChangeKind::Modified,
         binary: false,
-        sides: Some(FileSides {
-            head: Some(side(before)),
-            changed: Some(side(after)),
-        }),
+        sides: None,
+        mode_delta: Some(ModeDelta::Mode { before, after }),
         hunks: vec![Hunk {
             old_start: 0,
             old_lines: 0,
@@ -2068,7 +2076,8 @@ fn zero_hunk_diff_placeholders_name_the_change() {
     let added = whole_file_app(zero_hunk_file(
         ChangeKind::Untracked,
         None,
-        Some(side(0o100644)),
+        Some(side()),
+        None,
     ));
     assert!(added.diff_lines().iter().any(|line| matches!(
         line,
@@ -2077,7 +2086,8 @@ fn zero_hunk_diff_placeholders_name_the_change() {
 
     let deleted = whole_file_app(zero_hunk_file(
         ChangeKind::Deleted,
-        Some(side(0o100644)),
+        Some(side()),
+        None,
         None,
     ));
     assert!(deleted.diff_lines().iter().any(|line| matches!(
@@ -2089,8 +2099,12 @@ fn zero_hunk_diff_placeholders_name_the_change() {
     // bits say so: calling it a mode change would read as a chmod.
     let type_changed = whole_file_app(zero_hunk_file(
         ChangeKind::TypeChanged,
-        Some(side(0o100644)),
-        Some(side(0o120000)),
+        Some(side()),
+        Some(side()),
+        Some(ModeDelta::Type {
+            before: 0o100644,
+            after: 0o120000,
+        }),
     ));
     assert!(type_changed.diff_lines().iter().any(|line| matches!(
         line,
@@ -2105,7 +2119,7 @@ fn enter_on_a_lone_degenerate_hunk_is_a_polite_no_op() {
     // action already works at file level.
     for file in [
         mode_only_file(0o100644, 0o100755),
-        zero_hunk_file(ChangeKind::Untracked, None, Some(side(0o100644))),
+        zero_hunk_file(ChangeKind::Untracked, None, Some(side()), None),
     ] {
         let mut app = whole_file_app(file);
         let logged = app.log.len();

@@ -60,12 +60,15 @@ at all, so `space` and assign politely refuse on it (ADR 0007).
 _Avoid_: file entry (that's the type), cell, file (when the row is meant)
 
 **Whole-file hunk**:
-The degenerate single hunk presented by a change with no line-addressable
+The degenerate hunk presented by a change with no line-addressable
 content: a changed binary file (ADR 0009), an empty file added or an
-empty file deleted (ADR 0017). One membership record spanning the file,
-anchored by a blob-OID pair instead of verbatim lines. Follows normal
-assign rules; keeps membership by path continuity; `◐` unreachable, `◑`
-derives by OID compare; hunk-mode entry is a polite no-op.
+empty file deleted (ADR 0017). Usually a file's only hunk, though a mode
+hunk sits beside it when the file was chmod'd too. One membership record
+spanning the file, anchored by a blob-OID pair instead of verbatim
+lines. Follows normal assign rules; keeps membership by path continuity;
+`◐` unreachable, `◑` derives by OID and object-kind compare —
+permission bits belong to the mode hunk. Hunk-mode entry is a polite
+no-op where it is the file's only hunk.
 _Avoid_: binary hunk, file-level membership (as a general mode)
 
 **Mode hunk**:

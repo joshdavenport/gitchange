@@ -120,10 +120,16 @@ pub struct PayloadFile {
     /// The diff(HEAD↔index) hunks this commit carries, in file order.
     /// Empty for a whole-file hunk, which commits via `whole_file`.
     pub hunks: Vec<PayloadHunk>,
-    /// A whole-file hunk's payload (ADR 0009, ADR 0017); `None` for a
-    /// file with text hunks. Participates in equality, so a re-staged
-    /// blob drifts a confirmation like re-staged text hunks do.
+    /// A whole-file hunk's payload (ADR 0009, ADR 0017); `None` when no
+    /// whole-file hunk is in the payload. Participates in equality, so a
+    /// re-staged blob drifts a confirmation like re-staged text hunks do.
     pub whole_file: Option<WholeFilePayload>,
+    /// The staged filemode a mode hunk in this payload commits
+    /// (ADR 0017) — `None` when the payload carries no mode hunk, and
+    /// for a whole-file hunk, whose index entry brings its own mode.
+    /// Participates in equality: a re-flipped mode drifts a confirmation
+    /// like re-staged content does.
+    pub mode: Option<u32>,
 }
 
 /// What a whole-file hunk commits (ADR 0009, ADR 0017): the staged blob
@@ -160,6 +166,9 @@ pub(crate) struct PathPlan {
     pub committed: Vec<HunkHeader>,
     /// A binary file's whole-file selection (ADR 0009).
     pub whole_file: Option<WholeFilePayload>,
+    /// The mode hunk's staged filemode, when the payload carries one
+    /// (ADR 0017).
+    pub mode: Option<u32>,
     /// Records of fully-consumed hunks (`●`: index == worktree at commit
     /// time) — removed explicitly (ADR 0004).
     pub consumed: Vec<RecordKey>,
@@ -224,63 +233,92 @@ pub(crate) fn plan(
             continue;
         }
         let index_file = index.iter().find(|candidate| candidate.path == file.path);
-        // A lone degenerate hunk commits whole (ADR 0009, ADR 0017): the
+        let staged_hunks = owned
+            .iter()
+            .filter(|hunk| hunk.stage == HunkStage::Staged)
+            .count();
+        let stale_hunks = owned
+            .iter()
+            .filter(|hunk| hunk.stage == HunkStage::StagedStale)
+            .count();
+        // A whole-file hunk commits whole (ADR 0009, ADR 0017): the
         // staged blob and its mode copied into the temp index verbatim —
-        // no hunk selection to run. That covers the mode hunk of a bare
-        // chmod too, whose staged blob is HEAD's, so the entry carries
-        // the mode and nothing else. An owned non-unstaged hunk implies
-        // the index differs from HEAD here, so the index diff sees the
-        // path and carries sides (it does for text content too — the
-        // mixed binary-worktree-over-staged-text case commits its staged
-        // text whole-file); the `else` is defensive only.
-        if file.presents_lone_degenerate_hunk() {
+        // no hunk selection to run, and none to make, the file's content
+        // having no lines to address. An owned mode hunk beside it needs
+        // nothing extra: that same entry carries the staged mode. An
+        // owned non-unstaged hunk implies the index differs from HEAD
+        // here, so the index diff sees the path and carries sides; the
+        // `else` is defensive only.
+        //
+        // Whatever else the entry holds rides along with it, being one
+        // entry: committing a chmod'd binary's whole-file hunk lands a
+        // staged flip whose mode hunk another changelist owns, and
+        // committing it over staged text lands that text. The whole-file
+        // grain is ADR 0009's — a binary has no smaller committable
+        // unit — but the second case is new with the pairing fix, which
+        // is what lets two changelists hold one entry's deltas. Issue
+        // #105 ends the mode half; the content half wants a decision of
+        // its own.
+        if owned.iter().any(|hunk| hunk.is_whole_file()) {
             let Some(sides) = index_file.and_then(|file| file.sides.as_ref()) else {
                 continue;
             };
             let whole_file = WholeFilePayload {
                 staged_oid: sides.changed_oid(),
             };
-            let hunk = owned[0];
-            let mut consumed = Vec::new();
-            let mut retained = Vec::new();
-            if hunk.stage == HunkStage::Staged {
-                consumed.push(RecordKey::of(hunk));
-            } else {
-                retained.push(Retained {
-                    key: RecordKey::of(hunk),
-                    // Degenerate whole-file coordinates: the aftermath
-                    // rewrites binary records from the residual diff's
-                    // OIDs, not from this region.
-                    region: (0, 0),
-                });
-            }
+            let (consumed, retained) = aftermath_keys(&owned, |_| {
+                // Degenerate whole-file coordinates: the aftermath
+                // rewrites binary records from the residual diff's
+                // OIDs, not from this region.
+                (0, 0)
+            });
             payload_files.push(PayloadFile {
                 path: file.path.clone(),
-                staged_hunks: usize::from(hunk.stage == HunkStage::Staged),
-                stale_hunks: usize::from(hunk.stage == HunkStage::StagedStale),
+                staged_hunks,
+                stale_hunks,
                 hunks: Vec::new(),
                 whole_file: Some(whole_file.clone()),
+                mode: None,
             });
             paths.push(PathPlan {
                 path: file.path.clone(),
                 committed: Vec::new(),
                 whole_file: Some(whole_file),
+                mode: None,
                 consumed,
                 retained,
             });
             continue;
         }
+        // The mode hunk commits its staged filemode and nothing else
+        // (ADR 0017) — the blob under it is whatever the selected
+        // content hunks make of it, or HEAD's when none are selected.
+        // An owned mode hunk that is not unstaged implies the index
+        // carries the flip, so the index diff reports a changed-side
+        // mode; the `and_then` is defensive only.
+        let mode = owned
+            .iter()
+            .any(|hunk| hunk.is_mode_change())
+            .then(|| index_file.and_then(|file| file.modes.changed))
+            .flatten();
         let index_hunks: &[DiffHunk] = index_file
             .map(|candidate| candidate.hunks.as_slice())
             .unwrap_or(&[]);
         // The committable atoms are index hunks; selection mirrors the
         // universe's pairing (overlap on HEAD-side ranges). An index hunk
         // straddling two changelists' hunks commits whole — the payload
-        // inspection shows exactly what goes.
+        // inspection shows exactly what goes. Only content hunks select:
+        // a mode hunk's zeroed coordinates address no line, and would
+        // otherwise drag in an insertion at the top of the file.
+        let content_hunks: Vec<&Hunk> = owned
+            .iter()
+            .copied()
+            .filter(|hunk| !hunk.is_mode_change())
+            .collect();
         let committed: Vec<&DiffHunk> = index_hunks
             .iter()
             .filter(|candidate| {
-                owned.iter().any(|hunk| {
+                content_hunks.iter().any(|hunk| {
                     ranges_overlap(
                         (hunk.old_start, hunk.old_lines),
                         (candidate.old_start, candidate.old_lines),
@@ -288,34 +326,17 @@ pub(crate) fn plan(
                 })
             })
             .collect();
-        if committed.is_empty() {
+        if committed.is_empty() && mode.is_none() {
             continue;
         }
         let headers: Vec<HunkHeader> = committed.iter().map(|hunk| header(hunk)).collect();
-
-        let mut consumed = Vec::new();
-        let mut retained = Vec::new();
-        for hunk in &owned {
-            if hunk.stage == HunkStage::Staged {
-                consumed.push(RecordKey::of(hunk));
-            } else {
-                retained.push(Retained {
-                    key: RecordKey::of(hunk),
-                    region: committed_region(hunk, &committed, &headers),
-                });
-            }
-        }
+        let (consumed, retained) =
+            aftermath_keys(&owned, |hunk| committed_region(hunk, &committed, &headers));
 
         payload_files.push(PayloadFile {
             path: file.path.clone(),
-            staged_hunks: owned
-                .iter()
-                .filter(|hunk| hunk.stage == HunkStage::Staged)
-                .count(),
-            stale_hunks: owned
-                .iter()
-                .filter(|hunk| hunk.stage == HunkStage::StagedStale)
-                .count(),
+            staged_hunks,
+            stale_hunks,
             hunks: committed
                 .iter()
                 .map(|hunk| PayloadHunk {
@@ -327,11 +348,13 @@ pub(crate) fn plan(
                 })
                 .collect(),
             whole_file: None,
+            mode,
         });
         paths.push(PathPlan {
             path: file.path.clone(),
             committed: headers,
             whole_file: None,
+            mode,
             consumed,
             retained,
         });
@@ -343,6 +366,29 @@ pub(crate) fn plan(
         },
         paths,
     }
+}
+
+/// Split the payload's owned hunks into the records the aftermath
+/// removes (`●`, fully consumed by the commit) and those it rewrites
+/// (`◑`, whose residue survives), each rewritten hunk paired with the
+/// new-HEAD region `region_of` puts its committed content in.
+fn aftermath_keys<'a>(
+    owned: &[&'a Hunk],
+    region_of: impl Fn(&'a Hunk) -> (u32, u32),
+) -> (Vec<RecordKey>, Vec<Retained>) {
+    let mut consumed = Vec::new();
+    let mut retained = Vec::new();
+    for hunk in owned {
+        if hunk.stage == HunkStage::Staged {
+            consumed.push(RecordKey::of(hunk));
+        } else {
+            retained.push(Retained {
+                key: RecordKey::of(hunk),
+                region: region_of(hunk),
+            });
+        }
+    }
+    (consumed, retained)
 }
 
 /// The record aftermath (ADR 0012), run under the commit's locked state

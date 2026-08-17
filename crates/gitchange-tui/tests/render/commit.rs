@@ -15,6 +15,7 @@ fn payload(staged: usize, stale: usize) -> gitchange_core::CommitPayload {
             stale_hunks: stale,
             hunks: Vec::new(),
             whole_file: None,
+            mode: None,
         }],
     }
 }

@@ -199,6 +199,7 @@ fn the_conflicts_group_renders_first_without_stage_marks() {
         kind: ChangeKind::Conflicted,
         binary: false,
         sides: None,
+        mode_delta: None,
         hunks: Vec::new(),
     });
     app.apply_snapshot(busy);

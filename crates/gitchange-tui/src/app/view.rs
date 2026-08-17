@@ -3,8 +3,8 @@
 //! reads over the current snapshot and selections.
 
 use gitchange_core::{
-    CONFLICTS, ChangeKind, ChangedFile, FileSides, FileStage, GroupKind, Hunk, HunkStage,
-    ModeDelta, SideInfo, UNASSIGNED, count_noun,
+    CONFLICTS, ChangeKind, ChangedFile, FileStage, GroupKind, Hunk, HunkStage, ModeDelta, SideInfo,
+    UNASSIGNED, count_noun,
 };
 
 use super::keymap::{self, BindingId};
@@ -557,7 +557,7 @@ pub(super) fn owned_hunks(file: &ChangedFile, owner: Option<&str>) -> Vec<Hunk> 
 /// variant — an index-only change has no worktree kind to trust.
 fn degenerate_placeholder(file: &ChangedFile) -> String {
     let sides = file.sides.as_ref();
-    let delta = sides.and_then(FileSides::mode_delta);
+    let delta = file.mode_delta;
     if file.hunks.iter().any(Hunk::is_mode_change) {
         // The mode hunk's placeholder text *is* its header: a mode delta
         // has no coordinates to frame. A mode hunk exists because the

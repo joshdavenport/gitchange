@@ -18,7 +18,7 @@ pub use commit::{
     PayloadHunk, WholeFilePayload, commit_echo,
 };
 pub use diff::{
-    ChangeKind, DiffHunk, FileDiff, FileSides, HunkLine, ModeDelta, RepoDiffs, SideInfo,
+    ChangeKind, DiffHunk, FileDiff, FileModes, FileSides, HunkLine, ModeDelta, RepoDiffs, SideInfo,
 };
 pub use engine::{Condition, Engine, EngineEvent};
 pub use error::{ApplySite, Error};

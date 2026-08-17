@@ -4,7 +4,9 @@ use std::process::Command;
 
 use crate::backend::{CommitPathSpec, CommittedId, GitBackend, HunkHeader};
 use crate::commit::{AMEND_FLAG, CommitOptions, NO_VERIFY_FLAG};
-use crate::diff::{ChangeKind, DiffHunk, FileDiff, FileSides, HunkLine, RepoDiffs, SideInfo};
+use crate::diff::{
+    ChangeKind, DiffHunk, FileDiff, FileModes, FileSides, HunkLine, RepoDiffs, SideInfo,
+};
 use crate::error::{ApplySite, Error};
 use crate::snapshot::{CommitInfo, GitOperation, Head};
 use crate::universe::ranges_overlap;
@@ -403,6 +405,35 @@ impl Git2Backend {
         index.write().map_err(backend_error)
     }
 
+    /// Set the temp index entry's filemode to the mode hunk's, keeping
+    /// whatever blob the payload put there (ADR 0017). A spec with no
+    /// mode hunk is a no-op, as is a path with no temp entry — a payload
+    /// that deleted the file has no mode to land.
+    ///
+    /// The live index must still hold that mode: it is the freshness
+    /// check the staged-blob comparison is for a whole-file payload
+    /// (ADR 0004), so a flip reverted since the payload was derived
+    /// refuses rather than committing a mode the user never confirmed.
+    fn write_temp_mode(&self, temp: &mut git2::Index, spec: &CommitPathSpec) -> Result<(), Error> {
+        let Some(mode) = spec.mode else {
+            return Ok(());
+        };
+        let live_mode = self
+            .repo
+            .index()
+            .map_err(backend_error)?
+            .get_path(Path::new(&spec.path), 0)
+            .map(|entry| entry.mode);
+        if live_mode != Some(mode) {
+            return Err(index_moved(format_args!("{} staged mode", spec.path)));
+        }
+        let Some(entry) = temp.get_path(Path::new(&spec.path), 0) else {
+            return Ok(());
+        };
+        temp.add(&git2::IndexEntry { mode, ..entry })
+            .map_err(backend_error)
+    }
+
     fn commit_via_temp_index(
         &self,
         index_path: &Path,
@@ -451,6 +482,13 @@ impl Git2Backend {
                     }
                     None => {}
                 }
+                continue;
+            }
+            // A payload of nothing but a mode hunk: the base tree's entry
+            // is already in the temp index, and the mode write below is
+            // the whole of what this path commits (ADR 0017).
+            if spec.hunks.is_empty() {
+                self.write_temp_mode(&mut temp, spec)?;
                 continue;
             }
             // Same options as `diffs()` produced the payload headers
@@ -505,6 +543,7 @@ impl Git2Backend {
                 }
                 None => {}
             }
+            self.write_temp_mode(&mut temp, spec)?;
         }
         temp.write().map_err(backend_error)?;
 
@@ -745,15 +784,15 @@ impl Git2Backend {
             };
             // Worktree diffs pay the anchor cost — a full content hash
             // of the on-disk file (ADR 0009's stated refresh cost) —
-            // only for the files that present a degenerate hunk: binary
-            // ones, and zero-hunk changes, whose anchor and staging
-            // evidence are the sides too, mode bits included (ADR 0017).
-            // Index diffs carry sides for every file (two odb header
-            // reads): the commit plan needs a staged-blob OID even when a
-            // binary worktree change sits over staged text content.
-            let degenerate = kind != ChangeKind::Conflicted && (binary || hunks.is_empty());
+            // only for the files that can present a whole-file hunk:
+            // binary ones and hunk-less changes, whose anchor and staging
+            // evidence are the sides. Index diffs carry sides for every
+            // file (two odb header reads): the commit plan needs a
+            // staged-blob OID even when a binary worktree change sits
+            // over staged text content.
+            let hunkless = kind != ChangeKind::Conflicted && (binary || hunks.is_empty());
             let compute_sides = match changed_side {
-                ChangedSide::Worktree => degenerate,
+                ChangedSide::Worktree => hunkless,
                 ChangedSide::Index => kind != ChangeKind::Conflicted,
             };
             let sides = if compute_sides {
@@ -766,18 +805,24 @@ impl Git2Backend {
                 kind,
                 binary,
                 hunks,
+                // Read off the delta for every file, sides or not: the
+                // mode hunk sits beside content hunks (ADR 0017), and
+                // both modes are already in hand here.
+                modes: FileModes {
+                    head: filemode(&delta.old_file()),
+                    changed: filemode(&delta.new_file()),
+                },
                 sides,
             });
         }
         Ok(files)
     }
 
-    /// A delta's per-side info (ADR 0009, ADR 0017): the HEAD-side blob
-    /// from the odb, the changed side hashed `hash-object`-style from
-    /// disk (worktree diff) or read off the staged blob (index diff),
-    /// each with the filemode git reports for that side. A missing side
-    /// — added files' HEAD, deletions' changed — is `None`. Odb sides
-    /// read headers only, never content.
+    /// A delta's per-side blob info (ADR 0009): the HEAD-side blob from
+    /// the odb, the changed side hashed `hash-object`-style from disk
+    /// (worktree diff) or read off the staged blob (index diff). A
+    /// missing side — added files' HEAD, deletions' changed — is `None`.
+    /// Odb sides read headers only, never content.
     ///
     /// The disk hash sees raw bytes, no clean filters: under a filter
     /// driver (Git LFS) the worktree hash can never equal the staged
@@ -802,18 +847,13 @@ impl Git2Backend {
             Ok(Some(SideInfo {
                 oid: id.to_string(),
                 size: size as u64,
-                mode: filemode(&file),
             }))
         };
         let head = odb_side(delta.old_file())?;
         let changed = match changed_side {
-            // The delta's new side names the on-disk mode; its blob id
-            // is not to be trusted for a workdir diff, so the content is
-            // hashed instead.
-            ChangedSide::Worktree => self.worktree_side(path)?.map(|side| SideInfo {
-                mode: filemode(&delta.new_file()),
-                ..side
-            }),
+            // A workdir diff's new-side blob id is not to be trusted, so
+            // the content is hashed instead.
+            ChangedSide::Worktree => self.worktree_side(path)?,
             ChangedSide::Index => odb_side(delta.new_file())?,
         };
         Ok(FileSides { head, changed })
@@ -822,8 +862,8 @@ impl Git2Backend {
     /// Hash the worktree content at `path` as a blob, `None` when
     /// nothing is on disk. A symlink's blob is its target string (git
     /// semantics), which also keeps a dangling link from failing the
-    /// refresh. The mode is the caller's to fill: git's own view of it
-    /// (0o100644/0o100755) is not the raw filesystem mode.
+    /// refresh. The mode is git's own ([`FileModes`]), read off the
+    /// delta: the raw filesystem mode is not it.
     fn worktree_side(&self, path: &str) -> Result<Option<SideInfo>, Error> {
         let Some(file) = self.repo.workdir().map(|root| root.join(path)) else {
             return Ok(None);
@@ -839,14 +879,12 @@ impl Git2Backend {
             return Ok(Some(SideInfo {
                 oid: oid.to_string(),
                 size: bytes.len() as u64,
-                mode: None,
             }));
         }
         let oid = git2::Oid::hash_file(git2::ObjectType::Blob, &file).map_err(backend_error)?;
         Ok(Some(SideInfo {
             oid: oid.to_string(),
             size: metadata.len(),
-            mode: None,
         }))
     }
 }

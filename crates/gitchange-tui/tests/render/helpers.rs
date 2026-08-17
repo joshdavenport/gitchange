@@ -49,6 +49,7 @@ pub(crate) fn snapshot() -> Snapshot {
                 kind: ChangeKind::Modified,
                 binary: false,
                 sides: None,
+                mode_delta: None,
                 hunks: vec![hunk(8, None, HunkStage::Unstaged)],
             },
             ChangedFile {
@@ -56,6 +57,7 @@ pub(crate) fn snapshot() -> Snapshot {
                 kind: ChangeKind::Modified,
                 binary: false,
                 sides: None,
+                mode_delta: None,
                 // Split across two changelists, and partial within
                 // 'fixes' — so a Files row under 'fixes' is ◐ 1/2 while
                 // the whole file is 1/3 (issue #97).

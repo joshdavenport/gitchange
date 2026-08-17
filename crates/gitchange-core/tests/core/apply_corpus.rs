@@ -736,10 +736,11 @@ line 9\nline 10\nline 11\nline 14\nline 15\nline 16\n"
             ..Case::new(Op::StageRow("tool.sh"))
         };
 
-    // The ride-along rule (ADR 0017): with content hunks present there is
-    // no separate mode hunk, so any stage op that writes the file's index
-    // entry carries the worktree mode — including a partial stage of one
-    // hunk out of two.
+    // The surviving ride-along (issue #105 ends it): staging a content
+    // hunk writes the file's index entry, and the entry carries the
+    // worktree mode with it — even though the mode has a hunk of its own
+    // now, and this op is not it. Hunk 1 is the first text hunk; hunk 0
+    // is the mode hunk (ADR 0017: it sits first).
     #[cfg(unix)]
     stage_hunk_of_a_chmod_plus_edit_carries_the_mode:
         Case {
@@ -751,7 +752,80 @@ line 9\nline 10\nline 11\nline 14\nline 15\nline 16\n"
             worktree_exec: vec!["tool.sh"],
             index: vec![("tool.sh", Some(lf(16, &[(4, "EDIT four")])))],
             index_modes: vec![("tool.sh", 0o100755)],
+            ..Case::new(Op::StageHunk { path: "tool.sh", hunk: 1 })
+        };
+
+    // ——— mode deltas beside content hunks (issue #103) ———
+
+    // The forward corner: an edit staged, reverted in the worktree, then
+    // a chmod. Staging the mode hunk writes the mode and keeps the staged
+    // blob — the content the user staged is still there, at 755.
+    #[cfg(unix)]
+    stage_mode_hunk_beside_an_index_only_content_hunk_keeps_the_staged_blob:
+        Case {
+            base: vec![("tool.sh", b"one\n".to_vec())],
+            stage_writes: vec![("tool.sh", b"two\n".to_vec())],
+            worktree_writes: vec![("tool.sh", b"one\n".to_vec())],
+            worktree_exec: vec!["tool.sh"],
+            index: vec![("tool.sh", Some(b"two\n".to_vec()))],
+            index_modes: vec![("tool.sh", 0o100755)],
             ..Case::new(Op::StageHunk { path: "tool.sh", hunk: 0 })
+        };
+
+    // The mirror corner: the flip staged, then the worktree edited.
+    // Unstaging the mode hunk restores HEAD's mode and keeps the blob —
+    // the worktree edit stays out of the index either way.
+    #[cfg(unix)]
+    unstage_mode_hunk_beside_an_unstaged_content_hunk_keeps_the_staged_blob:
+        Case {
+            base: vec![("tool.sh", b"one\n".to_vec())],
+            stage_exec: vec!["tool.sh"],
+            worktree_writes: vec![("tool.sh", b"two\n".to_vec())],
+            index: vec![("tool.sh", Some(b"one\n".to_vec()))],
+            index_modes: vec![("tool.sh", 0o100644)],
+            ..Case::new(Op::UnstageHunk { path: "tool.sh", hunk: 0 })
+        };
+
+    // Its stage direction is the no-op the derivation implies: the index
+    // already holds the worktree's mode, so `space` on the mode hunk
+    // moves nothing — and does not touch the unstaged content either.
+    #[cfg(unix)]
+    stage_mode_hunk_already_staged_beside_a_content_hunk_moves_nothing:
+        Case {
+            base: vec![("tool.sh", b"one\n".to_vec())],
+            stage_exec: vec!["tool.sh"],
+            worktree_writes: vec![("tool.sh", b"two\n".to_vec())],
+            index: vec![("tool.sh", Some(b"one\n".to_vec()))],
+            index_modes: vec![("tool.sh", 0o100755)],
+            ..Case::new(Op::StageHunk { path: "tool.sh", hunk: 0 })
+        };
+
+    // A chmod'd, content-edited binary: the whole-file hunk (hunk 1)
+    // stages the bytes, and the mode rides along with the entry write
+    // until issue #105 ends that.
+    #[cfg(unix)]
+    stage_whole_file_hunk_of_a_chmodded_binary_edit:
+        Case {
+            base: vec![("blob.bin", vec![0u8, 1, 2, 3])],
+            worktree_writes: vec![("blob.bin", vec![0u8, 9, 9, 9, 9])],
+            worktree_exec: vec!["blob.bin"],
+            index: vec![("blob.bin", Some(vec![0u8, 9, 9, 9, 9]))],
+            index_modes: vec![("blob.bin", 0o100755)],
+            ..Case::new(Op::StageHunk { path: "blob.bin", hunk: 1 })
+        };
+
+    // `space` on the Files row of the mirror corner stages what the index
+    // does not hold — the content hunk — and leaves the already-staged
+    // mode hunk alone; the row's mode survives either way.
+    #[cfg(unix)]
+    stage_row_of_a_staged_flip_with_an_unstaged_edit_stages_the_content:
+        Case {
+            base: vec![("tool.sh", b"one\n".to_vec())],
+            stage_exec: vec!["tool.sh"],
+            worktree_writes: vec![("tool.sh", b"two\n".to_vec())],
+            index: vec![("tool.sh", Some(b"two\n".to_vec()))],
+            index_modes: vec![("tool.sh", 0o100755)],
+            ..Case::new(Op::StageRow("tool.sh"))
         };
 
     // ——— non-UTF-8 text (the #25 heads-up: hunk strings are lossily

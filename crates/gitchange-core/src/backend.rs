@@ -128,9 +128,16 @@ pub struct CommittedId {
 /// whole-file selection: the live index entry copied in verbatim, with
 /// `whole_file.staged_oid` as the freshness check. `whole_file` and
 /// `hunks` are mutually exclusive.
+///
+/// `mode` is the mode hunk's (ADR 0017): the filemode the temp index
+/// entry takes, over whatever content the hunks make of it. It never
+/// accompanies `whole_file`, whose entry brings its own mode, and it
+/// stands alone when a payload carries a file's mode hunk but none of
+/// its content.
 #[derive(Debug, Clone)]
 pub struct CommitPathSpec {
     pub path: String,
     pub hunks: Vec<HunkHeader>,
     pub whole_file: Option<WholeFilePayload>,
+    pub mode: Option<u32>,
 }

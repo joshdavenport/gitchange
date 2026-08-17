@@ -363,9 +363,12 @@ fn a_staged_binary_deletion_commits_the_removal() {
 #[test]
 fn a_binary_worktree_over_staged_text_commits_the_staged_text() {
     // The mixed case: text content staged, then the worktree file
-    // replaced with binary bytes. The universe sees one `◑` whole-file
-    // hunk; committing carries the staged text blob whole-file rather
-    // than silently excluding the path.
+    // replaced with binary bytes. Both deltas are the universe's, each
+    // `◑` — the worktree's binary rewrite as a whole-file hunk, the
+    // staged edit as an index-only text hunk (ADR 0017: no side's delta
+    // is dropped because the other side's hunks survived pairing).
+    // Committing carries the staged text blob whole-file rather than
+    // silently excluding the path.
     let fixture = RepoFixture::new();
     fixture.write("notes.txt", "original\n").commit_all("init");
     let repo = repo(&fixture);
@@ -378,7 +381,7 @@ fn a_binary_worktree_over_staged_text_commits_the_staged_text() {
 
     let payload = repo.commit_payload(Some("work")).unwrap();
     assert_eq!(payload.file_count(), 1);
-    assert_eq!(payload.stale_hunks(), 1, "index and worktree differ: ◑");
+    assert_eq!(payload.stale_hunks(), 2, "index and worktree differ: ◑");
 
     commit(&repo, Some("work"), "mixed staged text");
     assert_eq!(

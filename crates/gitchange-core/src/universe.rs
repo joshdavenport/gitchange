@@ -3,6 +3,7 @@
 //! comparing the two. Pure — a function of the diffs alone.
 
 use std::collections::BTreeMap;
+use std::convert;
 
 use crate::diff::{ChangeKind, DiffHunk, FileDiff, FileSides, HunkLine, ModeDelta, RepoDiffs};
 use crate::state::{OidAnchor, RecordAnchors};
@@ -17,17 +18,24 @@ pub struct ChangedFile {
     /// A binary file's change is one whole-file degenerate hunk
     /// (ADR 0009): OID-anchored, staging derived by OID compare.
     pub binary: bool,
-    /// Hunks in file order: the worktree diff's hunks plus any index-only
+    /// Hunks in file order, the mode hunk first where there is one
+    /// (ADR 0017): then the worktree diff's hunks plus any index-only
     /// hunks (staged then worktree-reverted). Never empty for a
-    /// non-conflicted file — a change with no line content presents one
-    /// degenerate hunk instead: a mode hunk for a mode-only change, a
-    /// whole-file hunk otherwise (ADR 0017).
+    /// non-conflicted file — a change with no line content presents a
+    /// degenerate hunk instead: the mode hunk when a chmod is the whole
+    /// of it, a whole-file hunk otherwise.
     pub hunks: Vec<Hunk>,
-    /// Per-side blob info for a file presenting a degenerate hunk —
-    /// whole-file or mode — worktree view preferred: the diff
-    /// placeholder's size and mode material, and the mode hunk's staging
-    /// evidence (ADR 0009, ADR 0017). `None` for a file with text hunks.
+    /// Per-side blob info for a file presenting a whole-file hunk,
+    /// worktree view preferred: the diff placeholder's sizes and the
+    /// hunk's anchor material (ADR 0009). `None` for a file whose change
+    /// is line-addressable or a bare chmod.
     pub sides: Option<FileSides>,
+    /// The filemode delta this file presents — the mode hunk's when it
+    /// has one, a type change's otherwise — worktree view preferred, as
+    /// coordinates are. Carried for every file, since a mode hunk sits
+    /// beside content hunks (ADR 0017). `None` when the modes agree, or
+    /// where git reports none.
+    pub mode_delta: Option<ModeDelta>,
 }
 
 impl ChangedFile {
@@ -35,30 +43,26 @@ impl ChangedFile {
         self.hunks.len()
     }
 
-    /// Whether this file's whole change is the one degenerate whole-file
-    /// hunk — a changed binary (ADR 0009), an empty file added or
-    /// deleted, or a type change (ADR 0017). False for a file with
-    /// line-addressable hunks, for a mode-only change (that is a mode
+    /// Whether this file's content presents a whole-file hunk — a
+    /// changed binary (ADR 0009), an empty file added or deleted, or a
+    /// type change (ADR 0017). A mode hunk may sit beside it (a chmod'd
+    /// binary edit), so this is not a hunk count; it is the domain
+    /// question `CONTEXT.md` defines, which is also what a file's
+    /// [`ChangedFile::sides`] are carried for. False for a file whose
+    /// change is line-addressable, for a bare chmod (that is a mode
     /// hunk), and for a conflicted file, which has no hunks at all.
     ///
-    /// The one test for *this* shape, asked where the whole-file index
-    /// write is what a hunk op means, rather than re-deriving it from
-    /// `binary` or from a hunk count. Readers that treat every degenerate
-    /// hunk alike — the commit planner, the diff panel — ask
-    /// [`ChangedFile::presents_lone_degenerate_hunk`] instead.
+    /// Frontends and tests ask it of a file; core's own staging and
+    /// commit routing ask [`Hunk::is_whole_file`] of the hunk in hand
+    /// instead, since the hunks of one file no longer move alike.
     pub fn presents_whole_file_hunk(&self) -> bool {
-        matches!(
-            self.hunks.as_slice(),
-            [hunk] if matches!(hunk.identity, HunkIdentity::WholeFile { .. })
-        )
+        self.hunks.iter().any(Hunk::is_whole_file)
     }
 
     /// Whether this file's whole change is one degenerate hunk of either
     /// flavour — whole-file or mode. The shape with nothing to drill
     /// into: the diff panel renders its placeholder and hunk-mode entry
-    /// is the polite no-op (ADR 0009's idiom, ADR 0017), and the commit
-    /// planner hands it the whole-file payload because one index entry
-    /// carries the whole change either way.
+    /// is the polite no-op (ADR 0009's idiom, ADR 0017).
     pub fn presents_lone_degenerate_hunk(&self) -> bool {
         matches!(
             self.hunks.as_slice(),
@@ -210,6 +214,14 @@ impl Hunk {
         matches!(self.identity, HunkIdentity::ModeChange)
     }
 
+    /// Whether this hunk is a file's whole content as one degenerate
+    /// hunk (ADR 0009, ADR 0017) — what routes staging to the whole-file
+    /// index write. Asked per hunk rather than per file: a mode hunk can
+    /// sit beside a whole-file one, and it moves by its own write.
+    pub fn is_whole_file(&self) -> bool {
+        matches!(self.identity, HunkIdentity::WholeFile { .. })
+    }
+
     /// The identity projected into the fields [`MembershipRecord`] stores
     /// it in. The record is a serde type whose on-disk layout keeps them
     /// independent (ADR 0002 `cat`-debuggability), so this is the one
@@ -338,93 +350,101 @@ fn merge_file(mut worktree: Option<FileDiff>, mut index: Option<FileDiff>) -> Ch
         let either = worktree.as_ref().or(index.as_ref()).expect("one diff side");
         (either.path.clone(), either.binary)
     };
+    // Worktree view preferred, like hunk coordinates: what the file
+    // presents is what the worktree holds, except where only the index
+    // sees the path.
+    let mode_delta = worktree
+        .as_ref()
+        .and_then(|file| file.modes.delta())
+        .or_else(|| index.as_ref().and_then(|file| file.modes.delta()));
     // Quarantine (ADR 0007): the index side of an unmerged path reports
     // `Conflicted` with no hunks, but the worktree side still diffs as
     // `Modified` — conflict markers as content. Merged `Conflicted`
-    // drops every hunk so nothing matches or stages conflict text —
-    // checked before the whole-file branch, so a conflicted file is
-    // quarantined, never a whole-file hunk.
-    let (hunks, degenerate) = if kind == ChangeKind::Conflicted {
-        (Vec::new(), false)
+    // drops every hunk so nothing matches or stages conflict text — it
+    // gates everything below, so a conflicted file carries no hunk of
+    // any flavour.
+    //
+    // Each diff side contributes every delta it carries, and no side's
+    // delta is dropped because the other side's hunks survived pairing
+    // (ADR 0017). A side contributes its text hunks; its permission
+    // flip, as the mode hunk; and — when it has no text hunks and no
+    // flip to carry its change — one whole-file hunk, which is what a
+    // changed binary (ADR 0009), an empty file's add or delete and a
+    // type change each present.
+    //
+    // Read before `taken` empties the hunks: everything after reads the
+    // diffs' modes and sides only, which is all a degenerate hunk is
+    // made of.
+    let whole_file = kind != ChangeKind::Conflicted
+        && [worktree.as_ref(), index.as_ref()]
+            .into_iter()
+            .flatten()
+            .any(carries_whole_file_change);
+    let hunks = if kind == ChangeKind::Conflicted {
+        Vec::new()
     } else {
-        // A binary carries no text hunks by construction (ADR 0009), and
-        // a zero-hunk change — mode-only, empty file added or deleted —
-        // has none to pair (ADR 0017). Both are the same predicament, so
-        // asking what the pairing produced covers them together: nothing
-        // paired means the change has no line content to address, and it
-        // presents one degenerate hunk instead — the mode hunk when the
-        // mode bits are the whole change, the whole-file hunk otherwise.
-        //
-        // Taking the hunks leaves both diffs hunk-less from here on;
-        // everything below reads their sides only, which is all a
-        // degenerate hunk is made of.
         let taken = |file: &mut Option<FileDiff>| {
             file.as_mut()
                 .map(|file| std::mem::take(&mut file.hunks))
                 .unwrap_or_default()
         };
-        let paired = pair_hunks(taken(&mut worktree), taken(&mut index));
-        if !paired.is_empty() {
-            (paired, false)
-        } else if is_mode_only(worktree.as_ref(), index.as_ref()) {
-            (vec![mode_hunk(worktree.as_ref(), index.as_ref())], true)
-        } else {
-            (
-                vec![whole_file_hunk(worktree.as_ref(), index.as_ref())],
-                true,
-            )
+        let text = pair_hunks(taken(&mut worktree), taken(&mut index));
+        // The mode hunk sits first — git's pseudo-hunk #0 position.
+        let mut hunks: Vec<Hunk> = mode_hunk(worktree.as_ref(), index.as_ref())
+            .into_iter()
+            .collect();
+        if whole_file {
+            hunks.push(whole_file_hunk(worktree.as_ref(), index.as_ref()));
         }
+        hunks.extend(text);
+        hunks
     };
-    // Worktree view preferred, like text hunk coordinates; carried only
-    // for a file that presents a degenerate hunk, because index diffs
-    // carry sides for text files too and the staged blob is not what a
-    // text file's changed side shows.
-    let sides = if degenerate {
-        worktree
-            .as_ref()
-            .and_then(|file| file.sides.clone())
-            .or_else(|| index.as_ref().and_then(|file| file.sides.clone()))
-    } else {
-        None
-    };
+    // Carried for the whole-file hunk alone, because index diffs carry
+    // sides for text files too and the staged blob is not what a text
+    // file's changed side shows.
+    let sides = whole_file
+        .then(|| {
+            worktree
+                .as_ref()
+                .and_then(|file| file.sides.clone())
+                .or_else(|| index.as_ref().and_then(|file| file.sides.clone()))
+        })
+        .flatten();
     ChangedFile {
         path,
         kind,
         binary,
         hunks,
         sides,
+        mode_delta,
     }
 }
 
-/// Whether this change is a mode-only change — a chmod and nothing else:
-/// every diff side that sees the path carries a permission-bit delta over
-/// identical content. Such a change's single hunk *is* its mode hunk
-/// (ADR 0017); the whole-file treatment it once received collapses into
-/// the general rule.
+/// Whether this diff side needs a whole-file hunk to carry its change: it
+/// has no text hunks, and a permission flip is not the whole of what it
+/// does. A changed binary (ADR 0009), an empty file added or deleted and
+/// a type change all land here; a chmod between existing modes does not,
+/// its mode hunk being the whole change (ADR 0017).
 ///
-/// Both halves of the test earn their keep. Identical content rules out a
-/// binary rewrite, which keeps its whole-file hunk (a mode delta *beside*
-/// content is issue #103's), and an empty file's add or delete, which has
-/// no second side to compare. The permission-bit half rules out a
+/// Both halves of the mode-only test earn their keep. Identical content
+/// rules out a binary rewrite and an empty file's add or delete, which
+/// has no second side to compare. The permission-bit half rules out a
 /// file↔symlink swap: git reports that with mode bits alone too, but
 /// calling it a mode change would misname it, and its presentation stays
 /// with issue #100.
-fn is_mode_only(worktree: Option<&FileDiff>, index: Option<&FileDiff>) -> bool {
-    let mode_only = |file: &&FileDiff| {
-        file.sides.as_ref().is_some_and(|sides| {
-            sides.same_blob() && matches!(sides.mode_delta(), Some(ModeDelta::Mode { .. }))
-        })
-    };
-    [worktree, index].iter().flatten().all(mode_only)
+fn carries_whole_file_change(file: &FileDiff) -> bool {
+    let mode_only =
+        file.sides.as_ref().is_some_and(FileSides::same_blob) && file.modes.flip().is_some();
+    file.hunks.is_empty() && !mode_only
 }
 
 /// The `○●◑` a degenerate hunk derives, plus whether it is index-only,
-/// from which diffs see the path — the three side-presence arms, which
-/// every degenerate flavour reads the same way: a diff side that doesn't
-/// see the path proves the index holds HEAD's version there. Only the
+/// from the sides that carry it — the three side-presence arms, which
+/// every degenerate flavour reads the same way: a side that carries no
+/// delta proves the index holds HEAD's version there. Only the
 /// both-sides arm differs between flavours, so each passes its own
-/// `index_holds_worktree` test (blobs *and* modes for a whole-file hunk,
-/// modes alone for a mode hunk, whose two sides share one blob).
+/// `index_holds_worktree` test: blobs and object kinds for a whole-file
+/// hunk, the whole mode for a mode hunk, whose two sides share one blob.
 fn degenerate_stage(
     worktree: Option<&FileDiff>,
     index: Option<&FileDiff>,
@@ -449,15 +469,27 @@ fn degenerate_stage(
     }
 }
 
-/// The stand-alone hunk a mode delta presents (ADR 0017). Zeroed
-/// coordinates and no lines, like a whole-file hunk, with staging derived
-/// by comparing the two diffs' changed-side *modes* — the only evidence a
-/// mode-only change has, since its two sides share one blob.
-fn mode_hunk(worktree: Option<&FileDiff>, index: Option<&FileDiff>) -> Hunk {
+/// The stand-alone hunk a mode delta presents (ADR 0017), `None` when
+/// neither diff carries a permission flip. Zeroed coordinates and no
+/// lines, like a whole-file hunk, with staging derived by comparing the
+/// two diffs' changed-side *modes* — the mode hunk's only evidence,
+/// content being the content hunks' business.
+///
+/// The diff sides the pairing reads are the ones carrying a flip, not the
+/// ones seeing the path: a file may well have content hunks on both sides
+/// and a mode delta on one.
+fn mode_hunk(worktree: Option<&FileDiff>, index: Option<&FileDiff>) -> Option<Hunk> {
+    fn flipped(file: Option<&FileDiff>) -> Option<&FileDiff> {
+        file.filter(|file| file.modes.flip().is_some())
+    }
+    let (worktree, index) = (flipped(worktree), flipped(index));
+    if worktree.is_none() && index.is_none() {
+        return None;
+    }
     let (stage, index_only) = degenerate_stage(worktree, index, |worktree, index| {
-        !changed_modes_differ(worktree.sides.as_ref(), index.sides.as_ref())
+        !changed_modes_differ(worktree, index, convert::identity)
     });
-    Hunk {
+    Some(Hunk {
         old_start: 0,
         old_lines: 0,
         new_start: 0,
@@ -466,7 +498,7 @@ fn mode_hunk(worktree: Option<&FileDiff>, index: Option<&FileDiff>) -> Hunk {
         index_only,
         identity: HunkIdentity::ModeChange,
         changelist: None,
-    }
+    })
 }
 
 /// The degenerate single hunk a change with no line-addressable content
@@ -475,21 +507,30 @@ fn mode_hunk(worktree: Option<&FileDiff>, index: Option<&FileDiff>) -> Hunk {
 /// (ADR 0017). Zeroed coordinates, no lines, staging derived by comparing
 /// the two diffs' changed sides instead of lines.
 fn whole_file_hunk(worktree: Option<&FileDiff>, index: Option<&FileDiff>) -> Hunk {
-    // `●` needs the index to hold the worktree's content *and* mode. Mode
-    // participates because a change can be staged at one mode and sit in
-    // the worktree at another — a mode-only change is a mode hunk of its
-    // own now, but a binary rewrite staged before a chmod still lands
-    // here, and the OIDs alone would read that index as `●`.
+    // `●` needs the index to hold the worktree's content, at the same
+    // kind of object. Permission bits deliberately don't participate:
+    // they are the mode hunk's (ADR 0017), and a whole-file hunk that
+    // read `◑` over a chmod would report content as unstaged that the
+    // index holds byte for byte. The object kind does: a blob staged as
+    // a regular file and sitting in the worktree as a symlink to the
+    // same string is not staged.
     let (stage, index_only) = degenerate_stage(worktree, index, |worktree, index| {
-        let (worktree, index) = (worktree.sides.as_ref(), index.sides.as_ref());
-        let same_blob =
-            worktree.and_then(FileSides::changed_oid) == index.and_then(FileSides::changed_oid);
-        same_blob && !changed_modes_differ(worktree, index)
+        let same_blob = worktree.sides.as_ref().and_then(FileSides::changed_oid)
+            == index.sides.as_ref().and_then(FileSides::changed_oid);
+        same_blob && !changed_modes_differ(worktree, index, ModeDelta::kind_bits)
     });
     // The anchor's changed side is what the universe presents: worktree
     // content when the worktree diff sees the path, the staged blob for
-    // index-only files — mirroring text hunks' coordinate convention.
-    let anchored = if index_only { index } else { worktree };
+    // index-only files — mirroring text hunks' coordinate convention. A
+    // diff side with text hunks carries no sides (a content hash is the
+    // stated refresh cost, ADR 0009), so where this hunk is the *other*
+    // side's contribution the anchor comes from there rather than being
+    // empty.
+    let anchored = if index_only {
+        index
+    } else {
+        worktree.filter(|file| file.sides.is_some()).or(index)
+    };
     Hunk {
         old_start: 0,
         old_lines: 0,
@@ -510,15 +551,24 @@ fn whole_file_hunk(worktree: Option<&FileDiff>, index: Option<&FileDiff>) -> Hun
     }
 }
 
-/// Whether the two diffs' changed sides carry different filemodes — the
-/// worktree's against the index's. An unknown mode on either side (git
-/// reported none) proves nothing, so it reads as "same": the conservative
-/// direction, which never invents a `◑`.
-fn changed_modes_differ(worktree: Option<&FileSides>, index: Option<&FileSides>) -> bool {
+/// Whether the two diffs' changed sides — the worktree's against the
+/// index's — differ in the part of the filemode `part` projects: the
+/// whole mode for the mode hunk's `●` test, the object-kind bits alone
+/// (file / symlink / gitlink) for the whole-file hunk's, permission bits
+/// being the mode hunk's business.
+///
+/// One function for both so the conservative rule is stated once: an
+/// unknown mode on either side (git reported none) proves nothing, so it
+/// reads as "same", which never invents a `◑`.
+fn changed_modes_differ(
+    worktree: &FileDiff,
+    index: &FileDiff,
+    part: impl Fn(u32) -> u32 + Copy,
+) -> bool {
     matches!(
         (
-            worktree.and_then(FileSides::changed_mode),
-            index.and_then(FileSides::changed_mode),
+            worktree.modes.changed.map(part),
+            index.modes.changed.map(part),
         ),
         (Some(worktree), Some(index)) if worktree != index
     )

@@ -34,9 +34,17 @@ bugs about it.
   undrivable whenever the content hunks lived on the index side, and made
   the mirror (staged flip, unstaged edit) misread `◑` as `○`.
 - Stage writes the index entry's mode and keeps its blob; unstage
-  restores HEAD's mode and keeps the blob. A mode-only change's hunk *is*
-  its mode hunk — the whole-file treatment it previously received
-  collapses into the general rule.
+  restores HEAD's mode and keeps the blob. Commit carries it as the temp
+  index entry's mode, over whatever blob the payload's content hunks
+  leave there — a payload of nothing but a mode hunk commits HEAD's blob
+  at the staged mode. A mode-only change's hunk *is* its mode hunk — the
+  whole-file treatment it previously received collapses into the general
+  rule.
+- **Permission bits are the mode hunk's alone.** A whole-file hunk
+  derives `●` by blob *and object kind* (ADR 0009's OID compare, plus
+  the file/symlink/gitlink bits a type change moves): a chmod'd binary
+  whose bytes the index holds exactly reads `●` for its content and `○`
+  for its mode, rather than one `◑` that names neither.
 - **No ride-along.** No stage op carries a mode as a rider: content-hunk
   staging and the binary whole-file index write preserve the index
   entry's existing mode. A rider is what silently clobbers a separately

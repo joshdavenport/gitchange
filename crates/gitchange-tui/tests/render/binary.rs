@@ -18,12 +18,10 @@ fn binary_file(changelist: &str) -> ChangedFile {
         head: Some(SideInfo {
             oid: "9ebcc32e".into(),
             size: 12_698,
-            mode: Some(0o100644),
         }),
         changed: Some(SideInfo {
             oid: "0d4f9284".into(),
             size: 15_462,
-            mode: Some(0o100644),
         }),
     };
     ChangedFile {
@@ -43,6 +41,7 @@ fn binary_file(changelist: &str) -> ChangedFile {
             changelist: Some(changelist.to_owned()),
         }],
         sides: Some(sides),
+        mode_delta: None,
     }
 }
 
