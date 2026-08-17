@@ -51,12 +51,21 @@ least one hunk owned by it.
 _Avoid_: file membership
 
 **Whole-file hunk**:
-The degenerate single hunk a changed binary file presents: one membership
-record spanning the file, anchored by a blob-OID pair instead of verbatim
-lines. Follows normal assign rules; keeps membership by path continuity
-while the path stays binary-changed; `◐` unreachable, `◑` derives
-by OID compare; hunk-mode entry is a polite no-op.
+The degenerate single hunk presented by a change with no line-addressable
+content: a changed binary file (ADR 0009) or a zero-hunk change
+(ADR 0017). One membership record spanning the file, anchored by a
+blob-OID pair instead of verbatim lines. Follows normal assign rules;
+keeps membership by path continuity; `◐` unreachable, `◑` derives by OID
+compare (mode-bit compare for a mode-only change); hunk-mode entry is a
+polite no-op.
 _Avoid_: binary hunk, file-level membership (as a general mode)
+
+**Zero-hunk change**:
+A change git reports with no text hunks: a mode-only change, an empty
+file added, an empty file deleted. Presents one whole-file hunk
+(ADR 0017) — every non-conflicted change in the universe carries at
+least one hunk, so nothing falls out of membership, staging, or commit.
+_Avoid_: hunkless change, invisible change
 
 **Assign**:
 Placing hunks under a changelist's ownership by hand — the manual

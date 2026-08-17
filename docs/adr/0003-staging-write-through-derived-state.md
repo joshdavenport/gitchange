@@ -57,16 +57,13 @@ A Files row is a (changelist, file) cell, not a bare path: the same path
 under two changelists is two rows, two selections, and two `space`
 targets, and each row's staging glyph and counts derive from the hunks its
 changelist owns. For a file wholly owned by one changelist — the common
-case — the row's toggle and whole-file staging coincide, with one
-exception: a change carrying no hunks at all (a mode-only change, an empty
-untracked file) has an empty row scope, so `space` moves nothing and says
-so. Such a change is outside every changelist's commit payload whether the
-index holds it or not, so nothing gitchange could act on is lost.
-gitchange has no whole-file stage op of its own: `git add <path>` is that
-op, stays valid under write-through, and is absorbed at the next refresh
-like any external staging (below). A binary file presents one whole-file
-hunk (ADR 0009), so its row's toggle is that hunk's whole-file index
-write.
+case — the row's toggle and whole-file staging coincide. A change with no
+line-addressable content — a changed binary file (ADR 0009), a mode-only
+change, an empty file added or deleted (ADR 0017) — presents one
+whole-file hunk, so its row's toggle is that hunk's whole-file index
+write. gitchange has no whole-file stage op of its own: `git add <path>`
+is that op, stays valid under write-through, and is absorbed at the next
+refresh like any external staging (below).
 
 ## External staging is absorbed, never an error
 
