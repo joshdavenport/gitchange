@@ -66,6 +66,37 @@ paint.
   applies cleanly fails soft — notification + immediate refresh, nothing
   half-applied. Commit keeps its stricter refresh-gate (ADR 0004).
 
+## Read-only refresh (amends the pipeline above; issue #51)
+
+A refresh is **persisting** or **read-only**. The pipeline above is the
+persisting form: matcher output becomes records in the state file, and the
+decisions that refresh makes — capture, ambiguous-overlap routing,
+dormancy — surface as advisories on its output, exactly once, because each
+decision became a record. The read-only form runs the same recompute —
+status, both diffs, matcher against the records as they stand — but
+decides nothing: it writes no records, stamps no baseline HEAD, and emits
+no advisories. Ownership in its snapshot is what the records say — a
+recordless hunk reports as unassigned, never as a preview of what a
+persisting refresh would capture.
+
+Who runs which: the engine's refreshes persist, as do the refreshes inside
+every mutating op (assign, stage, commit) — the op's receipt carries the
+advisories its refresh produced. Every read-only CLI invocation (`status`,
+`diff`, listing; with or without `--json`) refreshes read-only: a glance at
+the tree never moves membership. Deferred capture is the accepted cost:
+with no TUI running, a new hunk stays unassigned until the next mutation's
+persisting refresh captures it, so that mutation's receipt can advise
+decisions unrelated to its target.
+
+There is no advisory journal. An advisory rides the output of the refresh
+that made the decision, once, to the one actor who triggered it: the facts
+survive as records, the narrative does not. A retrospective advisory
+surface (an `advisories` command, stored history) is rejected — one shared
+cursor recreates the consumed-by-whoever-reads-first hazard, per-reader
+cursors give gitchange reader identity, and the data serves nobody:
+everything durable an actor needs is readable as records, and everything
+urgent is a refusal.
+
 ## Considered options
 
 - **Staged per-kind jobs (gitui's shape)** — rejected: changelist grouping
