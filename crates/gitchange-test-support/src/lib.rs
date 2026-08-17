@@ -151,6 +151,23 @@ impl RepoFixture {
         self
     }
 
+    /// Delete a repo-relative path from the worktree — half of the
+    /// file↔symlink dance, or a deletion on its own.
+    pub fn remove(&self, rel: &str) -> &Self {
+        fs::remove_file(self.dir.path().join(rel)).unwrap();
+        self
+    }
+
+    /// Create a symlink at a repo-relative path — the worktree half of a
+    /// type change (ADR 0017, issue #100). Unix-only, like the tests that
+    /// need one: without `core.symlinks` git checks links out as plain
+    /// files, so there is no type change to build elsewhere.
+    #[cfg(unix)]
+    pub fn symlink(&self, rel: &str, target: &str) -> &Self {
+        std::os::unix::fs::symlink(target, self.dir.path().join(rel)).unwrap();
+        self
+    }
+
     /// Move a repo-relative path to another, git none the wiser — the
     /// rename ADR 0011 sees as a delete plus an add.
     pub fn rename(&self, from: &str, to: &str) -> &Self {

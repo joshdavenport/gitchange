@@ -966,9 +966,9 @@ fn staging_a_type_change_writes_the_symlink_to_the_index() {
     fixture
         .write("thing", "content\n")
         .write("target.txt", "elsewhere\n")
-        .commit_all("init");
-    std::fs::remove_file(fixture.path().join("thing")).unwrap();
-    std::os::unix::fs::symlink("target.txt", fixture.path().join("thing")).unwrap();
+        .commit_all("init")
+        .remove("thing")
+        .symlink("thing", "target.txt");
 
     let repo = Repo::discover(fixture.path()).unwrap();
     repo.stage_owned_hunks("thing", None).unwrap();
@@ -989,4 +989,40 @@ fn staging_a_type_change_writes_the_symlink_to_the_index() {
         "HEAD's entry back"
     );
     assert_eq!(fixture.index_bytes("thing").unwrap(), b"content\n".to_vec());
+}
+
+#[test]
+#[cfg(unix)]
+fn staging_a_symlink_to_file_swap_writes_the_file_to_the_index() {
+    // The reverse direction (#100): stage writes the worktree file's
+    // content and mode, unstage restores HEAD's symlink entry — the
+    // target string at link mode.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("target.txt", "elsewhere\n")
+        .commit_all("seed")
+        .symlink("thing", "target.txt")
+        .commit_all("link")
+        .remove("thing")
+        .write("thing", "content\n");
+
+    let repo = Repo::discover(fixture.path()).unwrap();
+    repo.stage_owned_hunks("thing", None).unwrap();
+    assert_eq!(
+        fixture.index_mode("thing"),
+        Some(0o100644),
+        "staged as a regular file"
+    );
+    assert_eq!(fixture.index_bytes("thing").unwrap(), b"content\n".to_vec());
+
+    repo.unstage_owned_hunks("thing", None).unwrap();
+    assert_eq!(
+        fixture.index_mode("thing"),
+        Some(0o120000),
+        "HEAD's symlink entry back"
+    );
+    assert_eq!(
+        fixture.index_bytes("thing").unwrap(),
+        b"target.txt".to_vec()
+    );
 }

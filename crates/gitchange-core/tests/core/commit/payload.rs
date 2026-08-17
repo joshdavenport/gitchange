@@ -310,3 +310,29 @@ fn a_staged_zero_hunk_change_is_in_the_payload() {
         "nothing left over"
     );
 }
+
+#[test]
+#[cfg(unix)]
+fn a_committed_type_change_writes_the_symlink_tree_entry() {
+    // End-to-end for the type-change shape (#100): a staged file→symlink
+    // swap commits as a symlink — HEAD's tree entry carries link mode
+    // and the target string, not a regular file that happens to hold it.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("thing", "content\n")
+        .write("target.txt", "elsewhere\n")
+        .commit_all("init")
+        .remove("thing")
+        .symlink("thing", "target.txt");
+
+    let repo = repo(&fixture);
+    repo.stage_owned_hunks("thing", None).unwrap();
+
+    commit(&repo, None, "swap to symlink");
+    assert_eq!(fixture.head_mode("thing"), Some(0o120000), "link mode");
+    assert_eq!(fixture.head_bytes("thing"), Some(b"target.txt".to_vec()));
+    assert!(
+        repo.refresh().unwrap().files.is_empty(),
+        "nothing left over"
+    );
+}

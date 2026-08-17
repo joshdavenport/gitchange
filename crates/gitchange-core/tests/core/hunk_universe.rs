@@ -562,9 +562,9 @@ fn a_type_change_is_a_zero_hunk_change_too() {
     fixture
         .write("thing", "content\n")
         .write("target.txt", "elsewhere\n")
-        .commit_all("init");
-    std::fs::remove_file(fixture.path().join("thing")).unwrap();
-    std::os::unix::fs::symlink("target.txt", fixture.path().join("thing")).unwrap();
+        .commit_all("init")
+        .remove("thing")
+        .symlink("thing", "target.txt");
 
     let repo = Repo::discover(fixture.path()).unwrap();
     let file = repo
@@ -584,4 +584,47 @@ fn a_type_change_is_a_zero_hunk_change_too() {
         Some(0o100644)
     );
     assert_eq!(sides.changed_mode(), Some(0o120000), "the symlink mode");
+}
+
+#[test]
+#[cfg(unix)]
+fn a_symlink_to_file_swap_is_the_same_zero_hunk_shape() {
+    // The reverse direction (#100): git emits no hunks here either, even
+    // when the replacement file holds several lines, so the same
+    // whole-file hunk takes it in. Both sides are real blobs — the old
+    // target string and the new content — so the anchor carries both
+    // OIDs and exact-match has content to rest on.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("target.txt", "elsewhere\n")
+        .commit_all("seed")
+        .symlink("thing", "target.txt")
+        .commit_all("link")
+        .remove("thing")
+        .write("thing", "line one\nline two\nline three\n");
+
+    let repo = Repo::discover(fixture.path()).unwrap();
+    let file = repo
+        .refresh()
+        .unwrap()
+        .files
+        .into_iter()
+        .find(|file| file.path == "thing")
+        .expect("thing in the universe");
+
+    assert_eq!(file.kind, ChangeKind::TypeChanged);
+    assert_eq!((file.staged_hunks(), file.total_hunks()), (0, 1));
+    assert!(file.presents_whole_file_hunk());
+    let HunkIdentity::WholeFile { oids: anchor } = &file.hunks[0].identity else {
+        panic!("whole-file hunk");
+    };
+    assert!(anchor.head.is_some(), "the target-string blob");
+    assert!(anchor.changed.is_some(), "the content blob");
+    let sides = file.sides.as_ref().expect("type-change sides");
+    assert_eq!(
+        sides.head.as_ref().and_then(|side| side.mode),
+        Some(0o120000),
+        "the symlink mode"
+    );
+    assert_eq!(sides.changed_mode(), Some(0o100644));
 }
