@@ -360,6 +360,75 @@ fn a_staged_binary_deletion_commits_the_removal() {
     assert!(fixture.head_bytes("keep.txt").is_some());
 }
 
+#[cfg(unix)]
+#[test]
+fn a_whole_file_commit_leaves_another_changelists_mode_flip_behind() {
+    // ADR 0017: the whole-file payload's temp-index entry takes its mode
+    // from the changelist's own mode hunk, or HEAD's when none is owned —
+    // never the live entry's. Here the flip is another changelist's, so
+    // the commit lands HEAD's 644 over the new bytes.
+    let fixture = RepoFixture::new();
+    fixture
+        .write_bytes("logo.png", &[0u8, 1, 2, 3])
+        .commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("art").unwrap();
+    repo.switch(Some("art")).unwrap();
+    fixture
+        .write_bytes("logo.png", &[0u8, 9, 9])
+        .stage("logo.png");
+    repo.refresh().unwrap();
+
+    // A second changelist owns the chmod, staged.
+    repo.create_changelist("chores").unwrap();
+    repo.switch(Some("chores")).unwrap();
+    fixture.set_exec("logo.png").stage("logo.png");
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(
+        owners(&snapshot, "logo.png"),
+        vec![Some("chores".to_string()), Some("art".to_string())],
+        "the mode hunk sits first, owned by chores"
+    );
+
+    commit(&repo, Some("art"), "art: new bytes");
+    assert_eq!(fixture.head_bytes("logo.png").unwrap(), vec![0u8, 9, 9]);
+    assert_eq!(
+        fixture.head_mode("logo.png"),
+        Some(0o100644),
+        "the mode hunk chores owns stays out of art's commit"
+    );
+    assert_eq!(
+        fixture.index_mode("logo.png"),
+        Some(0o100755),
+        "the live index keeps the staged flip"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_whole_file_commit_lands_the_mode_flip_it_owns() {
+    // The mirror: one changelist owns both hunks, so its payload carries
+    // the mode hunk and HEAD gets the flip.
+    let fixture = RepoFixture::new();
+    fixture
+        .write_bytes("logo.png", &[0u8, 1, 2, 3])
+        .commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("art").unwrap();
+    repo.switch(Some("art")).unwrap();
+    fixture
+        .write_bytes("logo.png", &[0u8, 9, 9])
+        .set_exec("logo.png")
+        .stage("logo.png");
+
+    let payload = repo.commit_payload(Some("art")).unwrap();
+    assert_eq!(payload.staged_hunks(), 2, "the mode hunk and the bytes");
+
+    commit(&repo, Some("art"), "art: new bytes, executable");
+    assert_eq!(fixture.head_bytes("logo.png").unwrap(), vec![0u8, 9, 9]);
+    assert_eq!(fixture.head_mode("logo.png"), Some(0o100755));
+}
+
 #[test]
 fn a_binary_worktree_over_staged_text_commits_the_staged_text() {
     // The mixed case: text content staged, then the worktree file

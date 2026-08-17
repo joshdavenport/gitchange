@@ -669,11 +669,12 @@ fn find_fresh<'a>(
 /// a whole-file hunk when the worktree went binary over staged text —
 /// each moves by its own op.
 ///
-/// These whole-entry writes still carry the worktree's mode with their
-/// content, and the range apply below carries it too — so a mode flip
-/// staged by its own hunk is still clobbered by a neighbouring content
-/// stage. ADR 0017 says no stage op carries a mode as a rider; issue
-/// #105 is what makes that true.
+/// Neither these whole-entry writes nor the range apply below carries a
+/// mode with its content (ADR 0017: no ride-along) — the backend puts
+/// the index entry's permission bits back after the write, so a flip
+/// staged by its own hunk survives a neighbouring content stage. Only a
+/// type change moves the entry's mode without a mode hunk, the object
+/// kind being the whole-file hunk's own delta.
 fn hunk_op_is_a_file_op(file: &ChangedFile, hunk: &Hunk) -> bool {
     hunk.is_whole_file()
         || (matches!(

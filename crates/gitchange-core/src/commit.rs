@@ -125,16 +125,19 @@ pub struct PayloadFile {
     /// re-staged blob drifts a confirmation like re-staged text hunks do.
     pub whole_file: Option<WholeFilePayload>,
     /// The staged filemode a mode hunk in this payload commits
-    /// (ADR 0017) — `None` when the payload carries no mode hunk, and
-    /// for a whole-file hunk, whose index entry brings its own mode.
+    /// (ADR 0017) — `None` when the payload carries no mode hunk, a
+    /// whole-file payload included: no hunk carries another's mode, so
+    /// the commit lands HEAD's, or the staged entry's where HEAD holds
+    /// no entry to take one from (an added file carries no mode hunk).
     /// Participates in equality: a re-flipped mode drifts a confirmation
     /// like re-staged content does.
     pub mode: Option<u32>,
 }
 
-/// What a whole-file hunk commits (ADR 0009, ADR 0017): the staged blob
-/// and its mode, whole-file — the temp index receives the live index
-/// entry verbatim. `None` commits the file's staged deletion.
+/// What a whole-file hunk commits (ADR 0009, ADR 0017): the staged blob,
+/// whole-file — the temp index receives the live index entry's content.
+/// Its permission bits are the mode hunk's (`PayloadFile::mode`), not
+/// this hunk's. `None` commits the file's staged deletion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WholeFilePayload {
     pub staged_oid: Option<String>,
@@ -241,24 +244,33 @@ pub(crate) fn plan(
             .iter()
             .filter(|hunk| hunk.stage == HunkStage::StagedStale)
             .count();
+        // The mode hunk commits its staged filemode and nothing else
+        // (ADR 0017) — the blob under it is whatever the payload's other
+        // hunks leave there, or HEAD's when it has none. An owned mode
+        // hunk that is not unstaged implies the index carries the flip,
+        // so the index diff reports a changed-side mode; the `and_then`
+        // is defensive only. Where no mode hunk is owned, `None` says
+        // the commit lands HEAD's mode — an entry's mode is never a
+        // rider on some other hunk's payload.
+        let mode = owned
+            .iter()
+            .any(|hunk| hunk.is_mode_change())
+            .then(|| index_file.and_then(|file| file.modes.changed))
+            .flatten();
         // A whole-file hunk commits whole (ADR 0009, ADR 0017): the
-        // staged blob and its mode copied into the temp index verbatim —
-        // no hunk selection to run, and none to make, the file's content
-        // having no lines to address. An owned mode hunk beside it needs
-        // nothing extra: that same entry carries the staged mode. An
+        // staged blob copied into the temp index — no hunk selection to
+        // run, and none to make, the file's content having no lines to
+        // address. Its mode is `mode`'s like any other payload's. An
         // owned non-unstaged hunk implies the index differs from HEAD
         // here, so the index diff sees the path and carries sides; the
         // `else` is defensive only.
         //
-        // Whatever else the entry holds rides along with it, being one
-        // entry: committing a chmod'd binary's whole-file hunk lands a
-        // staged flip whose mode hunk another changelist owns, and
-        // committing it over staged text lands that text. The whole-file
-        // grain is ADR 0009's — a binary has no smaller committable
-        // unit — but the second case is new with the pairing fix, which
-        // is what lets two changelists hold one entry's deltas. Issue
-        // #105 ends the mode half; the content half wants a decision of
-        // its own.
+        // Whatever *content* the entry holds still rides along with it,
+        // being one entry: committing a whole-file hunk over staged text
+        // lands that text. The whole-file grain is ADR 0009's — a binary
+        // has no smaller committable unit — but two changelists can hold
+        // one entry's deltas, so the text may be another's. Issue #106
+        // has it.
         if owned.iter().any(|hunk| hunk.is_whole_file()) {
             let Some(sides) = index_file.and_then(|file| file.sides.as_ref()) else {
                 continue;
@@ -278,29 +290,18 @@ pub(crate) fn plan(
                 stale_hunks,
                 hunks: Vec::new(),
                 whole_file: Some(whole_file.clone()),
-                mode: None,
+                mode,
             });
             paths.push(PathPlan {
                 path: file.path.clone(),
                 committed: Vec::new(),
                 whole_file: Some(whole_file),
-                mode: None,
+                mode,
                 consumed,
                 retained,
             });
             continue;
         }
-        // The mode hunk commits its staged filemode and nothing else
-        // (ADR 0017) — the blob under it is whatever the selected
-        // content hunks make of it, or HEAD's when none are selected.
-        // An owned mode hunk that is not unstaged implies the index
-        // carries the flip, so the index diff reports a changed-side
-        // mode; the `and_then` is defensive only.
-        let mode = owned
-            .iter()
-            .any(|hunk| hunk.is_mode_change())
-            .then(|| index_file.and_then(|file| file.modes.changed))
-            .flatten();
         let index_hunks: &[DiffHunk] = index_file
             .map(|candidate| candidate.hunks.as_slice())
             .unwrap_or(&[]);

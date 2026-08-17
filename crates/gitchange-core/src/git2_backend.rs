@@ -5,7 +5,7 @@ use std::process::Command;
 use crate::backend::{CommitPathSpec, CommittedId, GitBackend, HunkHeader};
 use crate::commit::{AMEND_FLAG, CommitOptions, NO_VERIFY_FLAG};
 use crate::diff::{
-    ChangeKind, DiffHunk, FileDiff, FileModes, FileSides, HunkLine, RepoDiffs, SideInfo,
+    ChangeKind, DiffHunk, FileDiff, FileModes, FileSides, HunkLine, ModeDelta, RepoDiffs, SideInfo,
 };
 use crate::error::{ApplySite, Error};
 use crate::snapshot::{CommitInfo, GitOperation, Head};
@@ -305,9 +305,14 @@ impl GitBackend for Git2Backend {
             .workdir()
             .map(|root| root.join(path).symlink_metadata().is_ok())
             .unwrap_or(false);
+        // The worktree's mode comes with `add_path`, and is no more this
+        // write's to carry than the range apply's (ADR 0017) — put back
+        // before the write, so the op still costs one.
+        let keep = index.get_path(Path::new(path), 0).map(|entry| entry.mode);
         if on_disk {
             index.add_path(Path::new(path)).map_err(backend_error)?;
-        } else if index.get_path(Path::new(path), 0).is_some() {
+            keep_entry_mode(&mut index, path, keep)?;
+        } else if keep.is_some() {
             index.remove_path(Path::new(path)).map_err(backend_error)?;
         }
         index.write().map_err(backend_error)
@@ -315,20 +320,28 @@ impl GitBackend for Git2Backend {
 
     fn unstage_path(&self, path: &str) -> Result<(), Error> {
         let mut index = self.repo.index().map_err(backend_error)?;
+        let live_mode = index.get_path(Path::new(path), 0).map(|entry| entry.mode);
         let head_entry = self
             .head_tree()?
             .and_then(|tree| tree.get_path(Path::new(path)).ok());
         match head_entry {
             Some(entry) => {
-                // Blob and mode from HEAD; zeroed stat fields make the
-                // entry stat-dirty, exactly like `git reset -- <path>`.
+                // Blob from HEAD; zeroed stat fields make the entry
+                // stat-dirty, exactly like `git reset -- <path>`. HEAD's
+                // mode comes too where the index held none — otherwise
+                // the staged permission bits stay, the mode hunk's own
+                // unstage being what restores those (ADR 0017).
+                let head_mode = entry.filemode() as u32;
                 index
                     .add(&git2::IndexEntry {
                         ctime: git2::IndexTime::new(0, 0),
                         mtime: git2::IndexTime::new(0, 0),
                         dev: 0,
                         ino: 0,
-                        mode: entry.filemode() as u32,
+                        mode: match live_mode {
+                            Some(live) => kept_mode(live, head_mode),
+                            None => head_mode,
+                        },
                         uid: 0,
                         gid: 0,
                         file_size: 0,
@@ -474,7 +487,21 @@ impl Git2Backend {
                     return Err(index_moved(format_args!("{} staged blob", spec.path)));
                 }
                 match entry {
-                    Some(entry) => temp.add(&entry).map_err(backend_error)?,
+                    Some(entry) => {
+                        // The live entry's permission bits are not this
+                        // hunk's to commit (ADR 0017): the temp entry
+                        // keeps the base tree's, and only the object
+                        // kind — which a type change does move — comes
+                        // from the live entry. `write_temp_mode` below
+                        // lands the flip where this payload owns the
+                        // file's mode hunk.
+                        let mode = match temp.get_path(Path::new(&spec.path), 0) {
+                            Some(base) => kept_mode(base.mode, entry.mode),
+                            None => entry.mode,
+                        };
+                        temp.add(&git2::IndexEntry { mode, ..entry })
+                            .map_err(backend_error)?;
+                    }
                     // The payload commits the file's staged deletion.
                     None if temp.get_path(Path::new(&spec.path), 0).is_some() => {
                         temp.remove_path(Path::new(&spec.path))
@@ -482,6 +509,7 @@ impl Git2Backend {
                     }
                     None => {}
                 }
+                self.write_temp_mode(&mut temp, spec)?;
                 continue;
             }
             // A payload of nothing but a mode hunk: the base tree's entry
@@ -616,6 +644,16 @@ impl Git2Backend {
         diff: &git2::Diff,
         target: (u32, u32),
     ) -> Result<(), Error> {
+        // The apply writes the whole index entry, mode included — the
+        // diff side it reads from carries one. That mode is the mode
+        // hunk's alone (ADR 0017), so it is put back afterwards rather
+        // than ridden in.
+        let keep = self
+            .repo
+            .index()
+            .map_err(backend_error)?
+            .get_path(Path::new(path), 0)
+            .map(|entry| entry.mode);
         let cores = hunk_change_cores(diff)?;
         let mut options = git2::ApplyOptions::new();
         options.hunk_callback(move |hunk| {
@@ -633,7 +671,55 @@ impl Git2Backend {
                 path: path.to_owned(),
                 detail: error.message().to_owned(),
                 site: ApplySite::Index,
-            })
+            })?;
+        // libgit2 wrote the index itself, so this needs a second write —
+        // and only takes one where the mode actually moved.
+        let mut index = self.repo.index().map_err(backend_error)?;
+        if keep_entry_mode(&mut index, path, keep)? {
+            index.write().map_err(backend_error)?;
+        }
+        Ok(())
+    }
+}
+
+/// Put `keep`'s permission bits back on `index`'s entry for `path` after
+/// a write that carried another tree's mode with it (ADR 0017: no stage
+/// op carries a mode as a rider). `None` — no entry before the write —
+/// leaves the incoming mode standing: a file the index did not hold has
+/// no flip to preserve, and an added file carries no mode hunk.
+///
+/// Returns whether the entry moved, so a caller holding an unwritten
+/// index writes once and a caller past its write knows whether it needs
+/// another. The entry's stat fields are left as the write set them, so
+/// the worktree's own mode still reads dirty against the entry — which
+/// is what keeps an unstaged flip visible.
+fn keep_entry_mode(index: &mut git2::Index, path: &str, keep: Option<u32>) -> Result<bool, Error> {
+    let Some(keep) = keep else {
+        return Ok(false);
+    };
+    let Some(entry) = index.get_path(Path::new(path), 0) else {
+        return Ok(false);
+    };
+    let mode = kept_mode(keep, entry.mode);
+    if mode == entry.mode {
+        return Ok(false);
+    }
+    index
+        .add(&git2::IndexEntry { mode, ..entry })
+        .map_err(backend_error)?;
+    Ok(true)
+}
+
+/// The mode an index write lands when the write is not the mode hunk's:
+/// `keep`'s permission bits stand, being the mode hunk's alone
+/// (ADR 0017). Only a change of object kind comes from `incoming` — a
+/// file↔symlink swap is the whole-file hunk's own delta, not a rider,
+/// and it moves the permission bits with it.
+fn kept_mode(keep: u32, incoming: u32) -> u32 {
+    if ModeDelta::kind_bits(keep) == ModeDelta::kind_bits(incoming) {
+        keep
+    } else {
+        incoming
     }
 }
 

@@ -48,7 +48,13 @@ bugs about it.
 - **No ride-along.** No stage op carries a mode as a rider: content-hunk
   staging and the binary whole-file index write preserve the index
   entry's existing mode. A rider is what silently clobbers a separately
-  staged flip.
+  staged flip. *Amended (issue #105, taking the mode half of #106):* the
+  commit seam holds the same line — a whole-file payload's temp-index
+  entry takes its mode from the changelist's own mode hunk, or HEAD's
+  when it owns none, never the live entry's, which another changelist's
+  mode hunk may own. A type change is the one write that moves an
+  entry's mode without a mode hunk, the object kind being the whole-file
+  hunk's own delta; the permission bits travel with it.
 - **Boundary:** an added or deleted file carries no separate mode hunk —
   its mode is part of the add/delete whole. This line keeps scm-record's
   `FileMode::Absent` implication rules out of gitchange: a chmod between

@@ -567,6 +567,20 @@ line 9\nline 10\nline 11\nline 14\nline 15\nline 16\n"
             ..Case::new(Op::StageHunk { path: "new.txt", hunk: 0 })
         };
 
+    // The boundary of the no-ride-along rule (ADR 0017): an added file
+    // carries no mode hunk, and there is no index entry whose mode the
+    // write could preserve, so the worktree's mode is the entry's.
+    #[cfg(unix)]
+    stage_hunk_of_an_untracked_executable_file_takes_the_worktree_mode:
+        Case {
+            base: vec![("keep.txt", b"keep\n".to_vec())],
+            worktree_writes: vec![("run.sh", b"#!/bin/sh\n".to_vec())],
+            worktree_exec: vec!["run.sh"],
+            index: vec![("run.sh", Some(b"#!/bin/sh\n".to_vec()))],
+            index_modes: vec![("run.sh", 0o100755)],
+            ..Case::new(Op::StageHunk { path: "run.sh", hunk: 0 })
+        };
+
     unstage_hunk_of_a_staged_new_file_removes_the_entry:
         Case {
             base: vec![("keep.txt", b"keep\n".to_vec())],
@@ -736,13 +750,13 @@ line 9\nline 10\nline 11\nline 14\nline 15\nline 16\n"
             ..Case::new(Op::StageRow("tool.sh"))
         };
 
-    // The surviving ride-along (issue #105 ends it): staging a content
-    // hunk writes the file's index entry, and the entry carries the
-    // worktree mode with it — even though the mode has a hunk of its own
-    // now, and this op is not it. Hunk 1 is the first text hunk; hunk 0
-    // is the mode hunk (ADR 0017: it sits first).
+    // No ride-along (ADR 0017, issue #105): staging a content hunk writes
+    // the file's index entry, and the mode is not that entry write's to
+    // carry — the mode has a hunk of its own, and this op is not it. Hunk
+    // 1 is the first text hunk; hunk 0 is the mode hunk (ADR 0017: it
+    // sits first).
     #[cfg(unix)]
-    stage_hunk_of_a_chmod_plus_edit_carries_the_mode:
+    stage_hunk_of_a_chmod_plus_edit_leaves_the_mode:
         Case {
             base: vec![("tool.sh", lf(16, &[]))],
             worktree_writes: vec![(
@@ -751,8 +765,37 @@ line 9\nline 10\nline 11\nline 14\nline 15\nline 16\n"
             )],
             worktree_exec: vec!["tool.sh"],
             index: vec![("tool.sh", Some(lf(16, &[(4, "EDIT four")])))],
+            index_modes: vec![("tool.sh", 0o100644)],
+            ..Case::new(Op::StageHunk { path: "tool.sh", hunk: 1 })
+        };
+
+    // The clobber a rider causes: a flip staged by its own hunk, then
+    // reverted in the worktree, with an unstaged edit beside it. Staging
+    // the edit reads the worktree's 644 for the entry it writes — and
+    // must not put it in the index, where the staged flip lives.
+    #[cfg(unix)]
+    stage_content_hunk_beside_a_staged_mode_flip_keeps_the_flip:
+        Case {
+            base: vec![("tool.sh", b"one\n".to_vec())],
+            stage_exec: vec!["tool.sh"],
+            worktree_writes: vec![("tool.sh", b"two\n".to_vec())],
+            worktree_unexec: vec!["tool.sh"],
+            index: vec![("tool.sh", Some(b"two\n".to_vec()))],
             index_modes: vec![("tool.sh", 0o100755)],
             ..Case::new(Op::StageHunk { path: "tool.sh", hunk: 1 })
+        };
+
+    // The unstage inverse: the reverse-apply reads HEAD's 644 for the
+    // entry it writes, and the staged flip beside it stays staged.
+    #[cfg(unix)]
+    unstage_content_hunk_beside_a_staged_mode_flip_keeps_the_flip:
+        Case {
+            base: vec![("tool.sh", b"one\n".to_vec())],
+            stage_writes: vec![("tool.sh", b"two\n".to_vec())],
+            stage_exec: vec!["tool.sh"],
+            index: vec![("tool.sh", Some(b"one\n".to_vec()))],
+            index_modes: vec![("tool.sh", 0o100755)],
+            ..Case::new(Op::UnstageHunk { path: "tool.sh", hunk: 1 })
         };
 
     // ——— mode deltas beside content hunks (issue #103) ———
@@ -800,18 +843,71 @@ line 9\nline 10\nline 11\nline 14\nline 15\nline 16\n"
             ..Case::new(Op::StageHunk { path: "tool.sh", hunk: 0 })
         };
 
-    // A chmod'd, content-edited binary: the whole-file hunk (hunk 1)
-    // stages the bytes, and the mode rides along with the entry write
-    // until issue #105 ends that.
+    // A chmod'd, content-edited binary stages its two hunks
+    // independently: the whole-file hunk (hunk 1) stages the bytes and
+    // leaves the mode, the mode hunk (hunk 0) stages the mode and leaves
+    // the bytes.
     #[cfg(unix)]
-    stage_whole_file_hunk_of_a_chmodded_binary_edit:
+    stage_whole_file_hunk_of_a_chmodded_binary_edit_leaves_the_mode:
+        Case {
+            base: vec![("blob.bin", vec![0u8, 1, 2, 3])],
+            worktree_writes: vec![("blob.bin", vec![0u8, 9, 9, 9, 9])],
+            worktree_exec: vec!["blob.bin"],
+            index: vec![("blob.bin", Some(vec![0u8, 9, 9, 9, 9]))],
+            index_modes: vec![("blob.bin", 0o100644)],
+            ..Case::new(Op::StageHunk { path: "blob.bin", hunk: 1 })
+        };
+
+    #[cfg(unix)]
+    stage_mode_hunk_of_a_chmodded_binary_edit_leaves_the_bytes:
+        Case {
+            base: vec![("blob.bin", vec![0u8, 1, 2, 3])],
+            worktree_writes: vec![("blob.bin", vec![0u8, 9, 9, 9, 9])],
+            worktree_exec: vec!["blob.bin"],
+            index: vec![("blob.bin", Some(vec![0u8, 1, 2, 3]))],
+            index_modes: vec![("blob.bin", 0o100755)],
+            ..Case::new(Op::StageHunk { path: "blob.bin", hunk: 0 })
+        };
+
+    // The clobber again, at the whole-entry write rather than the range
+    // apply: the flip is staged and worktree-reverted, so the entry the
+    // binary's bytes are written through reads 644 from the worktree.
+    #[cfg(unix)]
+    stage_whole_file_hunk_beside_a_staged_mode_flip_keeps_the_flip:
+        Case {
+            base: vec![("blob.bin", vec![0u8, 1, 2, 3])],
+            stage_exec: vec!["blob.bin"],
+            worktree_writes: vec![("blob.bin", vec![0u8, 9, 9, 9, 9])],
+            worktree_unexec: vec!["blob.bin"],
+            index: vec![("blob.bin", Some(vec![0u8, 9, 9, 9, 9]))],
+            index_modes: vec![("blob.bin", 0o100755)],
+            ..Case::new(Op::StageHunk { path: "blob.bin", hunk: 1 })
+        };
+
+    // Row scope moves both hunks, so both land — the independence is
+    // per hunk, not a cap on what a row can stage.
+    #[cfg(unix)]
+    stage_row_of_a_chmodded_binary_edit_stages_bytes_and_mode:
         Case {
             base: vec![("blob.bin", vec![0u8, 1, 2, 3])],
             worktree_writes: vec![("blob.bin", vec![0u8, 9, 9, 9, 9])],
             worktree_exec: vec!["blob.bin"],
             index: vec![("blob.bin", Some(vec![0u8, 9, 9, 9, 9]))],
             index_modes: vec![("blob.bin", 0o100755)],
-            ..Case::new(Op::StageHunk { path: "blob.bin", hunk: 1 })
+            ..Case::new(Op::StageRow("blob.bin"))
+        };
+
+    // The whole-file unstage inverse: HEAD's blob restored, the staged
+    // flip beside it left staged.
+    #[cfg(unix)]
+    unstage_whole_file_hunk_of_a_chmodded_binary_edit_keeps_the_flip:
+        Case {
+            base: vec![("blob.bin", vec![0u8, 1, 2, 3])],
+            stage_writes: vec![("blob.bin", vec![0u8, 9, 9, 9, 9])],
+            stage_exec: vec!["blob.bin"],
+            index: vec![("blob.bin", Some(vec![0u8, 1, 2, 3]))],
+            index_modes: vec![("blob.bin", 0o100755)],
+            ..Case::new(Op::UnstageHunk { path: "blob.bin", hunk: 1 })
         };
 
     // `space` on the Files row of the mirror corner stages what the index
