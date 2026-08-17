@@ -50,6 +50,15 @@ belong to different changelists; a file is "in" a changelist when it has at
 least one hunk owned by it.
 _Avoid_: file membership
 
+**File row**:
+One row of the Files panel: a (group, path) pair, where the group is a
+changelist, unassigned, or Conflicts. Not a file — the same path under two
+changelists is two rows and two independent targets, and a row's marker and
+counts read only the hunks its group owns in the file (issue #97), which is
+why two rows of one path routinely disagree. A Conflicts row owns no hunks
+at all, so `space` and assign politely refuse on it (ADR 0007).
+_Avoid_: file entry (that's the type), cell, file (when the row is meant)
+
 **Whole-file hunk**:
 The degenerate single hunk presented by a change with no line-addressable
 content: a changed binary file (ADR 0009) or a zero-hunk change
@@ -135,10 +144,10 @@ _Avoid_: staging glyphs (as a per-level set), staged icons
 **Staged / partially staged / unstaged**:
 A file's staged-ness: `●` all its hunks staged, `◐` some of them, `○` none,
 with `stagedHunks/totalHunks` counts alongside. Staged-stale hunks count
-toward `◐`. Derived from hunks, never stored — a Files-panel row from the
-hunks its changelist owns in the file (issue #97), file-level surfaces
-from all of the file's hunks. `●` and `○` are the same tokens a hunk
-carries; only `◐` is exclusively per-file.
+toward `◐`. Derived from hunks, never stored — a **file row** from the
+hunks its group owns in the file (issue #97), file-level surfaces from all
+of the file's hunks. `●` and `○` are the same tokens a hunk carries; only
+`◐` is exclusively per-file.
 _Avoid_: added, indexed
 
 **Derived staged state**:
@@ -151,12 +160,11 @@ _Avoid_: staged bit, staged flag
 
 **Stage toggle**:
 `space`, at whatever scope the focused panel selects: the selected hunk in
-hunk mode, the selected row's owned hunks in the Files panel (a row is a
-(changelist, file) cell — the same path under two changelists is two rows
-and two targets), every hunk of the selected changelist (or of
-`unassigned`) in the Changelists panel. One key and one
-decide-by-current-state rule, hunk-granular at every scope — anything `○`
-or `◑` stages, and only a fully `●` selection unstages. gitchange has no
+hunk mode, the selected **file row**'s owned hunks in the Files panel,
+every hunk of the selected changelist (or of `unassigned`) in the
+Changelists panel. One key and one decide-by-current-state rule,
+hunk-granular at every scope — anything `○` or `◑` stages, and only a
+fully `●` selection unstages. gitchange has no
 whole-file stage: `git add` is that op, and is absorbed at refresh. `all`
 is a view, so it is not a staging target.
 _Avoid_: stage key and unstage key (as two actions), whole-file stage
