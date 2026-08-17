@@ -4,7 +4,7 @@ use std::process::Command;
 
 use crate::backend::{CommitPathSpec, CommittedId, GitBackend, HunkHeader};
 use crate::commit::{AMEND_FLAG, CommitOptions, NO_VERIFY_FLAG};
-use crate::diff::{BinarySides, BlobInfo, ChangeKind, DiffHunk, FileDiff, HunkLine, RepoDiffs};
+use crate::diff::{ChangeKind, DiffHunk, FileDiff, FileSides, HunkLine, RepoDiffs, SideInfo};
 use crate::error::{ApplySite, Error};
 use crate::snapshot::{CommitInfo, GitOperation, Head};
 use crate::universe::ranges_overlap;
@@ -652,6 +652,16 @@ impl Git2Backend {
             let Some(kind) = change_kind(delta.status()) else {
                 continue;
             };
+            // An embedded repository (a nested clone or linked worktree)
+            // is one untracked *directory* delta — trailing-slash path,
+            // tree mode, no blob and no hunks. It is not a file change:
+            // nothing to hash for an anchor, nothing to address as a
+            // hunk, and no index write gitchange performs. Dropped here
+            // so the universe keeps ADR 0017's invariant that every
+            // change it holds carries a hunk; `git add` is the op for it.
+            if is_tree(&delta.new_file()) || is_tree(&delta.old_file()) {
+                continue;
+            }
             let path = utf8_path(&delta)?;
 
             // Unmerged paths are quarantined (ADR 0007): listed, excluded
@@ -666,16 +676,19 @@ impl Git2Backend {
             };
             // Worktree diffs pay the anchor cost — a full content hash
             // of the on-disk file (ADR 0009's stated refresh cost) —
-            // only for binary files. Index diffs carry sides for every
-            // file (two odb header reads): the commit plan needs a
-            // staged-blob OID even when a binary worktree change sits
-            // over staged text content.
+            // only for the files that present a whole-file hunk: binary
+            // ones, and zero-hunk changes, whose anchor and staging
+            // evidence are the sides too (ADR 0017). Index diffs carry
+            // sides for every file (two odb header reads): the commit
+            // plan needs a staged-blob OID even when a binary worktree
+            // change sits over staged text content.
+            let whole_file = kind != ChangeKind::Conflicted && (binary || hunks.is_empty());
             let compute_sides = match changed_side {
-                ChangedSide::Worktree => binary,
+                ChangedSide::Worktree => whole_file,
                 ChangedSide::Index => kind != ChangeKind::Conflicted,
             };
-            let binary_sides = if compute_sides {
-                Some(self.binary_sides(&delta, &path, changed_side)?)
+            let sides = if compute_sides {
+                Some(self.file_sides(&delta, &path, changed_side)?)
             } else {
                 None
             };
@@ -684,29 +697,31 @@ impl Git2Backend {
                 kind,
                 binary,
                 hunks,
-                binary_sides,
+                sides,
             });
         }
         Ok(files)
     }
 
-    /// A delta's per-side blob info (ADR 0009): the HEAD-side blob from
-    /// the odb, the changed side hashed `hash-object`-style from disk
-    /// (worktree diff) or read off the staged blob (index diff). A
-    /// missing side — added files' HEAD, deletions' changed — is `None`.
-    /// Odb sides read headers only, never content.
+    /// A delta's per-side info (ADR 0009, ADR 0017): the HEAD-side blob
+    /// from the odb, the changed side hashed `hash-object`-style from
+    /// disk (worktree diff) or read off the staged blob (index diff),
+    /// each with the filemode git reports for that side. A missing side
+    /// — added files' HEAD, deletions' changed — is `None`. Odb sides
+    /// read headers only, never content.
     ///
     /// The disk hash sees raw bytes, no clean filters: under a filter
     /// driver (Git LFS) the worktree hash can never equal the staged
     /// blob, so such a file reads permanently `◑` — a known v0.1
     /// limitation; running filters at refresh would mean odb writes.
-    fn binary_sides(
+    fn file_sides(
         &self,
         delta: &git2::DiffDelta,
         path: &str,
         changed_side: ChangedSide,
-    ) -> Result<BinarySides, Error> {
-        let blob_info = |id: git2::Oid| -> Result<Option<BlobInfo>, Error> {
+    ) -> Result<FileSides, Error> {
+        let odb_side = |file: git2::DiffFile| -> Result<Option<SideInfo>, Error> {
+            let id = file.id();
             if id.is_zero() {
                 return Ok(None);
             }
@@ -715,24 +730,32 @@ impl Git2Backend {
                 .odb()
                 .and_then(|odb| odb.read_header(id))
                 .map_err(backend_error)?;
-            Ok(Some(BlobInfo {
+            Ok(Some(SideInfo {
                 oid: id.to_string(),
                 size: size as u64,
+                mode: filemode(&file),
             }))
         };
-        let head = blob_info(delta.old_file().id())?;
+        let head = odb_side(delta.old_file())?;
         let changed = match changed_side {
-            ChangedSide::Worktree => self.worktree_blob_info(path)?,
-            ChangedSide::Index => blob_info(delta.new_file().id())?,
+            // The delta's new side names the on-disk mode; its blob id
+            // is not to be trusted for a workdir diff, so the content is
+            // hashed instead.
+            ChangedSide::Worktree => self.worktree_side(path)?.map(|side| SideInfo {
+                mode: filemode(&delta.new_file()),
+                ..side
+            }),
+            ChangedSide::Index => odb_side(delta.new_file())?,
         };
-        Ok(BinarySides { head, changed })
+        Ok(FileSides { head, changed })
     }
 
     /// Hash the worktree content at `path` as a blob, `None` when
     /// nothing is on disk. A symlink's blob is its target string (git
     /// semantics), which also keeps a dangling link from failing the
-    /// refresh.
-    fn worktree_blob_info(&self, path: &str) -> Result<Option<BlobInfo>, Error> {
+    /// refresh. The mode is the caller's to fill: git's own view of it
+    /// (0o100644/0o100755) is not the raw filesystem mode.
+    fn worktree_side(&self, path: &str) -> Result<Option<SideInfo>, Error> {
         let Some(file) = self.repo.workdir().map(|root| root.join(path)) else {
             return Ok(None);
         };
@@ -744,16 +767,34 @@ impl Git2Backend {
             let bytes = target.as_os_str().as_encoded_bytes();
             let oid =
                 git2::Oid::hash_object(git2::ObjectType::Blob, bytes).map_err(backend_error)?;
-            return Ok(Some(BlobInfo {
+            return Ok(Some(SideInfo {
                 oid: oid.to_string(),
                 size: bytes.len() as u64,
+                mode: None,
             }));
         }
         let oid = git2::Oid::hash_file(git2::ObjectType::Blob, &file).map_err(backend_error)?;
-        Ok(Some(BlobInfo {
+        Ok(Some(SideInfo {
             oid: oid.to_string(),
             size: metadata.len(),
+            mode: None,
         }))
+    }
+}
+
+/// Whether a diff side is a directory rather than a file — git's tree
+/// mode, which only an untracked embedded repository reaches here with.
+fn is_tree(file: &git2::DiffFile) -> bool {
+    file.mode() == git2::FileMode::Tree
+}
+
+/// A diff side's git filemode, `None` where git reports none — an absent
+/// side, or a platform with `core.filemode` off, where no mode change is
+/// visible to compare in the first place.
+fn filemode(file: &git2::DiffFile) -> Option<u32> {
+    match u32::from(file.mode()) {
+        0 => None,
+        mode => Some(mode),
     }
 }
 

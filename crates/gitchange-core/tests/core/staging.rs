@@ -954,3 +954,39 @@ fn the_commit_flows_stage_all_still_leaves_staged_stale_hunks_alone() {
         vec![HunkStage::StagedStale]
     );
 }
+
+#[test]
+#[cfg(unix)]
+fn staging_a_type_change_writes_the_symlink_to_the_index() {
+    // A file↔symlink swap is zero-hunk (ADR 0017), so it routes through
+    // the whole-file index write — the op a symlink swap needs anyway,
+    // since there is no line content to apply. Issue #100 owns the rest
+    // of the type-change treatment; this pins that staging one works.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("thing", "content\n")
+        .write("target.txt", "elsewhere\n")
+        .commit_all("init");
+    std::fs::remove_file(fixture.path().join("thing")).unwrap();
+    std::os::unix::fs::symlink("target.txt", fixture.path().join("thing")).unwrap();
+
+    let repo = Repo::discover(fixture.path()).unwrap();
+    repo.stage_owned_hunks("thing", None).unwrap();
+    assert_eq!(
+        fixture.index_mode("thing"),
+        Some(0o120000),
+        "staged as a symlink"
+    );
+    assert_eq!(
+        fixture.index_bytes("thing").unwrap(),
+        b"target.txt".to_vec()
+    );
+
+    repo.unstage_owned_hunks("thing", None).unwrap();
+    assert_eq!(
+        fixture.index_mode("thing"),
+        Some(0o100644),
+        "HEAD's entry back"
+    );
+    assert_eq!(fixture.index_bytes("thing").unwrap(), b"content\n".to_vec());
+}

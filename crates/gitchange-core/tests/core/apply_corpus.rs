@@ -49,6 +49,9 @@ struct Case {
     /// Expected HEAD blob per path after the op; `None` = absent from
     /// the committed tree — commit cases only.
     head: Vec<(&'static str, Option<Vec<u8>>)>,
+    /// Expected HEAD filemode per path after the op — commit cases,
+    /// unix only.
+    head_modes: Vec<(&'static str, u32)>,
     /// Paths expected in `StaleHunk` advisories; empty = clean apply.
     stale: Vec<&'static str>,
 }
@@ -69,6 +72,7 @@ impl Case {
             index: Vec::new(),
             index_modes: Vec::new(),
             head: Vec::new(),
+            head_modes: Vec::new(),
             stale: Vec::new(),
         }
     }
@@ -107,8 +111,7 @@ fn run(case: Case) {
         fixture.stage_removal(path);
     }
     for path in &case.stage_exec {
-        set_exec(&fixture.path().join(path));
-        fixture.stage(path);
+        fixture.set_exec(path).stage(path);
     }
     for (path, bytes) in &case.worktree_writes {
         fixture.write_bytes(path, bytes);
@@ -117,7 +120,7 @@ fn run(case: Case) {
         fs::remove_file(fixture.path().join(path)).unwrap();
     }
     for path in &case.worktree_exec {
-        set_exec(&fixture.path().join(path));
+        fixture.set_exec(path);
     }
 
     let repo = Repo::discover(fixture.path()).unwrap();
@@ -199,6 +202,9 @@ fn run(case: Case) {
             "HEAD content of {path}"
         );
     }
+    for (path, mode) in &case.head_modes {
+        assert_eq!(fixture.head_mode(path), Some(*mode), "HEAD mode of {path}");
+    }
     // Commit ops legitimately move HEAD, but the worktree is off-limits
     // to every op in the corpus (ADR 0004: the commit builds a temp
     // index and never touches the worktree).
@@ -250,17 +256,6 @@ fn worktree_state(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     walk(root, root, &mut out);
     out
 }
-
-#[cfg(unix)]
-fn set_exec(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = fs::metadata(path).unwrap().permissions();
-    perms.set_mode(perms.mode() | 0o111);
-    fs::set_permissions(path, perms).unwrap();
-}
-
-#[cfg(not(unix))]
-fn set_exec(_path: &Path) {}
 
 /// `count` numbered lines with `eol` endings; `edits` replace whole lines
 /// by 1-based number — the corpus's compact way to spell file content.
@@ -599,17 +594,41 @@ line 9\nline 10\nline 11\nline 14\nline 15\nline 16\n"
 
     // ——— empty-file edges ———
 
-    // An empty untracked file presents no hunks at all, so the row's
-    // scope is empty and nothing reaches the index (issue #97). Nothing
-    // is lost that gitchange could have used: a hunkless file is outside
-    // every changelist's commit payload whether staged or not. `git add`
-    // is the whole-file op for it (ADR 0003).
-    stage_row_of_an_empty_untracked_file_writes_nothing:
+    // An empty file's add or delete is a zero-hunk change: no line
+    // content to address, so it presents one whole-file hunk (ADR 0017)
+    // and the row's `space` writes the index entry whole, exactly as a
+    // binary's does.
+    stage_row_of_an_empty_untracked_file_writes_the_empty_blob:
         Case {
             base: vec![("keep.txt", b"keep\n".to_vec())],
             worktree_writes: vec![("empty.txt", Vec::new())],
+            index: vec![("empty.txt", Some(Vec::new()))],
+            ..Case::new(Op::StageRow("empty.txt"))
+        };
+
+    unstage_row_of_a_staged_empty_file_removes_the_entry:
+        Case {
+            base: vec![("keep.txt", b"keep\n".to_vec())],
+            stage_writes: vec![("empty.txt", Vec::new())],
+            index: vec![("empty.txt", None)],
+            ..Case::new(Op::UnstageRow("empty.txt"))
+        };
+
+    stage_row_of_an_empty_file_deletion_removes_the_entry:
+        Case {
+            base: vec![("empty.txt", Vec::new()), ("keep.txt", b"keep\n".to_vec())],
+            worktree_removals: vec!["empty.txt"],
             index: vec![("empty.txt", None)],
             ..Case::new(Op::StageRow("empty.txt"))
+        };
+
+    unstage_row_of_a_staged_empty_file_deletion_restores_the_entry:
+        Case {
+            base: vec![("empty.txt", Vec::new()), ("keep.txt", b"keep\n".to_vec())],
+            stage_removals: vec!["empty.txt"],
+            worktree_removals: vec!["empty.txt"],
+            index: vec![("empty.txt", Some(Vec::new()))],
+            ..Case::new(Op::UnstageRow("empty.txt"))
         };
 
     stage_hunk_truncating_a_file_to_empty:
@@ -638,26 +657,26 @@ line 9\nline 10\nline 11\nline 14\nline 15\nline 16\n"
 
     // ——— mode changes (unix: filemode is off on Windows) ———
 
-    // A mode-only change carries no hunks either — same empty row scope,
-    // same `git add` escape hatch as the empty file above. The index
-    // keeps the mode it already had, in both directions.
+    // A mode-only change is the other zero-hunk shape (ADR 0017): one
+    // whole-file hunk, so `space` writes the index entry — mode
+    // included — and unstaging puts HEAD's mode back.
     #[cfg(unix)]
-    stage_row_of_a_mode_only_change_leaves_the_index_mode:
+    stage_row_of_a_mode_only_change_stages_the_mode:
         Case {
             base: vec![("tool.sh", b"#!/bin/sh\n".to_vec())],
             worktree_exec: vec!["tool.sh"],
             index: vec![("tool.sh", Some(b"#!/bin/sh\n".to_vec()))],
-            index_modes: vec![("tool.sh", 0o100644)],
+            index_modes: vec![("tool.sh", 0o100755)],
             ..Case::new(Op::StageRow("tool.sh"))
         };
 
     #[cfg(unix)]
-    unstage_row_of_a_staged_mode_change_leaves_the_index_mode:
+    unstage_row_of_a_staged_mode_change_restores_the_head_mode:
         Case {
             base: vec![("tool.sh", b"#!/bin/sh\n".to_vec())],
             stage_exec: vec!["tool.sh"],
             index: vec![("tool.sh", Some(b"#!/bin/sh\n".to_vec()))],
-            index_modes: vec![("tool.sh", 0o100755)],
+            index_modes: vec![("tool.sh", 0o100644)],
             ..Case::new(Op::UnstageRow("tool.sh"))
         };
 
@@ -670,6 +689,24 @@ line 9\nline 10\nline 11\nline 14\nline 15\nline 16\n"
             index: vec![("tool.sh", Some(b"#!/bin/sh\nset -e\n".to_vec()))],
             index_modes: vec![("tool.sh", 0o100755)],
             ..Case::new(Op::StageRow("tool.sh"))
+        };
+
+    // The ride-along rule (ADR 0017): with content hunks present there is
+    // no separate mode hunk, so any stage op that writes the file's index
+    // entry carries the worktree mode — including a partial stage of one
+    // hunk out of two.
+    #[cfg(unix)]
+    stage_hunk_of_a_chmod_plus_edit_carries_the_mode:
+        Case {
+            base: vec![("tool.sh", lf(16, &[]))],
+            worktree_writes: vec![(
+                "tool.sh",
+                lf(16, &[(4, "EDIT four"), (12, "EDIT twelve")]),
+            )],
+            worktree_exec: vec!["tool.sh"],
+            index: vec![("tool.sh", Some(lf(16, &[(4, "EDIT four")])))],
+            index_modes: vec![("tool.sh", 0o100755)],
+            ..Case::new(Op::StageHunk { path: "tool.sh", hunk: 0 })
         };
 
     // ——— non-UTF-8 text (the #25 heads-up: hunk strings are lossily
@@ -920,6 +957,48 @@ line 9\nline 10\nline 11\nline 14\nline 15\nline 16\n"
                 ("keep.txt", Some(b"keep\n".to_vec())),
             ],
             index: vec![("doomed.txt", None)],
+            ..Case::new(Op::Commit(Some("cl")))
+        };
+
+    // Zero-hunk changes commit like any other (ADR 0017): the changelist
+    // owns the file's whole-file hunk, so the payload carries it and HEAD
+    // gets the mode flip or the empty blob.
+    #[cfg(unix)]
+    commit_a_staged_mode_change_lands_the_mode:
+        Case {
+            base: vec![("tool.sh", b"#!/bin/sh\n".to_vec())],
+            stage_exec: vec!["tool.sh"],
+            changelists: vec!["cl"],
+            head: vec![("tool.sh", Some(b"#!/bin/sh\n".to_vec()))],
+            head_modes: vec![("tool.sh", 0o100755)],
+            index_modes: vec![("tool.sh", 0o100755)],
+            ..Case::new(Op::Commit(Some("cl")))
+        };
+
+    commit_a_staged_empty_file:
+        Case {
+            base: vec![("keep.txt", b"keep\n".to_vec())],
+            stage_writes: vec![("empty.txt", Vec::new())],
+            changelists: vec!["cl"],
+            head: vec![
+                ("empty.txt", Some(Vec::new())),
+                ("keep.txt", Some(b"keep\n".to_vec())),
+            ],
+            index: vec![("empty.txt", Some(Vec::new()))],
+            ..Case::new(Op::Commit(Some("cl")))
+        };
+
+    commit_a_staged_empty_file_deletion_removes_the_path:
+        Case {
+            base: vec![("empty.txt", Vec::new()), ("keep.txt", b"keep\n".to_vec())],
+            stage_removals: vec!["empty.txt"],
+            worktree_removals: vec!["empty.txt"],
+            changelists: vec!["cl"],
+            head: vec![
+                ("empty.txt", None),
+                ("keep.txt", Some(b"keep\n".to_vec())),
+            ],
+            index: vec![("empty.txt", None)],
             ..Case::new(Op::Commit(Some("cl")))
         };
 

@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use gitchange_core::{
-    BinarySides, BlobInfo, ChangedFile, Changelist, CommitInfo, CommitPayload, FileStage, Head,
-    Hunk, HunkIdentity, HunkLine, OidAnchor, PayloadFile,
+    ChangedFile, Changelist, CommitInfo, CommitPayload, FileSides, FileStage, Head, Hunk,
+    HunkIdentity, HunkLine, OidAnchor, PayloadFile, SideInfo,
 };
 
 use super::*;
@@ -40,7 +40,7 @@ fn file(path: &str, hunks: Vec<Hunk>) -> ChangedFile {
         path: path.into(),
         kind: ChangeKind::Modified,
         binary: false,
-        binary_sides: None,
+        sides: None,
         hunks,
     }
 }
@@ -535,7 +535,7 @@ fn conditions_pin_and_self_clear() {
         path: "src/session.ts".into(),
         kind: ChangeKind::Conflicted,
         binary: false,
-        binary_sides: None,
+        sides: None,
         hunks: Vec::new(),
     });
     app.apply_snapshot(busy);
@@ -610,7 +610,7 @@ fn conflicted_files_group_first_and_space_refuses() {
             path: "src/merge.ts".into(),
             kind: ChangeKind::Conflicted,
             binary: false,
-            binary_sides: None,
+            sides: None,
             hunks: Vec::new(),
         },
     );
@@ -772,7 +772,7 @@ fn hunk_selection_survives_a_snapshot_swap_by_content() {
 }
 
 #[test]
-fn a_vanished_hunk_selection_clamps_and_an_empty_file_exits_hunk_mode() {
+fn a_vanished_hunk_selection_clamps_and_no_files_exits_hunk_mode() {
     let mut app = hunk_mode_app();
     app.on_key(key(KeyCode::Char('j')));
     app.on_key(key(KeyCode::Char('j'))); // last hunk
@@ -782,8 +782,12 @@ fn a_vanished_hunk_selection_clamps_and_an_empty_file_exits_hunk_mode() {
     app.apply_snapshot(next);
     assert_eq!(app.hunk_sel, Some(0), "clamped to the remaining hunk");
 
+    // Every change committed away. A file that merely loses its hunks is
+    // no longer a reachable state — a non-conflicted change carries at
+    // least one hunk (ADR 0017) — so an empty universe is what leaves
+    // hunk mode nothing to select.
     let mut gone = snapshot();
-    gone.files[1].hunks.clear();
+    gone.files.clear();
     app.apply_snapshot(gone);
     assert_eq!(app.hunk_sel, None);
     assert_eq!(app.focus, Panel::Files, "nothing selectable ends hunk mode");
@@ -1065,7 +1069,7 @@ fn assign_on_a_conflicted_row_says_why_rather_than_no_hunks() {
             path: "src/merge.ts".into(),
             kind: ChangeKind::Conflicted,
             binary: false,
-            binary_sides: None,
+            sides: None,
             hunks: Vec::new(),
         },
     );
@@ -1858,24 +1862,25 @@ fn the_unassigned_row_wears_the_active_marker_when_it_holds_it() {
     );
 }
 
-fn blob(size: u64) -> BlobInfo {
-    BlobInfo {
+fn blob(size: u64) -> SideInfo {
+    SideInfo {
         oid: format!("oid-{size}"),
         size,
+        mode: Some(0o100644),
     }
 }
 
 fn binary_file(
     kind: ChangeKind,
-    head: Option<BlobInfo>,
-    changed: Option<BlobInfo>,
+    head: Option<SideInfo>,
+    changed: Option<SideInfo>,
     stage: HunkStage,
 ) -> ChangedFile {
     ChangedFile {
         path: "assets/logo.png".into(),
         kind,
         binary: true,
-        binary_sides: Some(BinarySides {
+        sides: Some(FileSides {
             head: head.clone(),
             changed: changed.clone(),
         }),
@@ -1897,7 +1902,7 @@ fn binary_file(
     }
 }
 
-fn binary_app(file: ChangedFile) -> App {
+fn whole_file_app(file: ChangedFile) -> App {
     let mut snapshot = snapshot();
     snapshot.files = vec![file];
     let mut app = App::new("repo");
@@ -1910,7 +1915,7 @@ fn binary_app(file: ChangedFile) -> App {
 fn binary_diff_placeholder_shows_sizes_per_variant() {
     // ADR 0009: one-line sized placeholder, added/deleted variants
     // with a single size; the text is what says "binary".
-    let modified = binary_app(binary_file(
+    let modified = whole_file_app(binary_file(
         ChangeKind::Modified,
         Some(blob(12_698)),
         Some(blob(15_462)),
@@ -1921,7 +1926,7 @@ fn binary_diff_placeholder_shows_sizes_per_variant() {
         DiffLine::Placeholder(text) if text == "Binary file changed (12.4 KB \u{2192} 15.1 KB)"
     )));
 
-    let added = binary_app(binary_file(
+    let added = whole_file_app(binary_file(
         ChangeKind::Untracked,
         None,
         Some(blob(512)),
@@ -1932,7 +1937,7 @@ fn binary_diff_placeholder_shows_sizes_per_variant() {
         DiffLine::Placeholder(text) if text == "Binary file added (512 B)"
     )));
 
-    let deleted = binary_app(binary_file(
+    let deleted = whole_file_app(binary_file(
         ChangeKind::Deleted,
         Some(blob(2 * 1024 * 1024)),
         None,
@@ -1948,7 +1953,7 @@ fn binary_diff_placeholder_shows_sizes_per_variant() {
 fn enter_on_a_binary_is_a_polite_no_op() {
     // ADR 0009: hunk-mode entry on a binary selection does nothing —
     // no focus change, no selection, no log event.
-    let mut app = binary_app(binary_file(
+    let mut app = whole_file_app(binary_file(
         ChangeKind::Modified,
         Some(blob(10)),
         Some(blob(20)),
@@ -1967,7 +1972,7 @@ fn space_on_a_stale_binary_restages_the_file() {
     // row scope, so the toggle re-stages (index := worktree). A binary
     // is one whole-file hunk (ADR 0009), so the row op reduces to the
     // same whole-file index write core's hunk path already makes.
-    let mut app = binary_app(binary_file(
+    let mut app = whole_file_app(binary_file(
         ChangeKind::Modified,
         Some(blob(10)),
         Some(blob(20)),
@@ -1980,6 +1985,111 @@ fn space_on_a_stale_binary_restages_the_file() {
             changelist: None,
         }))
     );
+}
+
+/// A zero-hunk change as core reports it (ADR 0017): text, one
+/// whole-file hunk, the sides carrying whatever names its shape.
+fn zero_hunk_file(
+    kind: ChangeKind,
+    head: Option<SideInfo>,
+    changed: Option<SideInfo>,
+) -> ChangedFile {
+    ChangedFile {
+        path: "tool.sh".into(),
+        kind,
+        binary: false,
+        sides: Some(FileSides {
+            head: head.clone(),
+            changed: changed.clone(),
+        }),
+        hunks: vec![Hunk {
+            old_start: 0,
+            old_lines: 0,
+            new_start: 0,
+            new_lines: 0,
+            stage: HunkStage::Unstaged,
+            index_only: false,
+            identity: HunkIdentity::WholeFile {
+                oids: OidAnchor {
+                    head: head.map(|side| side.oid),
+                    changed: changed.map(|side| side.oid),
+                },
+            },
+            changelist: None,
+        }],
+    }
+}
+
+/// A side with an explicit mode — the mode-only change's whole evidence.
+fn side(mode: u32) -> SideInfo {
+    SideInfo {
+        oid: "same-blob".into(),
+        size: 10,
+        mode: Some(mode),
+    }
+}
+
+#[test]
+fn zero_hunk_diff_placeholders_name_the_change() {
+    // ADR 0017: one-line placeholders on the binary/conflicted channel,
+    // modes octal as git prints them.
+    let mode_only = whole_file_app(zero_hunk_file(
+        ChangeKind::Modified,
+        Some(side(0o100644)),
+        Some(side(0o100755)),
+    ));
+    assert!(mode_only.diff_lines().iter().any(|line| matches!(
+        line,
+        DiffLine::Placeholder(text) if text == "Mode changed (100644 \u{2192} 100755)"
+    )));
+
+    let added = whole_file_app(zero_hunk_file(
+        ChangeKind::Untracked,
+        None,
+        Some(side(0o100644)),
+    ));
+    assert!(added.diff_lines().iter().any(|line| matches!(
+        line,
+        DiffLine::Placeholder(text) if text == "Empty file added"
+    )));
+
+    let deleted = whole_file_app(zero_hunk_file(
+        ChangeKind::Deleted,
+        Some(side(0o100644)),
+        None,
+    ));
+    assert!(deleted.diff_lines().iter().any(|line| matches!(
+        line,
+        DiffLine::Placeholder(text) if text == "Empty file deleted"
+    )));
+
+    // A file swapped for a symlink is zero-hunk too, and the object-kind
+    // bits say so: calling it a mode change would read as a chmod.
+    let type_changed = whole_file_app(zero_hunk_file(
+        ChangeKind::TypeChanged,
+        Some(side(0o100644)),
+        Some(side(0o120000)),
+    ));
+    assert!(type_changed.diff_lines().iter().any(|line| matches!(
+        line,
+        DiffLine::Placeholder(text) if text == "Type changed (100644 \u{2192} 120000)"
+    )));
+}
+
+#[test]
+fn enter_on_a_zero_hunk_change_is_a_polite_no_op() {
+    // The ADR 0009 idiom extended (ADR 0017): one degenerate hunk, and
+    // every action already works at file level.
+    let mut app = whole_file_app(zero_hunk_file(
+        ChangeKind::Modified,
+        Some(side(0o100644)),
+        Some(side(0o100755)),
+    ));
+    let logged = app.log.len();
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(app.focus, Panel::Files);
+    assert!(app.hunk_sel.is_none());
+    assert_eq!(app.log.len(), logged);
 }
 
 // ── the binding core & its disabled reasons (ADR 0014, issue #65) ───

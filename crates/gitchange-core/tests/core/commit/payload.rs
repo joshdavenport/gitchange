@@ -271,3 +271,42 @@ fn a_restaged_binary_blob_drifts_the_confirmation() {
     assert!(matches!(outcome, CommitOutcome::Drifted { .. }));
     assert_eq!(fixture.commit_count(), 1, "nothing was committed");
 }
+
+#[test]
+#[cfg(unix)]
+fn a_staged_zero_hunk_change_is_in_the_payload() {
+    // The hole issue #98 opened with: with both files staged by raw
+    // `git add`, `commit_payload` returned `files: []` and gitchange
+    // could not commit them at all. They carry a whole-file hunk now
+    // (ADR 0017), so the payload names them.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("tool.sh", "#!/bin/sh\n")
+        .commit_all("init")
+        .set_exec("tool.sh")
+        .stage("tool.sh")
+        .write_bytes("empty.txt", b"")
+        .stage("empty.txt");
+    let repo = repo(&fixture);
+    repo.create_changelist("work").unwrap();
+    repo.switch(Some("work")).unwrap();
+    repo.refresh().unwrap();
+
+    let payload = repo.commit_payload(Some("work")).unwrap();
+    let paths: Vec<&str> = payload
+        .files
+        .iter()
+        .map(|file| file.path.as_str())
+        .collect();
+    assert_eq!(paths, vec!["empty.txt", "tool.sh"]);
+    assert_eq!(payload.staged_hunks(), 2);
+    assert_eq!(payload.stale_hunks(), 0);
+
+    commit(&repo, Some("work"), "zero-hunk changes");
+    assert_eq!(fixture.head_mode("tool.sh"), Some(0o100755));
+    assert_eq!(fixture.head_bytes("empty.txt"), Some(Vec::new()));
+    assert!(
+        repo.refresh().unwrap().files.is_empty(),
+        "nothing left over"
+    );
+}

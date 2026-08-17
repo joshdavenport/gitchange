@@ -198,7 +198,7 @@ fn the_conflicts_group_renders_first_without_stage_marks() {
         path: "src/merge.ts".into(),
         kind: ChangeKind::Conflicted,
         binary: false,
-        binary_sides: None,
+        sides: None,
         hunks: Vec::new(),
     });
     app.apply_snapshot(busy);

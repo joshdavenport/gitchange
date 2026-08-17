@@ -36,6 +36,7 @@ to the fake project.
 | `mid-staging` | `sorted` plus mixed staged states: `●` config.rs, `○` main.rs/report.rs, and timer.rs split across two changelists — `●` under `debug-logging`, `◐` under `fix-timeout-retry` (its hunk is staged-stale `◑`). The two timer.rs rows disagree on purpose: a row's marker reads only the hunks its changelist owns. |
 | `conflicted` | Mid-merge: `src/report.rs` quarantined in the conflicts group, commit guarded, one changelist of unrelated dirty work. |
 | `binary` | Changed PNG auto-captured into an `assets-refresh` changelist as one whole-file hunk (`0/1`), next to a text change for contrast. The two revisions differ in size so the ADR 0009 placeholder has an arrow worth eyeballing; `enter` on the PNG is a deliberate no-op. |
+| `zero-hunk` | The three ADR 0017 shapes side by side: a chmod +x on `scripts/release.sh`, an empty `NOTES` added (staged, so `● 1/1`), an empty `PLACEHOLDER` deleted. Each is one whole-file hunk (`0/1`, not the old inert `0/0`) with its own diff placeholder; the mode row shows on unix only. |
 | `large` | 45 generated modules + split timer.rs across two changelists — scroll/refresh/layout under volume. |
 
 ## Semantics

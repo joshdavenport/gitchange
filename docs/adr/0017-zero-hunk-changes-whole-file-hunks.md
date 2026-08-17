@@ -79,7 +79,22 @@ or carry years-open bugs about it.
 - The apply-corpus cases pinning the inertness flip to assert the
   whole-file index write, and empty-tracked-file deletion — the same
   class, previously uncovered — gains cases.
-- `TypeChanged` (file↔symlink) may present zero-hunk shapes and has no
-  whole-file routing arm; flagged as its own issue, not covered here.
+- *Amended (issue #98):* `TypeChanged` (file↔symlink) presents a
+  zero-hunk shape — git reports it with mode bits alone, no hunks,
+  whatever the file holds — so the invariant takes it in: the same
+  whole-file hunk, and the same whole-file index write, which is what
+  staging a symlink swap needs anyway. Its diff placeholder reads
+  `Type changed (100644 → 120000)`, since calling a symlink swap a mode
+  change would misname it. The rest of its treatment — how a type change
+  should present and match — stays with its own issue (#100); this ADR
+  only stops it falling out of membership, staging and commit with the
+  rest of the class.
 - Submodule pointer changes stay invisible (`ignore_submodules` on every
   diff) — a standing scope decision, not a zero-hunk file.
+- An **embedded repository** — a nested clone or a linked worktree inside
+  the tree — is one untracked *directory* delta: trailing-slash path,
+  tree mode, no blob and no hunks. It is not a file change, so there is
+  nothing to hash for an anchor and no index write gitchange makes; it
+  stays out of the universe entirely rather than presenting a whole-file
+  hunk. `git add` is the op for it. This keeps the invariant exact:
+  every change the universe holds carries a hunk.

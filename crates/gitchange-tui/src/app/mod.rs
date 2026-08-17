@@ -579,13 +579,14 @@ impl App {
     }
 
     /// `enter` on a file: focus the Diff panel
-    /// with its first hunk selected. Hunk-less files have nothing to
-    /// select, and a binary's one whole-file hunk is a state that can
-    /// only waste keypresses — polite no-op, no log event (ADR 0009).
+    /// with its first hunk selected. Hunk-less files (quarantined ones)
+    /// have nothing to select, and a lone whole-file hunk — a binary or a
+    /// zero-hunk change — is a state that can only waste keypresses:
+    /// polite no-op, no log event (ADR 0009, ADR 0017).
     fn enter_hunk_mode(&mut self) {
         let has_hunks = self
             .selected_file()
-            .is_some_and(|file| !file.binary && !file.hunks.is_empty());
+            .is_some_and(|file| !file.presents_whole_file_hunk() && !file.hunks.is_empty());
         if has_hunks {
             self.focus = Panel::Diff;
             self.hunk_sel = Some(0);

@@ -335,7 +335,7 @@ fn a_changed_binary_file_is_one_whole_file_hunk() {
     assert!(anchor.changed.is_some(), "changed-side content hash");
     assert_ne!(anchor.head, anchor.changed);
 
-    let sides = file.binary_sides.as_ref().expect("binary sides");
+    let sides = file.sides.as_ref().expect("binary sides");
     assert_eq!(sides.head.as_ref().map(|blob| blob.size), Some(4));
     assert_eq!(sides.changed.as_ref().map(|blob| blob.size), Some(5));
 }
@@ -391,7 +391,7 @@ fn added_and_deleted_binaries_have_one_sided_anchors() {
     };
     assert!(anchor.head.is_none());
     assert!(anchor.changed.is_some());
-    let sides = added.binary_sides.as_ref().unwrap();
+    let sides = added.sides.as_ref().unwrap();
     assert_eq!(sides.changed.as_ref().map(|blob| blob.size), Some(5));
 
     let deleted = snapshot.files.iter().find(|f| f.path == "old.bin").unwrap();
@@ -419,4 +419,169 @@ fn a_conflicted_binary_stays_quarantined() {
     let file = &snapshot.files[0];
     assert_eq!(file.kind, ChangeKind::Conflicted);
     assert!(file.hunks.is_empty());
+}
+
+// ——— zero-hunk changes (ADR 0017) ———
+
+#[test]
+#[cfg(unix)]
+fn a_mode_only_change_is_one_whole_file_hunk() {
+    // ADR 0017: a change git reports with no text hunks presents the
+    // same degenerate whole-file hunk a binary does, so the row reads
+    // `○ 0/1` instead of the inert `0/0`.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("tool.sh", "#!/bin/sh\n")
+        .commit_all("init")
+        .set_exec("tool.sh");
+
+    let repo = Repo::discover(fixture.path()).unwrap();
+    let file = &repo.refresh().unwrap().files[0];
+
+    assert_eq!(file.path, "tool.sh");
+    assert_eq!(file.kind, ChangeKind::Modified);
+    assert!(!file.binary, "a shell script is text");
+    assert_eq!((file.staged_hunks(), file.total_hunks()), (0, 1));
+    assert_eq!(file.stage(), FileStage::Unstaged);
+    let HunkIdentity::WholeFile { oids: anchor } = &file.hunks[0].identity else {
+        panic!("a mode-only change presents a whole-file hunk");
+    };
+    // Content is untouched, so both sides name the same blob: matching
+    // rests on path continuity, not on the anchor discriminating.
+    assert_eq!(anchor.head, anchor.changed);
+    assert!(anchor.head.is_some());
+
+    // The sides carry the modes the placeholder and the derivation read.
+    let sides = file.sides.as_ref().expect("mode-change sides");
+    assert_eq!(
+        sides.head.as_ref().and_then(|side| side.mode),
+        Some(0o100644)
+    );
+    assert_eq!(sides.changed_mode(), Some(0o100755));
+}
+
+#[test]
+#[cfg(unix)]
+fn mode_only_staging_is_derived_by_mode_compare() {
+    // The OIDs are equal on both sides of a mode-only change, so the
+    // mode bits are what derive ○●◑ (ADR 0017).
+    let fixture = RepoFixture::new();
+    fixture
+        .write("tool.sh", "#!/bin/sh\n")
+        .commit_all("init")
+        .set_exec("tool.sh")
+        .stage("tool.sh");
+
+    let repo = Repo::discover(fixture.path()).unwrap();
+    let file = &repo.refresh().unwrap().files[0];
+    assert_eq!(file.hunks[0].stage, HunkStage::Staged);
+    assert_eq!((file.staged_hunks(), file.total_hunks()), (1, 1));
+    assert_eq!(file.stage(), FileStage::Staged);
+
+    // Staged, then reverted in the worktree: the index-only `◑` flavour,
+    // which the ADR names as reachable for a mode flip.
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(
+        fixture.path().join("tool.sh"),
+        std::fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+    let file = &repo.refresh().unwrap().files[0];
+    assert_eq!(file.hunks[0].stage, HunkStage::StagedStale);
+    assert!(file.hunks[0].index_only);
+    assert_eq!((file.staged_hunks(), file.total_hunks()), (0, 1));
+}
+
+#[test]
+fn empty_file_adds_and_deletes_are_whole_file_hunks() {
+    // The other zero-hunk shapes (ADR 0017), discriminated by which side
+    // of the anchor exists — the same rule added and deleted binaries
+    // follow.
+    let fixture = RepoFixture::new();
+    fixture
+        .write_bytes("gone.txt", b"")
+        .commit_all("init")
+        .write_bytes("fresh.txt", b"");
+    std::fs::remove_file(fixture.path().join("gone.txt")).unwrap();
+
+    let repo = Repo::discover(fixture.path()).unwrap();
+    let snapshot = repo.refresh().unwrap();
+
+    let added = snapshot
+        .files
+        .iter()
+        .find(|f| f.path == "fresh.txt")
+        .unwrap();
+    assert_eq!(added.kind, ChangeKind::Untracked);
+    assert_eq!(added.total_hunks(), 1);
+    let HunkIdentity::WholeFile { oids: anchor } = &added.hunks[0].identity else {
+        panic!("whole-file hunk");
+    };
+    assert!(anchor.head.is_none());
+    assert!(anchor.changed.is_some(), "the empty blob");
+
+    let deleted = snapshot
+        .files
+        .iter()
+        .find(|f| f.path == "gone.txt")
+        .unwrap();
+    assert_eq!(deleted.kind, ChangeKind::Deleted);
+    assert_eq!(deleted.total_hunks(), 1);
+    let HunkIdentity::WholeFile { oids: anchor } = &deleted.hunks[0].identity else {
+        panic!("whole-file hunk");
+    };
+    assert!(anchor.head.is_some());
+    assert!(anchor.changed.is_none());
+}
+
+#[test]
+fn an_embedded_repository_stays_out_of_the_universe() {
+    // git reports a nested clone or linked worktree as one untracked
+    // directory — no blob, no hunks, and no index write gitchange makes.
+    // It is not a zero-hunk change, so it never enters the universe and
+    // the "every change carries a hunk" invariant holds (ADR 0017).
+    let fixture = RepoFixture::new();
+    fixture.write("a.txt", "content\n").commit_all("init");
+    fixture.add_worktree("side");
+
+    let repo = Repo::discover(fixture.path()).unwrap();
+    let snapshot = repo.refresh().unwrap();
+
+    assert!(snapshot.files.is_empty(), "{:?}", snapshot.files);
+}
+
+#[test]
+#[cfg(unix)]
+fn a_type_change_is_a_zero_hunk_change_too() {
+    // git reports a file↔symlink swap with mode bits alone and no
+    // hunks, whatever the file holds, so ADR 0017's invariant takes it
+    // in: one whole-file hunk, membership and staging like any other.
+    // How a type change should *present* and match is its own issue
+    // (#100); this pins that it no longer falls out of everything.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("thing", "content\n")
+        .write("target.txt", "elsewhere\n")
+        .commit_all("init");
+    std::fs::remove_file(fixture.path().join("thing")).unwrap();
+    std::os::unix::fs::symlink("target.txt", fixture.path().join("thing")).unwrap();
+
+    let repo = Repo::discover(fixture.path()).unwrap();
+    let file = repo
+        .refresh()
+        .unwrap()
+        .files
+        .into_iter()
+        .find(|file| file.path == "thing")
+        .expect("thing in the universe");
+
+    assert_eq!(file.kind, ChangeKind::TypeChanged);
+    assert_eq!((file.staged_hunks(), file.total_hunks()), (0, 1));
+    assert!(file.presents_whole_file_hunk());
+    let sides = file.sides.as_ref().expect("type-change sides");
+    assert_eq!(
+        sides.head.as_ref().and_then(|side| side.mode),
+        Some(0o100644)
+    );
+    assert_eq!(sides.changed_mode(), Some(0o120000), "the symlink mode");
 }

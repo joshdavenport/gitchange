@@ -60,7 +60,7 @@ fn pins_render_as_a_banner_atop_the_log_stream() {
         path: "src/merge.ts".into(),
         kind: ChangeKind::Conflicted,
         binary: false,
-        binary_sides: None,
+        sides: None,
         hunks: Vec::new(),
     });
     app.apply_snapshot(busy);

@@ -94,8 +94,8 @@ pub struct Snapshot {
 impl Snapshot {
     /// The files belonging to one changelist for the All view — a file is
     /// "in" a changelist when at least one hunk is owned by it. `None`
-    /// selects unassigned, which also holds hunk-less files (mode-only
-    /// staged changes, empty-file adds).
+    /// selects unassigned. Every non-conflicted change carries at least
+    /// one hunk (ADR 0017), so ownership alone decides.
     pub fn files_in(&self, changelist: Option<&str>) -> Vec<&ChangedFile> {
         self.files
             .iter()
@@ -105,11 +105,9 @@ impl Snapshot {
                 if file.kind == ChangeKind::Conflicted {
                     return false;
                 }
-                let owned = file
-                    .hunks
+                file.hunks
                     .iter()
-                    .any(|hunk| hunk.changelist.as_deref() == changelist);
-                owned || (changelist.is_none() && file.hunks.is_empty())
+                    .any(|hunk| hunk.changelist.as_deref() == changelist)
             })
             .collect()
     }

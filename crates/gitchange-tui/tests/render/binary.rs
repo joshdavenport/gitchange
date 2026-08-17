@@ -1,9 +1,7 @@
 //! Binary whole-file hunks (ADR 0009, issue #43): a sized placeholder
 //! stands in for the diff body, and hunk mode is a no-op.
 
-use gitchange_core::{
-    BinarySides, BlobInfo, ChangeKind, ChangedFile, Hunk, HunkIdentity, HunkStage,
-};
+use gitchange_core::{ChangeKind, ChangedFile, FileSides, Hunk, HunkIdentity, HunkStage, SideInfo};
 use ratatui::crossterm::event::KeyCode;
 
 use gitchange_tui::app::App;
@@ -12,18 +10,20 @@ use gitchange_tui::theme::Theme;
 use crate::helpers::{fg_at, find_text, key, render_buffer, snapshot, text_of};
 
 /// A changed binary as core reports it: one whole-file hunk anchored on
-/// the blob-OID pair, which `BinarySides` derives so the fixture can't
+/// the blob-OID pair, which `FileSides` derives so the fixture can't
 /// drift from ADR 0009's anchor. Sizes match the `binary` sandbox, so
 /// what this renders is what gets eyeballed there.
 fn binary_file(changelist: &str) -> ChangedFile {
-    let sides = BinarySides {
-        head: Some(BlobInfo {
+    let sides = FileSides {
+        head: Some(SideInfo {
             oid: "9ebcc32e".into(),
             size: 12_698,
+            mode: Some(0o100644),
         }),
-        changed: Some(BlobInfo {
+        changed: Some(SideInfo {
             oid: "0d4f9284".into(),
             size: 15_462,
+            mode: Some(0o100644),
         }),
     };
     ChangedFile {
@@ -42,7 +42,7 @@ fn binary_file(changelist: &str) -> ChangedFile {
             },
             changelist: Some(changelist.to_owned()),
         }],
-        binary_sides: Some(sides),
+        sides: Some(sides),
     }
 }
 

@@ -131,6 +131,26 @@ impl RepoFixture {
         self
     }
 
+    /// Set the executable bit on a repo-relative path — the worktree
+    /// half of a mode change (ADR 0017). A no-op off unix, where the
+    /// mode change itself is: git reads `core.filemode` as false there
+    /// and has nothing to report. Tests that assert on a mode are
+    /// `#[cfg(unix)]` for that reason, so the no-op never stands in for
+    /// an assertion.
+    pub fn set_exec(&self, rel: &str) -> &Self {
+        #[cfg(not(unix))]
+        let _ = rel;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let path = self.dir.path().join(rel);
+            let mut perms = fs::metadata(&path).unwrap().permissions();
+            perms.set_mode(perms.mode() | 0o111);
+            fs::set_permissions(&path, perms).unwrap();
+        }
+        self
+    }
+
     /// Move a repo-relative path to another, git none the wiser — the
     /// rename ADR 0011 sees as a delete plus an add.
     pub fn rename(&self, from: &str, to: &str) -> &Self {
@@ -231,6 +251,15 @@ impl RepoFixture {
         let entry = tree.get_path(Path::new(rel)).ok()?;
         let blob = self.repo.find_blob(entry.id()).unwrap();
         Some(blob.content().to_vec())
+    }
+
+    /// HEAD tree's filemode for a repo-relative path (e.g. 0o100644 /
+    /// 0o100755), `None` when the path (or HEAD) doesn't exist — the
+    /// commit-result ground truth for a mode change (ADR 0017).
+    pub fn head_mode(&self, rel: &str) -> Option<u32> {
+        let tree = self.repo.head().ok()?.peel_to_tree().ok()?;
+        let entry = tree.get_path(Path::new(rel)).ok()?;
+        Some(entry.filemode() as u32)
     }
 
     /// The HEAD commit's message.

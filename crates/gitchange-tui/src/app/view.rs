@@ -3,8 +3,8 @@
 //! reads over the current snapshot and selections.
 
 use gitchange_core::{
-    CONFLICTS, ChangeKind, ChangedFile, FileStage, GroupKind, Hunk, HunkStage, UNASSIGNED,
-    count_noun,
+    CONFLICTS, ChangeKind, ChangedFile, FileStage, GroupKind, Hunk, HunkStage, SideInfo,
+    UNASSIGNED, count_noun,
 };
 
 use super::keymap::{self, BindingId};
@@ -364,10 +364,10 @@ impl App {
             )));
             return lines;
         }
-        if file.binary {
-            // The one-line sized placeholder (ADR 0009) — the text is
-            // what says "binary"; no new glyphs.
-            lines.push(DiffLine::Placeholder(binary_placeholder(file)));
+        if file.presents_whole_file_hunk() {
+            // The one-line placeholder (ADR 0009, ADR 0017) — the text is
+            // what says binary, mode change or empty file; no new glyphs.
+            lines.push(DiffLine::Placeholder(whole_file_placeholder(file)));
             return lines;
         }
         if file.hunks.is_empty() {
@@ -399,9 +399,9 @@ impl App {
                 foreign,
                 selected,
             });
-            // Whole-file hunks left through the `file.binary` branch
-            // above, so everything here is text; an empty slice would
-            // just render no content rows anyway.
+            // Whole-file hunks left through the placeholder branch above,
+            // so everything here is text; an empty slice would just
+            // render no content rows anyway.
             for line in hunk.identity.text_lines().unwrap_or_default() {
                 lines.push(DiffLine::Content {
                     origin: line.origin,
@@ -543,15 +543,28 @@ pub(super) fn owned_hunks(file: &ChangedFile, owner: Option<&str>) -> Vec<Hunk> 
     file.owned_hunks(owner).cloned().collect()
 }
 
-/// The Diff panel's one-line binary placeholder (ADR 0009):
-/// `Binary file changed (12.4 KB → 15.1 KB)`, with added/deleted
-/// variants showing the single existing side's size. Side presence, not
-/// change kind, picks the variant — an index-only binary has no worktree
-/// kind to trust.
-fn binary_placeholder(file: &ChangedFile) -> String {
-    let sides = file.binary_sides.as_ref();
+/// The Diff panel's one-line placeholder for a file whose whole change is
+/// one degenerate hunk: sizes for a binary (ADR 0009) —
+/// `Binary file changed (12.4 KB → 15.1 KB)` — and for a zero-hunk change
+/// the shape its sides name (ADR 0017): `Mode changed (100644 → 100755)`,
+/// `Empty file added`, `Empty file deleted`. Modes print octal, as git
+/// prints them.
+///
+/// Side presence, not change kind, picks the variant — an index-only
+/// change has no worktree kind to trust.
+fn whole_file_placeholder(file: &ChangedFile) -> String {
+    let sides = file.sides.as_ref();
     let head = sides.and_then(|sides| sides.head.as_ref());
     let changed = sides.and_then(|sides| sides.changed.as_ref());
+    if file.binary {
+        binary_placeholder(head, changed)
+    } else {
+        zero_hunk_placeholder(head, changed)
+    }
+}
+
+/// The binary variants (ADR 0009), each showing the sizes it has.
+fn binary_placeholder(head: Option<&SideInfo>, changed: Option<&SideInfo>) -> String {
     match (head, changed) {
         (Some(head), Some(changed)) => format!(
             "Binary file changed ({} {} {})",
@@ -562,6 +575,45 @@ fn binary_placeholder(file: &ChangedFile) -> String {
         (None, Some(changed)) => format!("Binary file added ({})", human_size(changed.size)),
         (Some(head), None) => format!("Binary file deleted ({})", human_size(head.size)),
         (None, None) => "Binary file changed".into(),
+    }
+}
+
+/// The zero-hunk variants (ADR 0017). One side missing is the file
+/// coming or going; both sides present with no line content means the
+/// mode bits are the change, and they say which kind: permissions on a
+/// regular file, or the object type itself — a file swapped for a
+/// symlink, which git also reports with no hunks. Anything else is a
+/// change git reports with neither content nor a mode to name — nothing
+/// to say beyond that it exists.
+fn zero_hunk_placeholder(head: Option<&SideInfo>, changed: Option<&SideInfo>) -> String {
+    match (head, changed) {
+        (None, Some(_)) => "Empty file added".into(),
+        (Some(_), None) => "Empty file deleted".into(),
+        (Some(head), Some(changed)) => match (head.mode, changed.mode) {
+            (Some(before), Some(after)) if before != after => {
+                format!(
+                    "{} ({before:o} {} {after:o})",
+                    mode_change_label(before, after),
+                    gitchange_core::ARROW
+                )
+            }
+            _ => "File changed".into(),
+        },
+        (None, None) => "File changed".into(),
+    }
+}
+
+/// Which change two differing filemodes describe: permission bits on the
+/// same kind of object is a mode change, a different object kind
+/// (regular file ↔ symlink ↔ gitlink) is a type change. Calling the
+/// latter a mode change would read a symlink swap as a chmod.
+fn mode_change_label(before: u32, after: u32) -> &'static str {
+    /// git's object-kind bits — the high half of a filemode.
+    const KIND: u32 = 0o170000;
+    if before & KIND == after & KIND {
+        "Mode changed"
+    } else {
+        "Type changed"
     }
 }
 

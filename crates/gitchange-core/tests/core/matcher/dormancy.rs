@@ -209,3 +209,46 @@ fn binary_dormant_revival_is_exact_only() {
     let snapshot = repo.refresh().unwrap();
     assert_eq!(owners(&snapshot, "logo.png"), vec![Some("art".into())]);
 }
+
+#[test]
+#[cfg(unix)]
+fn a_mode_only_record_goes_dormant_and_revives_on_a_re_flip() {
+    // ADR 0017: a mode-only change's two OID sides are equal, so nothing
+    // in the anchor discriminates one flip from another — matching rests
+    // on path continuity, and a re-flip at the same path revives the
+    // dormant record. Stated as the intended behaviour, not a leak:
+    // same predicament, same home.
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = RepoFixture::new();
+    fixture.write("tool.sh", "#!/bin/sh\n").commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("scripts").unwrap();
+    repo.switch(Some("scripts")).unwrap();
+
+    fixture.set_exec("tool.sh");
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(owners(&snapshot, "tool.sh"), vec![Some("scripts".into())]);
+
+    // Flip back: the change vanishes from the universe, the record goes
+    // dormant rather than being dropped.
+    fs::set_permissions(
+        fixture.path().join("tool.sh"),
+        fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+    let snapshot = repo.refresh().unwrap();
+    assert!(snapshot.files.is_empty(), "no change left to show");
+    assert!(
+        state_json(&fixture)["records"][0]["dormant_since"].is_u64(),
+        "the vanished mode change goes dormant"
+    );
+
+    // Re-flipped, with a different changelist active: the dormant record
+    // revives to its owner instead of capturing to the active one.
+    repo.create_changelist("other").unwrap();
+    repo.switch(Some("other")).unwrap();
+    fixture.set_exec("tool.sh");
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(owners(&snapshot, "tool.sh"), vec![Some("scripts".into())]);
+}

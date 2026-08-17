@@ -118,17 +118,17 @@ pub struct PayloadFile {
     /// The changelist's `◑` hunks here (edited and index-only flavours).
     pub stale_hunks: usize,
     /// The diff(HEAD↔index) hunks this commit carries, in file order.
-    /// Empty for a binary file, which commits via `whole_file` instead.
+    /// Empty for a whole-file hunk, which commits via `whole_file`.
     pub hunks: Vec<PayloadHunk>,
-    /// A binary file's whole-file payload (ADR 0009); `None` for text
-    /// files. Participates in equality, so a re-staged binary blob
-    /// drifts a confirmation like re-staged text hunks do.
+    /// A whole-file hunk's payload (ADR 0009, ADR 0017); `None` for a
+    /// file with text hunks. Participates in equality, so a re-staged
+    /// blob drifts a confirmation like re-staged text hunks do.
     pub whole_file: Option<WholeFilePayload>,
 }
 
-/// What a binary file commits (ADR 0009): the staged blob, whole-file —
-/// the temp index receives the live index entry verbatim. `None`
-/// commits the file's staged deletion.
+/// What a whole-file hunk commits (ADR 0009, ADR 0017): the staged blob
+/// and its mode, whole-file — the temp index receives the live index
+/// entry verbatim. `None` commits the file's staged deletion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WholeFilePayload {
     pub staged_oid: Option<String>,
@@ -228,15 +228,15 @@ pub(crate) fn plan(
             continue;
         }
         let index_file = index.iter().find(|candidate| candidate.path == file.path);
-        // A binary file commits whole (ADR 0009): the staged blob copied
-        // into the temp index verbatim — no hunk selection to run. An
-        // owned non-unstaged hunk implies the index differs from HEAD
-        // here, so the index diff sees the path and carries sides (it
-        // does for text content too — the mixed binary-worktree-over-
-        // staged-text case commits its staged text whole-file); the
-        // `else` is defensive only.
-        if file.binary {
-            let Some(sides) = index_file.and_then(|file| file.binary_sides.as_ref()) else {
+        // A whole-file hunk commits whole (ADR 0009, ADR 0017): the
+        // staged blob and its mode copied into the temp index verbatim —
+        // no hunk selection to run. An owned non-unstaged hunk implies
+        // the index differs from HEAD here, so the index diff sees the
+        // path and carries sides (it does for text content too — the
+        // mixed binary-worktree-over-staged-text case commits its staged
+        // text whole-file); the `else` is defensive only.
+        if file.presents_whole_file_hunk() {
+            let Some(sides) = index_file.and_then(|file| file.sides.as_ref()) else {
                 continue;
             };
             let whole_file = WholeFilePayload {
@@ -390,7 +390,7 @@ pub(crate) fn apply_aftermath(state: &mut State, plans: &[PathPlan], residual: &
                     let sides = residual
                         .iter()
                         .find(|file| file.path == plan.path)
-                        .and_then(|file| file.binary_sides.as_ref());
+                        .and_then(|file| file.sides.as_ref());
                     if let Some(sides) = sides {
                         record.oid_anchor = Some(sides.oid_anchor());
                     }

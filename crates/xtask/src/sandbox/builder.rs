@@ -65,6 +65,32 @@ impl Sandbox {
         Ok(())
     }
 
+    /// Delete a repo-relative path from the worktree.
+    pub fn remove(&self, rel: &str) -> Result<()> {
+        let path = self.root.join(rel);
+        fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))
+    }
+
+    /// Set the executable bit on a repo-relative path — the worktree
+    /// half of a mode change (ADR 0017). A no-op off unix, where git
+    /// reads `core.filemode` as false and has no mode change to show.
+    pub fn set_exec(&self, rel: &str) -> Result<()> {
+        #[cfg(not(unix))]
+        let _ = rel;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let path = self.root.join(rel);
+            let mut perms = fs::metadata(&path)
+                .with_context(|| format!("stat {}", path.display()))?
+                .permissions();
+            perms.set_mode(perms.mode() | 0o111);
+            fs::set_permissions(&path, perms)
+                .with_context(|| format!("chmod {}", path.display()))?;
+        }
+        Ok(())
+    }
+
     /// Replace `from` with `to` in a tracked file, erroring when the
     /// needle is absent — a silent no-op would build a wrong scenario.
     pub fn replace(&self, rel: &str, from: &str, to: &str) -> Result<()> {

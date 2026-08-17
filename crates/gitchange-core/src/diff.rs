@@ -17,45 +17,59 @@ pub struct FileDiff {
     /// degenerate hunk in the universe (ADR 0009).
     pub binary: bool,
     pub hunks: Vec<DiffHunk>,
-    /// Blob identity and size per side (ADR 0009): the whole-file hunk's
-    /// anchor material and the diff placeholder's sizes. The changed
-    /// side is the diff's new side. Worktree diffs populate it only for
-    /// binary files — the on-disk content hash is the stated refresh
-    /// cost; index diffs populate it for every file (two odb header
-    /// reads), so a binary worktree over staged text still derives a
-    /// committable whole-file payload.
-    pub binary_sides: Option<BinarySides>,
+    /// Blob identity, size and filemode per side (ADR 0009, ADR 0017):
+    /// the whole-file hunk's anchor material, the diff placeholder's
+    /// sizes and modes, and the mode-only change's staging evidence. The
+    /// changed side is the diff's new side. Worktree diffs populate it
+    /// for the files that present a whole-file hunk — binary and
+    /// zero-hunk ones — since the on-disk content hash is the stated
+    /// refresh cost; index diffs populate it for every file (two odb
+    /// header reads), so a binary worktree over staged text still
+    /// derives a committable whole-file payload.
+    pub sides: Option<FileSides>,
 }
 
-/// The two sides of a binary file's change (ADR 0009). A `None` side
-/// doesn't exist: no `head` for added/untracked files, no `changed` for
-/// deletions.
+/// The two sides of a whole-file change (ADR 0009, ADR 0017). A `None`
+/// side doesn't exist: no `head` for added/untracked files, no `changed`
+/// for deletions.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BinarySides {
-    pub head: Option<BlobInfo>,
-    pub changed: Option<BlobInfo>,
+pub struct FileSides {
+    pub head: Option<SideInfo>,
+    pub changed: Option<SideInfo>,
 }
 
-impl BinarySides {
+impl FileSides {
     /// The changed-side content hash, `None` for a deletion.
     pub fn changed_oid(&self) -> Option<String> {
-        self.changed.as_ref().map(|blob| blob.oid.clone())
+        self.changed.as_ref().map(|side| side.oid.clone())
     }
 
-    /// The sides as the OID pair records anchor on (ADR 0009).
+    /// The changed-side filemode, `None` for a deletion or where git
+    /// reports none.
+    pub fn changed_mode(&self) -> Option<u32> {
+        self.changed.as_ref().and_then(|side| side.mode)
+    }
+
+    /// The sides as the OID pair records anchor on (ADR 0009). Modes
+    /// deliberately stay out: records carry no mode bits (ADR 0017).
     pub fn oid_anchor(&self) -> crate::state::OidAnchor {
         crate::state::OidAnchor {
-            head: self.head.as_ref().map(|blob| blob.oid.clone()),
+            head: self.head.as_ref().map(|side| side.oid.clone()),
             changed: self.changed_oid(),
         }
     }
 }
 
-/// One binary blob: its content hash (`hash-object`-style) and byte size.
+/// One side of a changed file: its blob content hash
+/// (`hash-object`-style), byte size, and git filemode. `mode` is `None`
+/// where git reports none for a present side — nothing then discriminates
+/// a mode change, so comparisons treat it as unknown rather than as
+/// `100644`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BlobInfo {
+pub struct SideInfo {
     pub oid: String,
     pub size: u64,
+    pub mode: Option<u32>,
 }
 
 /// One text hunk. Old coordinates address the HEAD side in both diffs,

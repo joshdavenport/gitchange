@@ -379,3 +379,42 @@ fn a_changed_return_binary_notices_its_auto_capture() {
     let snapshot = repo.refresh().unwrap();
     assert!(snapshot.advisories.is_empty());
 }
+
+#[test]
+#[cfg(unix)]
+fn a_zero_hunk_change_captures_and_is_assignable_like_any_other() {
+    // ADR 0017: a mode-only change is one whole-file hunk, so it flows
+    // through capture and the explicit assign op like any hunk —
+    // including the release back to unassigned (ADR 0016).
+    let fixture = RepoFixture::new();
+    fixture.write("tool.sh", "#!/bin/sh\n").commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("scripts").unwrap();
+    repo.switch(Some("scripts")).unwrap();
+    repo.create_changelist("other").unwrap();
+
+    fixture.set_exec("tool.sh");
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(owners(&snapshot, "tool.sh"), vec![Some("scripts".into())]);
+    let in_scripts: Vec<&str> = snapshot
+        .files_in(Some("scripts"))
+        .iter()
+        .map(|file| file.path.as_str())
+        .collect();
+    assert_eq!(in_scripts, vec!["tool.sh"]);
+
+    let hunk = snapshot.files[0].hunks[0].clone();
+    let outcome = repo
+        .assign_hunks("tool.sh", std::slice::from_ref(&hunk), Some("other"))
+        .unwrap();
+    assert!(outcome.advisories.is_empty());
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(owners(&snapshot, "tool.sh"), vec![Some("other".into())]);
+
+    // Released under capture-off, so nothing re-claims it (ADR 0015/0016).
+    repo.switch(None).unwrap();
+    repo.assign_hunks("tool.sh", &[hunk], None).unwrap();
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(owners(&snapshot, "tool.sh"), vec![None]);
+    assert_eq!(snapshot.files_in(None).len(), 1, "released to unassigned");
+}

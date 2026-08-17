@@ -651,11 +651,12 @@ fn find_fresh<'a>(
 /// Added, untracked, and deleted files present their whole change as one
 /// hunk, so hunk ops on them are the file ops — routed through the
 /// index-entry primitives, which also cover content libgit2 won't apply
-/// hunk-wise (untracked files aren't in any apply preimage). Binary
-/// files are the same shape by construction (ADR 0009): one whole-file
-/// hunk, `space` = whole-file index write.
+/// hunk-wise (untracked files aren't in any apply preimage). A whole-file
+/// hunk is that shape by construction (ADR 0009, ADR 0017): `space` on a
+/// changed binary or a zero-hunk change is a whole-file index write,
+/// which is also the only way a mode change reaches the index.
 fn hunk_ops_are_file_ops(file: &ChangedFile) -> bool {
-    file.binary
+    file.presents_whole_file_hunk()
         || (matches!(
             file.kind,
             ChangeKind::Added | ChangeKind::Untracked | ChangeKind::Deleted

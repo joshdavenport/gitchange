@@ -48,14 +48,14 @@ pub(crate) fn snapshot() -> Snapshot {
                 path: "src/nav.astro".into(),
                 kind: ChangeKind::Modified,
                 binary: false,
-                binary_sides: None,
+                sides: None,
                 hunks: vec![hunk(8, None, HunkStage::Unstaged)],
             },
             ChangedFile {
                 path: "src/print.css".into(),
                 kind: ChangeKind::Modified,
                 binary: false,
-                binary_sides: None,
+                sides: None,
                 // Split across two changelists, and partial within
                 // 'fixes' — so a Files row under 'fixes' is ◐ 1/2 while
                 // the whole file is 1/3 (issue #97).

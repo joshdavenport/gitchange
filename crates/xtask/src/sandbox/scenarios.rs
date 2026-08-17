@@ -42,6 +42,10 @@ pub fn all() -> Vec<Scenario> {
             build: binary,
         },
         Scenario {
+            name: "zero-hunk",
+            build: zero_hunk,
+        },
+        Scenario {
             name: "large",
             build: large,
         },
@@ -382,6 +386,31 @@ fn binary(sandbox: &mut Sandbox) -> Result<()> {
     sandbox.replace("README.md", "A tiny task timer", "A tiny, fast task timer")?;
     let repo = sandbox.repo()?;
     repo.create_changelist("assets-refresh")
+        .map_err(|err| anyhow::anyhow!("create changelist: {err}"))?;
+    refresh(&repo)?;
+    Ok(())
+}
+
+/// The three zero-hunk shapes side by side (ADR 0017): a mode-only
+/// change, an empty file added, an empty file deleted — each a
+/// whole-file hunk reading `○ 0/1`, each with its own diff placeholder.
+/// One is staged so a `●` row is there to compare against.
+fn zero_hunk(sandbox: &mut Sandbox) -> Result<()> {
+    baseline(sandbox)?;
+    sandbox.write("scripts/release.sh", "#!/bin/sh\ncargo build --release\n")?;
+    sandbox.write("PLACEHOLDER", "")?;
+    sandbox.commit_all("Add release script and placeholder")?;
+
+    // The mode flip shows on unix only: elsewhere `core.filemode` is
+    // off and git has no mode change to report.
+    sandbox.set_exec("scripts/release.sh")?;
+    sandbox.write("NOTES", "")?;
+    sandbox.remove("PLACEHOLDER")?;
+    // One staged, so the scenario shows both markers.
+    sandbox.git(&["add", "NOTES"])?;
+
+    let repo = sandbox.repo()?;
+    repo.create_changelist("housekeeping")
         .map_err(|err| anyhow::anyhow!("create changelist: {err}"))?;
     refresh(&repo)?;
     Ok(())
