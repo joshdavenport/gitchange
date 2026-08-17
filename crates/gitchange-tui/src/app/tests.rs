@@ -2029,15 +2029,37 @@ fn side(mode: u32) -> SideInfo {
     }
 }
 
+/// A mode-only change as core reports it (ADR 0017): one mode hunk —
+/// identity carried by the path, no lines and no blob pair — with the
+/// sides carrying the modes its placeholder reads.
+fn mode_only_file(before: u32, after: u32) -> ChangedFile {
+    ChangedFile {
+        path: "tool.sh".into(),
+        kind: ChangeKind::Modified,
+        binary: false,
+        sides: Some(FileSides {
+            head: Some(side(before)),
+            changed: Some(side(after)),
+        }),
+        hunks: vec![Hunk {
+            old_start: 0,
+            old_lines: 0,
+            new_start: 0,
+            new_lines: 0,
+            stage: HunkStage::Unstaged,
+            index_only: false,
+            identity: HunkIdentity::ModeChange,
+            changelist: None,
+        }],
+    }
+}
+
 #[test]
 fn zero_hunk_diff_placeholders_name_the_change() {
     // ADR 0017: one-line placeholders on the binary/conflicted channel,
-    // modes octal as git prints them.
-    let mode_only = whole_file_app(zero_hunk_file(
-        ChangeKind::Modified,
-        Some(side(0o100644)),
-        Some(side(0o100755)),
-    ));
+    // modes octal as git prints them. The lone mode hunk's placeholder
+    // text is its header — there are no coordinates to frame.
+    let mode_only = whole_file_app(mode_only_file(0o100644, 0o100755));
     assert!(mode_only.diff_lines().iter().any(|line| matches!(
         line,
         DiffLine::Placeholder(text) if text == "Mode changed (100644 \u{2192} 100755)"
@@ -2077,19 +2099,21 @@ fn zero_hunk_diff_placeholders_name_the_change() {
 }
 
 #[test]
-fn enter_on_a_zero_hunk_change_is_a_polite_no_op() {
-    // The ADR 0009 idiom extended (ADR 0017): one degenerate hunk, and
-    // every action already works at file level.
-    let mut app = whole_file_app(zero_hunk_file(
-        ChangeKind::Modified,
-        Some(side(0o100644)),
-        Some(side(0o100755)),
-    ));
-    let logged = app.log.len();
-    app.on_key(key(KeyCode::Enter));
-    assert_eq!(app.focus, Panel::Files);
-    assert!(app.hunk_sel.is_none());
-    assert_eq!(app.log.len(), logged);
+fn enter_on_a_lone_degenerate_hunk_is_a_polite_no_op() {
+    // The ADR 0009 idiom extended (ADR 0017): one degenerate hunk of
+    // either flavour — a mode hunk or a whole-file one — and every
+    // action already works at file level.
+    for file in [
+        mode_only_file(0o100644, 0o100755),
+        zero_hunk_file(ChangeKind::Untracked, None, Some(side(0o100644))),
+    ] {
+        let mut app = whole_file_app(file);
+        let logged = app.log.len();
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.focus, Panel::Files);
+        assert!(app.hunk_sel.is_none());
+        assert_eq!(app.log.len(), logged);
+    }
 }
 
 // ── the binding core & its disabled reasons (ADR 0014, issue #65) ───

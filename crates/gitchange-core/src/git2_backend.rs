@@ -261,6 +261,41 @@ impl GitBackend for Git2Backend {
         self.apply_to_index(path, &diff, old_range)
     }
 
+    fn stage_worktree_mode(&self, path: &str) -> Result<(), Error> {
+        // git's view of the worktree mode, not the raw filesystem one:
+        // read off the diff so `core.filemode` is honoured — where it is
+        // off there is no delta, hence no mode to carry and nothing to
+        // do.
+        let mut options = git2::DiffOptions::new();
+        options
+            .pathspec(path)
+            .disable_pathspec_match(true)
+            .include_typechange(true)
+            .ignore_submodules(true);
+        let diff = self
+            .repo
+            .diff_index_to_workdir(None, Some(&mut options))
+            .map_err(backend_error)?;
+        let mode = diff
+            .deltas()
+            .find(|delta| delta.new_file().path_bytes() == Some(path.as_bytes()))
+            .and_then(|delta| filemode(&delta.new_file()));
+        match mode {
+            Some(mode) => self.write_index_mode(path, mode),
+            None => Ok(()),
+        }
+    }
+
+    fn unstage_head_mode(&self, path: &str) -> Result<(), Error> {
+        let head_entry = self
+            .head_tree()?
+            .and_then(|tree| tree.get_path(Path::new(path)).ok());
+        match head_entry {
+            Some(entry) => self.write_index_mode(path, entry.filemode() as u32),
+            None => Ok(()),
+        }
+    }
+
     fn stage_path(&self, path: &str) -> Result<(), Error> {
         let mut index = self.repo.index().map_err(backend_error)?;
         let on_disk = self
@@ -334,6 +369,40 @@ impl GitBackend for Git2Backend {
 }
 
 impl Git2Backend {
+    /// Rewrite one index entry with `mode`, keeping its blob — the mode
+    /// hunk's whole write (ADR 0017). No apply machinery and no odb
+    /// write: a mode flip has no new content to store. The stat fields
+    /// are zeroed like `unstage_path`'s entry, leaving it stat-dirty so
+    /// git re-reads the file rather than trusting a size and mtime this
+    /// write never looked at. A path with no index entry is a no-op —
+    /// there is no staged blob to keep.
+    fn write_index_mode(&self, path: &str, mode: u32) -> Result<(), Error> {
+        let mut index = self.repo.index().map_err(backend_error)?;
+        let Some(entry) = index.get_path(Path::new(path), 0) else {
+            return Ok(());
+        };
+        if entry.mode == mode {
+            return Ok(());
+        }
+        index
+            .add(&git2::IndexEntry {
+                ctime: git2::IndexTime::new(0, 0),
+                mtime: git2::IndexTime::new(0, 0),
+                dev: 0,
+                ino: 0,
+                mode,
+                uid: 0,
+                gid: 0,
+                file_size: 0,
+                id: entry.id,
+                flags: 0,
+                flags_extended: 0,
+                path: path.as_bytes().to_vec(),
+            })
+            .map_err(backend_error)?;
+        index.write().map_err(backend_error)
+    }
+
     fn commit_via_temp_index(
         &self,
         index_path: &Path,
@@ -676,15 +745,15 @@ impl Git2Backend {
             };
             // Worktree diffs pay the anchor cost — a full content hash
             // of the on-disk file (ADR 0009's stated refresh cost) —
-            // only for the files that present a whole-file hunk: binary
+            // only for the files that present a degenerate hunk: binary
             // ones, and zero-hunk changes, whose anchor and staging
-            // evidence are the sides too (ADR 0017). Index diffs carry
-            // sides for every file (two odb header reads): the commit
-            // plan needs a staged-blob OID even when a binary worktree
-            // change sits over staged text content.
-            let whole_file = kind != ChangeKind::Conflicted && (binary || hunks.is_empty());
+            // evidence are the sides too, mode bits included (ADR 0017).
+            // Index diffs carry sides for every file (two odb header
+            // reads): the commit plan needs a staged-blob OID even when a
+            // binary worktree change sits over staged text content.
+            let degenerate = kind != ChangeKind::Conflicted && (binary || hunks.is_empty());
             let compute_sides = match changed_side {
-                ChangedSide::Worktree => whole_file,
+                ChangedSide::Worktree => degenerate,
                 ChangedSide::Index => kind != ChangeKind::Conflicted,
             };
             let sides = if compute_sides {

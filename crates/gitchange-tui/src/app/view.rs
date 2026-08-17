@@ -3,8 +3,8 @@
 //! reads over the current snapshot and selections.
 
 use gitchange_core::{
-    CONFLICTS, ChangeKind, ChangedFile, FileStage, GroupKind, Hunk, HunkStage, SideInfo,
-    UNASSIGNED, count_noun,
+    CONFLICTS, ChangeKind, ChangedFile, FileSides, FileStage, GroupKind, Hunk, HunkStage,
+    ModeDelta, SideInfo, UNASSIGNED, count_noun,
 };
 
 use super::keymap::{self, BindingId};
@@ -364,10 +364,10 @@ impl App {
             )));
             return lines;
         }
-        if file.presents_whole_file_hunk() {
+        if file.presents_lone_degenerate_hunk() {
             // The one-line placeholder (ADR 0009, ADR 0017) — the text is
             // what says binary, mode change or empty file; no new glyphs.
-            lines.push(DiffLine::Placeholder(whole_file_placeholder(file)));
+            lines.push(DiffLine::Placeholder(degenerate_placeholder(file)));
             return lines;
         }
         if file.hunks.is_empty() {
@@ -550,17 +550,44 @@ pub(super) fn owned_hunks(file: &ChangedFile, owner: Option<&str>) -> Vec<Hunk> 
 /// `Empty file added`, `Empty file deleted`. Modes print octal, as git
 /// prints them.
 ///
-/// Side presence, not change kind, picks the variant — an index-only
-/// change has no worktree kind to trust.
-fn whole_file_placeholder(file: &ChangedFile) -> String {
+/// The hunk's flavour is asked first, and the file's binary flag only
+/// after: a chmod'd binary whose bytes never moved is a mode change, and
+/// naming it by size would report a change it doesn't have. Within the
+/// whole-file flavours, side presence rather than change kind picks the
+/// variant — an index-only change has no worktree kind to trust.
+fn degenerate_placeholder(file: &ChangedFile) -> String {
     let sides = file.sides.as_ref();
+    let delta = sides.and_then(FileSides::mode_delta);
+    if file.hunks.iter().any(Hunk::is_mode_change) {
+        // The mode hunk's placeholder text *is* its header: a mode delta
+        // has no coordinates to frame. A mode hunk exists because the
+        // modes differ, so the delta is always there; naming the change
+        // without them still beats saying nothing.
+        return delta
+            .map(mode_delta_text)
+            .unwrap_or_else(|| "Mode changed".into());
+    }
     let head = sides.and_then(|sides| sides.head.as_ref());
     let changed = sides.and_then(|sides| sides.changed.as_ref());
     if file.binary {
         binary_placeholder(head, changed)
     } else {
-        zero_hunk_placeholder(head, changed)
+        zero_hunk_placeholder(head, changed, delta)
     }
+}
+
+/// How a filemode delta reads as a placeholder: `Mode changed (100644 →
+/// 100755)` for a chmod, `Type changed (100644 → 120000)` for a symlink
+/// swap (ADR 0017, issue #100). Octal, as git prints them. One function
+/// for both flavours, so which delta core reported decides the word —
+/// reading the mode bits a second time here is how a symlink swap comes
+/// to be called a chmod.
+fn mode_delta_text(delta: ModeDelta) -> String {
+    let (label, before, after) = match delta {
+        ModeDelta::Mode { before, after } => ("Mode changed", before, after),
+        ModeDelta::Type { before, after } => ("Type changed", before, after),
+    };
+    format!("{label} ({before:o} {} {after:o})", gitchange_core::ARROW)
 }
 
 /// The binary variants (ADR 0009), each showing the sizes it has.
@@ -578,42 +605,25 @@ fn binary_placeholder(head: Option<&SideInfo>, changed: Option<&SideInfo>) -> St
     }
 }
 
-/// The zero-hunk variants (ADR 0017). One side missing is the file
-/// coming or going; both sides present with no line content means the
-/// mode bits are the change, and they say which kind: permissions on a
-/// regular file, or the object type itself — a file swapped for a
-/// symlink, which git also reports with no hunks. Anything else is a
-/// change git reports with neither content nor a mode to name — nothing
-/// to say beyond that it exists.
-fn zero_hunk_placeholder(head: Option<&SideInfo>, changed: Option<&SideInfo>) -> String {
+/// The whole-file zero-hunk variants (ADR 0017). One side missing is the
+/// file coming or going; both sides present with no line content means
+/// the mode bits are the change, and `delta` says which kind it is — in
+/// practice a type change, since a permission flip presents a mode hunk
+/// and left through the branch above. Anything else is a change git
+/// reports with neither content nor a mode to name — nothing to say
+/// beyond that it exists.
+fn zero_hunk_placeholder(
+    head: Option<&SideInfo>,
+    changed: Option<&SideInfo>,
+    delta: Option<ModeDelta>,
+) -> String {
     match (head, changed) {
         (None, Some(_)) => "Empty file added".into(),
         (Some(_), None) => "Empty file deleted".into(),
-        (Some(head), Some(changed)) => match (head.mode, changed.mode) {
-            (Some(before), Some(after)) if before != after => {
-                format!(
-                    "{} ({before:o} {} {after:o})",
-                    mode_change_label(before, after),
-                    gitchange_core::ARROW
-                )
-            }
-            _ => "File changed".into(),
-        },
+        (Some(_), Some(_)) => delta
+            .map(mode_delta_text)
+            .unwrap_or_else(|| "File changed".into()),
         (None, None) => "File changed".into(),
-    }
-}
-
-/// Which change two differing filemodes describe: permission bits on the
-/// same kind of object is a mode change, a different object kind
-/// (regular file ↔ symlink ↔ gitlink) is a type change. Calling the
-/// latter a mode change would read a symlink swap as a chmod.
-fn mode_change_label(before: u32, after: u32) -> &'static str {
-    /// git's object-kind bits — the high half of a filemode.
-    const KIND: u32 = 0o170000;
-    if before & KIND == after & KIND {
-        "Mode changed"
-    } else {
-        "Type changed"
     }
 }
 

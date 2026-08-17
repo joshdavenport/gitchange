@@ -331,3 +331,38 @@ fn an_unchanged_binary_matches_exactly_after_a_move() {
         "an exact match is not a capture"
     );
 }
+
+#[test]
+#[cfg(unix)]
+fn a_mode_hunks_record_carries_no_content_and_no_mode_bits() {
+    // ADR 0017: a mode hunk's identity is its path, so its record stores
+    // neither content evidence — no anchor lines, no blob pair — nor the
+    // modes themselves. One flag says which flavour it is, which is what
+    // keeps it from reading as a text record with an empty anchor.
+    let fixture = RepoFixture::new();
+    fixture.write("tool.sh", "#!/bin/sh\n").commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("scripts").unwrap();
+    repo.switch(Some("scripts")).unwrap();
+
+    fixture.set_exec("tool.sh");
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(owners(&snapshot, "tool.sh"), vec![Some("scripts".into())]);
+
+    let record = record_at(&state_json(&fixture), "tool.sh");
+    assert_eq!(record["mode_change"], true);
+    assert!(record["oid_anchor"].is_null(), "no blob pair");
+    assert_eq!(stored_anchor_lines(&record), Vec::<String>::new());
+    let raw = serde_json::to_string(&record).unwrap();
+    for mode in ["644", "755", "100644", "100755"] {
+        assert!(
+            !raw.contains(mode),
+            "the record names the mode {mode}: {raw}"
+        );
+    }
+}
+
+/// A record's stored anchor lines, straight off the persisted shape.
+fn stored_anchor_lines(record: &serde_json::Value) -> Vec<String> {
+    serde_json::from_value(record["anchor"].clone()).unwrap()
+}

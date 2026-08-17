@@ -76,6 +76,19 @@ pub trait GitBackend: Send {
     /// overlapping it. All-or-nothing, like `stage_worktree_range`.
     fn unstage_head_range(&self, path: &str, old_range: (u32, u32)) -> Result<(), Error>;
 
+    /// Set one file's index-entry mode := the worktree's, keeping its
+    /// staged blob — the mode hunk's stage op (ADR 0017). No content
+    /// moves with it: staging a mode delta is the whole of what this
+    /// does. A path git reports no mode for, or holds no index entry
+    /// for, is a no-op.
+    fn stage_worktree_mode(&self, path: &str) -> Result<(), Error>;
+
+    /// Set one file's index-entry mode := HEAD's, keeping its staged
+    /// blob — the inverse of [`GitBackend::stage_worktree_mode`]. A path
+    /// absent from HEAD is a no-op: an added or deleted file carries no
+    /// mode hunk, its mode being part of the add/delete whole.
+    fn unstage_head_mode(&self, path: &str) -> Result<(), Error>;
+
     /// Set the whole index entry := worktree, `git add` semantics: stages
     /// an untracked file, and stages the deletion when the file is gone.
     fn stage_path(&self, path: &str) -> Result<(), Error>;

@@ -9,7 +9,7 @@
 use crate::backend::HunkHeader;
 use crate::diff::{DiffHunk, FileDiff};
 use crate::matcher::anchor_lines;
-use crate::state::{MembershipRecord, OidAnchor, RecordIdentity, State};
+use crate::state::{MembershipRecord, RecordAnchors, RecordIdentity, State};
 use crate::universe::{ChangedFile, Hunk, HunkStage, ranges_overlap};
 use crate::vocabulary::{UNASSIGNED, count_noun};
 
@@ -173,18 +173,15 @@ pub(crate) struct PathPlan {
 pub(crate) struct RecordKey {
     old_start: u32,
     old_lines: u32,
-    anchor: Vec<String>,
-    oid_anchor: Option<OidAnchor>,
+    anchors: RecordAnchors,
 }
 
 impl RecordKey {
     fn of(hunk: &Hunk) -> Self {
-        let (anchor, oid_anchor) = hunk.record_anchors();
         Self {
             old_start: hunk.old_start,
             old_lines: hunk.old_lines,
-            anchor,
-            oid_anchor,
+            anchors: hunk.record_anchors(),
         }
     }
 
@@ -192,8 +189,7 @@ impl RecordKey {
         !record.is_dormant()
             && record.old_start == self.old_start
             && record.old_lines == self.old_lines
-            && record.anchor == self.anchor
-            && record.oid_anchor == self.oid_anchor
+            && record.stores_identity(&self.anchors)
     }
 }
 
@@ -228,14 +224,16 @@ pub(crate) fn plan(
             continue;
         }
         let index_file = index.iter().find(|candidate| candidate.path == file.path);
-        // A whole-file hunk commits whole (ADR 0009, ADR 0017): the
+        // A lone degenerate hunk commits whole (ADR 0009, ADR 0017): the
         // staged blob and its mode copied into the temp index verbatim —
-        // no hunk selection to run. An owned non-unstaged hunk implies
+        // no hunk selection to run. That covers the mode hunk of a bare
+        // chmod too, whose staged blob is HEAD's, so the entry carries
+        // the mode and nothing else. An owned non-unstaged hunk implies
         // the index differs from HEAD here, so the index diff sees the
         // path and carries sides (it does for text content too — the
         // mixed binary-worktree-over-staged-text case commits its staged
         // text whole-file); the `else` is defensive only.
-        if file.presents_whole_file_hunk() {
+        if file.presents_lone_degenerate_hunk() {
             let Some(sides) = index_file.and_then(|file| file.sides.as_ref()) else {
                 continue;
             };
@@ -381,20 +379,25 @@ pub(crate) fn apply_aftermath(state: &mut State, plans: &[PathPlan], residual: &
                 // hunk, so there is no region to overlap — coordinates
                 // stay degenerate. No residual (the worktree moved on)
                 // leaves the record for the next refresh to resolve —
-                // dormancy at worst, visible per ADR 0002. `plan` picked
-                // this record's flavour from `ChangedFile::binary`; the
-                // two agree because only `binary_whole_file_hunk` ever
-                // produces a `WholeFile` identity, and `RecordKey`
-                // compares `oid_anchor` before we get here.
-                if matches!(record.identity(), RecordIdentity::WholeFile { .. }) {
-                    let sides = residual
-                        .iter()
-                        .find(|file| file.path == plan.path)
-                        .and_then(|file| file.sides.as_ref());
-                    if let Some(sides) = sides {
-                        record.oid_anchor = Some(sides.oid_anchor());
+                // dormancy at worst, visible per ADR 0002. A retained
+                // mode record has nothing to rewrite at all: its whole
+                // identity is the path, which the commit did not move
+                // (ADR 0017). `RecordKey` compared every identity field
+                // before we get here, so the flavour read off the record
+                // is the one `plan` selected.
+                match record.identity() {
+                    RecordIdentity::WholeFile { .. } => {
+                        let sides = residual
+                            .iter()
+                            .find(|file| file.path == plan.path)
+                            .and_then(|file| file.sides.as_ref());
+                        if let Some(sides) = sides {
+                            record.oid_anchor = Some(sides.oid_anchor());
+                        }
+                        continue;
                     }
-                    continue;
+                    RecordIdentity::ModeChange => continue,
+                    RecordIdentity::Text { .. } => {}
                 }
                 let found = residual_hunks.iter().enumerate().find(|(i, hunk)| {
                     !residual_used[*i]

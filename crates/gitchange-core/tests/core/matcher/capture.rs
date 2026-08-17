@@ -383,9 +383,9 @@ fn a_changed_return_binary_notices_its_auto_capture() {
 #[test]
 #[cfg(unix)]
 fn a_zero_hunk_change_captures_and_is_assignable_like_any_other() {
-    // ADR 0017: a mode-only change is one whole-file hunk, so it flows
-    // through capture and the explicit assign op like any hunk —
-    // including the release back to unassigned (ADR 0016).
+    // ADR 0017: a mode-only change is one mode hunk, so it flows through
+    // capture and the explicit assign op like any hunk — including the
+    // release back to unassigned (ADR 0016).
     let fixture = RepoFixture::new();
     fixture.write("tool.sh", "#!/bin/sh\n").commit_all("init");
     let repo = repo(&fixture);

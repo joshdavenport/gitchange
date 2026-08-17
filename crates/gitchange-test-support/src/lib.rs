@@ -151,6 +151,24 @@ impl RepoFixture {
         self
     }
 
+    /// Clear the executable bit on a repo-relative path — the other half
+    /// of a mode flip, for reverting one in the worktree after it was
+    /// staged (the index-only mode hunk, ADR 0017). A no-op off unix,
+    /// like [`RepoFixture::set_exec`].
+    pub fn clear_exec(&self, rel: &str) -> &Self {
+        #[cfg(not(unix))]
+        let _ = rel;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let path = self.dir.path().join(rel);
+            let mut perms = fs::metadata(&path).unwrap().permissions();
+            perms.set_mode(perms.mode() & !0o111);
+            fs::set_permissions(&path, perms).unwrap();
+        }
+        self
+    }
+
     /// Delete a repo-relative path from the worktree — half of the
     /// file↔symlink dance, or a deletion on its own.
     pub fn remove(&self, rel: &str) -> &Self {

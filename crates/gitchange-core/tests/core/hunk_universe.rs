@@ -3,7 +3,7 @@
 //! per-file ●◐○ derived — asserted through `Repo::refresh()` per ADR 0008.
 
 use crate::support::RepoFixture;
-use gitchange_core::{ChangeKind, FileStage, HunkIdentity, HunkStage, Repo};
+use gitchange_core::{ChangeKind, FileStage, HunkIdentity, HunkStage, ModeDelta, Repo};
 
 /// Twenty numbered lines, with `edits` as (1-based line, replacement).
 fn numbered(edits: &[(usize, &str)]) -> String {
@@ -425,10 +425,11 @@ fn a_conflicted_binary_stays_quarantined() {
 
 #[test]
 #[cfg(unix)]
-fn a_mode_only_change_is_one_whole_file_hunk() {
-    // ADR 0017: a change git reports with no text hunks presents the
-    // same degenerate whole-file hunk a binary does, so the row reads
-    // `○ 0/1` instead of the inert `0/0`.
+fn a_mode_only_change_is_one_mode_hunk() {
+    // ADR 0017: a mode-only change presents one stand-alone mode hunk —
+    // whole change — so the row reads `○ 0/1` instead of the inert
+    // `0/0`, and the hunk carries the dedicated mode-change identity
+    // rather than the whole-file blob pair.
     let fixture = RepoFixture::new();
     fixture
         .write("tool.sh", "#!/bin/sh\n")
@@ -443,13 +444,15 @@ fn a_mode_only_change_is_one_whole_file_hunk() {
     assert!(!file.binary, "a shell script is text");
     assert_eq!((file.staged_hunks(), file.total_hunks()), (0, 1));
     assert_eq!(file.stage(), FileStage::Unstaged);
-    let HunkIdentity::WholeFile { oids: anchor } = &file.hunks[0].identity else {
-        panic!("a mode-only change presents a whole-file hunk");
-    };
-    // Content is untouched, so both sides name the same blob: matching
-    // rests on path continuity, not on the anchor discriminating.
-    assert_eq!(anchor.head, anchor.changed);
-    assert!(anchor.head.is_some());
+    assert_eq!(
+        file.hunks[0].identity,
+        HunkIdentity::ModeChange,
+        "a mode delta presents a mode hunk, not a whole-file one"
+    );
+    assert!(
+        !file.presents_whole_file_hunk(),
+        "the whole-file treatment collapses into the mode hunk"
+    );
 
     // The sides carry the modes the placeholder and the derivation read.
     let sides = file.sides.as_ref().expect("mode-change sides");
@@ -458,13 +461,42 @@ fn a_mode_only_change_is_one_whole_file_hunk() {
         Some(0o100644)
     );
     assert_eq!(sides.changed_mode(), Some(0o100755));
+    assert_eq!(
+        sides.mode_delta(),
+        Some(ModeDelta::Mode {
+            before: 0o100644,
+            after: 0o100755
+        })
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn a_chmod_of_a_binary_is_a_mode_hunk_too() {
+    // The boundary the mode hunk draws is content, not text-ness: a
+    // binary whose bytes never moved has no whole-file change to
+    // present, only the mode flip (ADR 0017). A binary *content* change
+    // keeps its whole-file hunk — the case above this one.
+    let fixture = RepoFixture::new();
+    fixture
+        .write_bytes("blob.bin", &[0u8, 1, 2, 3])
+        .commit_all("init")
+        .set_exec("blob.bin");
+
+    let repo = Repo::discover(fixture.path()).unwrap();
+    let file = &repo.refresh().unwrap().files[0];
+
+    assert!(file.binary);
+    assert_eq!((file.staged_hunks(), file.total_hunks()), (0, 1));
+    assert_eq!(file.hunks[0].identity, HunkIdentity::ModeChange);
 }
 
 #[test]
 #[cfg(unix)]
 fn mode_only_staging_is_derived_by_mode_compare() {
-    // The OIDs are equal on both sides of a mode-only change, so the
-    // mode bits are what derive ○●◑ (ADR 0017).
+    // A mode hunk carries no content evidence at all, so the mode bits
+    // are what derive its ○●◑ — the two diffs' changed-side modes
+    // compared, as text hunks compare lines (ADR 0017).
     let fixture = RepoFixture::new();
     fixture
         .write("tool.sh", "#!/bin/sh\n")
@@ -474,6 +506,7 @@ fn mode_only_staging_is_derived_by_mode_compare() {
 
     let repo = Repo::discover(fixture.path()).unwrap();
     let file = &repo.refresh().unwrap().files[0];
+    assert_eq!(file.hunks[0].identity, HunkIdentity::ModeChange);
     assert_eq!(file.hunks[0].stage, HunkStage::Staged);
     assert_eq!((file.staged_hunks(), file.total_hunks()), (1, 1));
     assert_eq!(file.stage(), FileStage::Staged);
@@ -532,6 +565,61 @@ fn empty_file_adds_and_deletes_are_whole_file_hunks() {
     };
     assert!(anchor.head.is_some());
     assert!(anchor.changed.is_none());
+}
+
+#[test]
+#[cfg(unix)]
+fn an_added_or_deleted_executable_carries_no_mode_hunk() {
+    // ADR 0017's boundary: a file coming or going has its mode as part of
+    // the add/delete whole, so there is no second hunk for it — which is
+    // what keeps mode-versus-content dependency rules out of gitchange
+    // entirely. Both directions have one side absent, so no delta to
+    // compare.
+    // `empty.sh` and `gone.sh` are the pointed pair: zero-hunk changes
+    // where one side is absent, so the degenerate branch has a mode on
+    // one side and nothing to compare it against.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("old.sh", "#!/bin/sh\n")
+        .write_bytes("gone.sh", b"")
+        .commit_all("init")
+        .set_exec("old.sh")
+        .set_exec("gone.sh")
+        .stage("old.sh")
+        .stage("gone.sh")
+        .commit_all("make them executable")
+        .remove("old.sh")
+        .remove("gone.sh")
+        .write("new.sh", "#!/bin/sh\n")
+        .write_bytes("empty.sh", b"");
+    fixture.set_exec("new.sh").set_exec("empty.sh");
+
+    let repo = Repo::discover(fixture.path()).unwrap();
+    let snapshot = repo.refresh().unwrap();
+
+    for path in ["empty.sh", "gone.sh", "new.sh", "old.sh"] {
+        let file = snapshot
+            .files
+            .iter()
+            .find(|file| file.path == path)
+            .unwrap_or_else(|| panic!("{path} in the universe"));
+        assert_eq!(file.total_hunks(), 1, "{path}");
+        assert!(
+            !file.hunks[0].is_mode_change(),
+            "{path} presents its whole change as one hunk, mode included"
+        );
+    }
+    for path in ["empty.sh", "gone.sh"] {
+        let file = snapshot
+            .files
+            .iter()
+            .find(|file| file.path == path)
+            .expect("in the universe");
+        assert!(
+            file.presents_whole_file_hunk(),
+            "{path} has no line content either, so it is the whole-file hunk"
+        );
+    }
 }
 
 #[test]

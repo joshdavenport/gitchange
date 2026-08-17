@@ -35,15 +35,26 @@ pub struct MembershipRecord {
     /// the absence of a record, so nothing ever writes a nobody-owner.
     pub changelist: String,
     /// Verbatim hunk lines (`origin` + content), context included — the
-    /// identity evidence for tier-1 exact matching. Empty for binary
-    /// records, whose identity lives in `oid_anchor` instead.
+    /// identity evidence for tier-1 exact matching. Empty for the
+    /// degenerate records, whose identity lives in `oid_anchor` or
+    /// `mode_change` instead.
     pub anchor: Vec<String>,
-    /// The blob-OID-pair anchor of a binary whole-file record (ADR 0009):
-    /// present exactly when the record claims a binary file's degenerate
-    /// hunk. `default` keeps pre-binary schema-1 files readable; omitted
-    /// from text records to keep the file `cat`-debuggable (ADR 0002).
+    /// The blob-OID-pair anchor of a whole-file record (ADR 0009):
+    /// present exactly when the record claims a file's whole-file
+    /// degenerate hunk. `default` keeps pre-binary schema-1 files
+    /// readable; omitted from text records to keep the file
+    /// `cat`-debuggable (ADR 0002).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oid_anchor: Option<OidAnchor>,
+    /// Set on a mode hunk's record (ADR 0017). A mode delta carries no
+    /// content evidence at all — no lines, no blob pair — so the flag is
+    /// what tells such a record from a text record's empty anchor, and
+    /// its identity is the path. Deliberately not the modes themselves:
+    /// recording them would only buy refusing revival on a different
+    /// flip at the same path, and revival there is right. `default`
+    /// keeps pre-mode-hunk schema-1 files readable.
+    #[serde(default, skip_serializing_if = "is_not_set")]
+    pub mode_change: bool,
     /// Unix epoch seconds since the hunk vanished from the diff; `None`
     /// while live. Dormant records revive only via tier-1 exact match
     /// (ADR 0002) and prune after 14 days.
@@ -61,16 +72,40 @@ pub struct OidAnchor {
 }
 
 /// A stored record's identity evidence, borrowed — the record-side
-/// mirror of [`HunkIdentity`]. The record keeps `anchor` and
-/// `oid_anchor` as independent serde fields so the state file stays
-/// `cat`-debuggable (ADR 0002); this reads that pair back as the sum
-/// type it has always represented, so matching never tests one field's
-/// emptiness to infer the other's meaning.
+/// mirror of [`HunkIdentity`]. The record keeps its evidence in
+/// independent serde fields so the state file stays `cat`-debuggable
+/// (ADR 0002); this reads them back as the sum type they have always
+/// represented, so matching never tests one field's emptiness to infer
+/// another's meaning.
 ///
 /// [`HunkIdentity`]: crate::universe::HunkIdentity
 pub(crate) enum RecordIdentity<'a> {
-    Text { anchor: &'a [String] },
-    WholeFile { oids: &'a OidAnchor },
+    Text {
+        anchor: &'a [String],
+    },
+    WholeFile {
+        oids: &'a OidAnchor,
+    },
+    /// A mode hunk's record: no evidence beyond the path (ADR 0017).
+    ModeChange,
+}
+
+/// A hunk identity as [`MembershipRecord`]'s independent fields — what
+/// [`Hunk::record_anchors`] projects and [`matcher::record_for`] writes.
+/// The inverse of [`MembershipRecord::identity`], and the reason neither
+/// direction infers a flavour from a field being empty.
+///
+/// [`Hunk::record_anchors`]: crate::universe::Hunk::record_anchors
+pub(crate) struct RecordAnchors {
+    pub anchor: Vec<String>,
+    pub oid_anchor: Option<OidAnchor>,
+    pub mode_change: bool,
+}
+
+/// `skip_serializing_if` for a flag that is absent when unset — a text
+/// record must not grow a `"mode_change": false` line (ADR 0002).
+fn is_not_set(flag: &bool) -> bool {
+    !flag
 }
 
 impl MembershipRecord {
@@ -78,15 +113,34 @@ impl MembershipRecord {
         self.dormant_since.is_some()
     }
 
-    /// What this record claims, per [`RecordIdentity`]. `oid_anchor` is
-    /// present exactly for whole-file records, so it alone discriminates.
+    /// What this record claims, per [`RecordIdentity`]. The mode flag is
+    /// read first and alone: a mode record carries no other evidence, so
+    /// a hand-edited file that sets it beside an `oid_anchor` still
+    /// resolves to one flavour rather than half of two. Otherwise
+    /// `oid_anchor` is present exactly for whole-file records, so it
+    /// discriminates the rest.
     pub(crate) fn identity(&self) -> RecordIdentity<'_> {
+        if self.mode_change {
+            return RecordIdentity::ModeChange;
+        }
         match &self.oid_anchor {
             Some(oids) => RecordIdentity::WholeFile { oids },
             None => RecordIdentity::Text {
                 anchor: &self.anchor,
             },
         }
+    }
+
+    /// Whether this record stores exactly `anchors` — the field-by-field
+    /// half of [`MembershipRecord::identity`], kept beside it so a fourth
+    /// flavour cannot be added to the projection and forgotten here. The
+    /// commit aftermath keys records this way (ADR 0004): a fresh live
+    /// record mirrors its hunk exactly, so the identity fields plus
+    /// coordinates pin one record.
+    pub(crate) fn stores_identity(&self, anchors: &RecordAnchors) -> bool {
+        self.anchor == anchors.anchor
+            && self.oid_anchor == anchors.oid_anchor
+            && self.mode_change == anchors.mode_change
     }
 }
 

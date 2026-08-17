@@ -213,11 +213,10 @@ fn binary_dormant_revival_is_exact_only() {
 #[test]
 #[cfg(unix)]
 fn a_mode_only_record_goes_dormant_and_revives_on_a_re_flip() {
-    // ADR 0017: a mode-only change's two OID sides are equal, so nothing
-    // in the anchor discriminates one flip from another — matching rests
-    // on path continuity, and a re-flip at the same path revives the
-    // dormant record. Stated as the intended behaviour, not a leak:
-    // same predicament, same home.
+    // ADR 0017: a mode hunk's identity is path continuity alone, and it
+    // records no mode bits, so nothing distinguishes one flip at a path
+    // from another — a re-flip revives the dormant record. Stated as the
+    // intended behaviour, not a leak: same predicament, same home.
     use std::os::unix::fs::PermissionsExt;
 
     let fixture = RepoFixture::new();

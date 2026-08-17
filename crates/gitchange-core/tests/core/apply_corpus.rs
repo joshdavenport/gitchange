@@ -35,6 +35,10 @@ struct Case {
     worktree_removals: Vec<&'static str>,
     /// Paths chmod +x'd in the worktree, unstaged (unix-only cases).
     worktree_exec: Vec<&'static str>,
+    /// Paths chmod -x'd in the worktree after any staging (unix-only
+    /// cases) — how a staged mode flip is reverted in the worktree,
+    /// leaving the index-only mode hunk.
+    worktree_unexec: Vec<&'static str>,
     /// Files rewritten after the snapshot, before the op — the
     /// validate-at-apply cases (moved hunks, staleness).
     after_snapshot_writes: Tree,
@@ -66,6 +70,7 @@ impl Case {
             worktree_writes: Vec::new(),
             worktree_removals: Vec::new(),
             worktree_exec: Vec::new(),
+            worktree_unexec: Vec::new(),
             after_snapshot_writes: Vec::new(),
             changelists: Vec::new(),
             op,
@@ -121,6 +126,9 @@ fn run(case: Case) {
     }
     for path in &case.worktree_exec {
         fixture.set_exec(path);
+    }
+    for path in &case.worktree_unexec {
+        fixture.clear_exec(path);
     }
 
     let repo = Repo::discover(fixture.path()).unwrap();
@@ -657,9 +665,46 @@ line 9\nline 10\nline 11\nline 14\nline 15\nline 16\n"
 
     // ——— mode changes (unix: filemode is off on Windows) ———
 
-    // A mode-only change is the other zero-hunk shape (ADR 0017): one
-    // whole-file hunk, so `space` writes the index entry — mode
-    // included — and unstaging puts HEAD's mode back.
+    // A mode-only change presents one mode hunk (ADR 0017), so `space` on
+    // at hunk or row scope — reaches the mode-only index write: the mode
+    // set, the staged blob kept. The blob-keeping half is invisible here
+    // because a mode-only change's three trees hold one blob by
+    // definition; issue #103's mixed corners are where it shows.
+    #[cfg(unix)]
+    stage_hunk_of_a_mode_only_change_writes_the_mode:
+        Case {
+            base: vec![("tool.sh", b"#!/bin/sh\n".to_vec())],
+            worktree_exec: vec!["tool.sh"],
+            index: vec![("tool.sh", Some(b"#!/bin/sh\n".to_vec()))],
+            index_modes: vec![("tool.sh", 0o100755)],
+            ..Case::new(Op::StageHunk { path: "tool.sh", hunk: 0 })
+        };
+
+    #[cfg(unix)]
+    unstage_hunk_of_a_staged_mode_change_restores_the_head_mode:
+        Case {
+            base: vec![("tool.sh", b"#!/bin/sh\n".to_vec())],
+            stage_exec: vec!["tool.sh"],
+            index: vec![("tool.sh", Some(b"#!/bin/sh\n".to_vec()))],
+            index_modes: vec![("tool.sh", 0o100644)],
+            ..Case::new(Op::UnstageHunk { path: "tool.sh", hunk: 0 })
+        };
+
+    // The index-only mode hunk: flip staged, then reverted in the
+    // worktree. `space` on it means index := worktree like any other
+    // staging op, so it writes the worktree's mode — 644 — rather than
+    // flipping a bit it never read.
+    #[cfg(unix)]
+    stage_hunk_of_an_index_only_mode_change_writes_the_worktree_mode:
+        Case {
+            base: vec![("tool.sh", b"#!/bin/sh\n".to_vec())],
+            stage_exec: vec!["tool.sh"],
+            worktree_unexec: vec!["tool.sh"],
+            index: vec![("tool.sh", Some(b"#!/bin/sh\n".to_vec()))],
+            index_modes: vec![("tool.sh", 0o100644)],
+            ..Case::new(Op::StageHunk { path: "tool.sh", hunk: 0 })
+        };
+
     #[cfg(unix)]
     stage_row_of_a_mode_only_change_stages_the_mode:
         Case {

@@ -137,9 +137,10 @@ fn owned_dirty_hunks_ride_across_a_branch_switch() {
             "the state file names {branch:?}:\n{raw}"
         );
     }
-    // The text record's full field set (a binary record adds `oid_anchor`,
-    // ADR 0009): what matters is that the list is closed and holds nothing
-    // naming a branch.
+    // The text record's full field set (a whole-file record adds
+    // `oid_anchor`, ADR 0009; a mode record `mode_change`, ADR 0017):
+    // what matters is that the list is closed and holds nothing naming a
+    // branch.
     let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
     for record in json["records"].as_array().unwrap() {
         let mut keys: Vec<&str> = record

@@ -196,6 +196,11 @@ impl Repo {
         match fresh.stage {
             // Index already matches the worktree here.
             HunkStage::Staged => {}
+            // A mode hunk moves by the mode-only index write and by
+            // nothing else (ADR 0017) — including the index-only
+            // flavour, where index := worktree restores HEAD's mode
+            // because that is the mode the worktree now holds.
+            _ if fresh.is_mode_change() => self.backend.stage_worktree_mode(path)?,
             _ if hunk_ops_are_file_ops(file) => self.backend.stage_path(path)?,
             // Worktree matches HEAD across an index-only hunk's range, so
             // index := worktree is a reverse-apply of the staged content.
@@ -226,6 +231,7 @@ impl Repo {
         match fresh.stage {
             // Nothing of this hunk is in the index.
             HunkStage::Unstaged => {}
+            _ if fresh.is_mode_change() => self.backend.unstage_head_mode(path)?,
             _ if hunk_ops_are_file_ops(file) => self.backend.unstage_path(path)?,
             _ => self
                 .backend
@@ -653,8 +659,12 @@ fn find_fresh<'a>(
 /// index-entry primitives, which also cover content libgit2 won't apply
 /// hunk-wise (untracked files aren't in any apply preimage). A whole-file
 /// hunk is that shape by construction (ADR 0009, ADR 0017): `space` on a
-/// changed binary or a zero-hunk change is a whole-file index write,
-/// which is also the only way a mode change reaches the index.
+/// changed binary, an empty file's add or delete, or a type change is a
+/// whole-file index write. A mode hunk is *not* — it has its own
+/// mode-only write, checked before this, so staging one never writes an
+/// entry whole (ADR 0017). These whole-entry writes still carry the
+/// worktree's mode with their content; ending that ride-along is issue
+/// #105's.
 fn hunk_ops_are_file_ops(file: &ChangedFile) -> bool {
     file.presents_whole_file_hunk()
         || (matches!(

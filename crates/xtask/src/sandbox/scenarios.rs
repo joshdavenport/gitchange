@@ -396,9 +396,10 @@ fn binary(sandbox: &mut Sandbox) -> Result<()> {
 }
 
 /// The three zero-hunk shapes side by side (ADR 0017): a mode-only
-/// change, an empty file added, an empty file deleted — each a
-/// whole-file hunk reading `○ 0/1`, each with its own diff placeholder.
-/// One is staged so a `●` row is there to compare against.
+/// change — one mode hunk — plus an empty file added and an empty file
+/// deleted, each a whole-file hunk. All three read `○ 0/1`, each with its
+/// own diff placeholder. One is staged so a `●` row is there to compare
+/// against.
 fn zero_hunk(sandbox: &mut Sandbox) -> Result<()> {
     baseline(sandbox)?;
     sandbox.write("scripts/release.sh", "#!/bin/sh\ncargo build --release\n")?;

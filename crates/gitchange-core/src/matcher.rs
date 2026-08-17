@@ -425,7 +425,7 @@ pub(crate) fn record_for(
     anchor: &[String],
     owner: String,
 ) -> MembershipRecord {
-    let (_, oid_anchor) = hunk.record_anchors();
+    let anchors = hunk.record_anchors();
     MembershipRecord {
         path: path.into(),
         old_start: hunk.old_start,
@@ -434,7 +434,8 @@ pub(crate) fn record_for(
         new_lines: hunk.new_lines,
         changelist: owner,
         anchor: anchor.to_vec(),
-        oid_anchor,
+        oid_anchor: anchors.oid_anchor,
+        mode_change: anchors.mode_change,
         dormant_since: None,
     }
 }
@@ -442,14 +443,16 @@ pub(crate) fn record_for(
 /// Tier-1 identity: verbatim-anchor equality for text hunks; for a
 /// whole-file hunk, changed-side OID equality (ADR 0009) — the HEAD side
 /// deliberately doesn't participate, so a HEAD move alone never sheds an
-/// untouched binary change.
+/// untouched binary change; for a mode hunk, path continuity alone
+/// (ADR 0017), which is all its identity is, so a dormant mode record
+/// revives on any re-flip at its path.
 ///
-/// The cross-flavour arm is the load-bearing one: a whole-file record and
-/// a text record both carry an empty verbatim anchor, so without it a
-/// text hunk and a binary record at the same path would agree on
-/// emptiness and match. Stated once here and once in [`overlap_claim`];
-/// any further tier has to answer it too, because the match is
-/// exhaustive over the pair.
+/// The cross-flavour arm is the load-bearing one: every degenerate
+/// record carries an empty verbatim anchor, so without it a text hunk
+/// and a binary or mode record at the same path would agree on emptiness
+/// and match. Stated once here and once in [`overlap_claim`]; any
+/// further tier has to answer it too, because the match is exhaustive
+/// over the pair.
 pub(crate) fn exact_anchor_match(
     record: &MembershipRecord,
     hunk: &Hunk,
@@ -460,6 +463,7 @@ pub(crate) fn exact_anchor_match(
         (RecordIdentity::WholeFile { oids: stored }, HunkIdentity::WholeFile { oids }) => {
             stored.changed == oids.changed
         }
+        (RecordIdentity::ModeChange, HunkIdentity::ModeChange) => true,
         _ => false,
     }
 }
@@ -468,13 +472,16 @@ pub(crate) fn exact_anchor_match(
 /// whole-file hunk, path continuity (`CONTEXT.md`, "Whole-file hunk") —
 /// the whole file *is* the hunk, so any whole-file record at the path
 /// trivially "overlaps" it and a re-export (same path, new content)
-/// keeps its membership. See [`exact_anchor_match`] on the cross arm.
+/// keeps its membership; for a mode hunk, the same path continuity, the
+/// strength its identity has at both tiers (ADR 0017). See
+/// [`exact_anchor_match`] on the cross arm.
 pub(crate) fn overlap_claim(record: &MembershipRecord, hunk: &Hunk) -> bool {
     match (record.identity(), &hunk.identity) {
         (RecordIdentity::Text { .. }, HunkIdentity::Text { .. }) => {
             old_ranges_overlap(hunk, record)
         }
         (RecordIdentity::WholeFile { .. }, HunkIdentity::WholeFile { .. }) => true,
+        (RecordIdentity::ModeChange, HunkIdentity::ModeChange) => true,
         _ => false,
     }
 }
@@ -484,7 +491,7 @@ pub(crate) fn overlap_claim(record: &MembershipRecord, hunk: &Hunk) -> bool {
 /// hunk, whose identity rides in `oid_anchor` instead. Also how
 /// `commit()` keys records to the payload hunks it consumes (ADR 0004).
 pub(crate) fn anchor_of(hunk: &Hunk) -> Vec<String> {
-    hunk.record_anchors().0
+    hunk.record_anchors().anchor
 }
 
 /// Verbatim diff lines in the anchor shape records store.

@@ -957,6 +957,45 @@ fn the_commit_flows_stage_all_still_leaves_staged_stale_hunks_alone() {
 
 #[test]
 #[cfg(unix)]
+fn staging_a_mode_hunk_writes_the_mode_and_no_object() {
+    // The mode-only index write (ADR 0017): the entry's mode is set and
+    // its blob kept, so no apply machinery runs and no blob is written —
+    // a mode flip has no new content to store. The object count is the
+    // evidence that the write is the entry rewrite and not a
+    // content-bearing apply.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("tool.sh", "#!/bin/sh\n")
+        .commit_all("init")
+        .set_exec("tool.sh");
+    let head_blob = fixture.index_bytes("tool.sh");
+
+    let repo = Repo::discover(fixture.path()).unwrap();
+    let hunk = repo.refresh().unwrap().files[0].hunks[0].clone();
+    let objects = fixture.odb_object_count();
+
+    repo.stage_hunk("tool.sh", &hunk).unwrap();
+    assert_eq!(fixture.index_mode("tool.sh"), Some(0o100755));
+    assert_eq!(fixture.index_bytes("tool.sh"), head_blob, "same blob");
+    assert_eq!(
+        fixture.odb_object_count(),
+        objects,
+        "a mode flip writes no git object"
+    );
+
+    let hunk = repo.refresh().unwrap().files[0].hunks[0].clone();
+    repo.unstage_hunk("tool.sh", &hunk).unwrap();
+    assert_eq!(
+        fixture.index_mode("tool.sh"),
+        Some(0o100644),
+        "HEAD's mode back"
+    );
+    assert_eq!(fixture.index_bytes("tool.sh"), head_blob, "same blob");
+    assert_eq!(fixture.odb_object_count(), objects);
+}
+
+#[test]
+#[cfg(unix)]
 fn staging_a_type_change_writes_the_symlink_to_the_index() {
     // A file↔symlink swap is zero-hunk (ADR 0017), so it routes through
     // the whole-file index write — the op a symlink swap needs anyway,

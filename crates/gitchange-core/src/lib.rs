@@ -17,7 +17,9 @@ pub use commit::{
     AMEND_FLAG, CommitOptions, CommitOutcome, CommitPayload, NO_VERIFY_FLAG, PayloadFile,
     PayloadHunk, WholeFilePayload, commit_echo,
 };
-pub use diff::{ChangeKind, DiffHunk, FileDiff, FileSides, HunkLine, RepoDiffs, SideInfo};
+pub use diff::{
+    ChangeKind, DiffHunk, FileDiff, FileSides, HunkLine, ModeDelta, RepoDiffs, SideInfo,
+};
 pub use engine::{Condition, Engine, EngineEvent};
 pub use error::{ApplySite, Error};
 pub use matcher::Advisory;
