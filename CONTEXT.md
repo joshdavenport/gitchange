@@ -61,19 +61,30 @@ _Avoid_: file entry (that's the type), cell, file (when the row is meant)
 
 **Whole-file hunk**:
 The degenerate single hunk presented by a change with no line-addressable
-content: a changed binary file (ADR 0009) or a zero-hunk change
-(ADR 0017). One membership record spanning the file, anchored by a
-blob-OID pair instead of verbatim lines. Follows normal assign rules;
-keeps membership by path continuity; `◐` unreachable, `◑` derives by OID
-compare (mode-bit compare for a mode-only change); hunk-mode entry is a
-polite no-op.
+content: a changed binary file (ADR 0009), an empty file added or an
+empty file deleted (ADR 0017). One membership record spanning the file,
+anchored by a blob-OID pair instead of verbatim lines. Follows normal
+assign rules; keeps membership by path continuity; `◐` unreachable, `◑`
+derives by OID compare; hunk-mode entry is a polite no-op.
 _Avoid_: binary hunk, file-level membership (as a general mode)
+
+**Mode hunk**:
+The stand-alone hunk a mode delta (100644 ↔ 100755) presents — always,
+beside whatever content hunks exist, independently stageable (ADR 0017,
+issue #101). Pairs across the two diffs and derives `○●◑` by mode-bit
+compare; stage writes the index entry's mode keeping its blob; identity
+matches on path continuity alone. No stage op carries a mode as a rider,
+and an added or deleted file carries no mode hunk — its mode is part of
+the add/delete whole. Renders first among the file's hunks as a
+selectable placeholder row: `Mode changed (100644 → 100755)`.
+_Avoid_: chmod hunk, mode rider, ride-along
 
 **Zero-hunk change**:
 A change git reports with no text hunks: a mode-only change, an empty
-file added, an empty file deleted. Presents one whole-file hunk
-(ADR 0017) — every non-conflicted change in the universe carries at
-least one hunk, so nothing falls out of membership, staging, or commit.
+file added, an empty file deleted. Presents one degenerate hunk — a mode
+hunk for the mode-only case, a whole-file hunk otherwise (ADR 0017) —
+every non-conflicted change in the universe carries at least one hunk,
+so nothing falls out of membership, staging, or commit.
 _Avoid_: hunkless change, invisible change
 
 **Assign**:

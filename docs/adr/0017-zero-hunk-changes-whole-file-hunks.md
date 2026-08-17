@@ -1,59 +1,80 @@
-# Zero-hunk changes: whole-file hunks
+# Zero-hunk changes: whole-file hunks; mode deltas: mode hunks
 
-A change with no line-addressable content — a mode-only change, an empty
-file added (tracked or untracked), an empty file deleted — presents **one
-degenerate whole-file hunk**, extending ADR 0009's binary treatment to the
-whole class. The invariant: **every change in the universe carries at
-least one hunk** (conflicted files excepted — quarantined per ADR 0007).
-No change can fall out of membership, staging, or commit for lack of a
-hunk. ADR 0015's "nothing broadens a payload silently" gains its mirror:
-nothing narrows one silently either.
+A change with no line-addressable content presents a degenerate hunk, so
+that **every change in the universe carries at least one hunk**
+(conflicted files excepted — quarantined per ADR 0007). No change can
+fall out of membership, staging, or commit for lack of a hunk. ADR 0015's
+"nothing broadens a payload silently" gains its mirror: nothing narrows
+one silently either. Two shapes carry the invariant:
+
+- An empty file added (tracked or untracked) or deleted presents **one
+  degenerate whole-file hunk**, extending ADR 0009's binary treatment.
+- A mode delta (100644 ↔ 100755) presents **one stand-alone mode hunk**,
+  always — beside whatever content hunks exist — independently stageable
+  (issue #101, adopting the option this ADR first rejected).
 
 Prior art converges here: git's own `add -p` promotes the mode header to a
-synthetic hunk (`PROMPT_MODE_CHANGE`), magit renders a `'(chmod)` hunk
-section, and scm-record/jj — after shipping this exact bug twice
-(jj#2548, jj#3016) — made "every mode/existence transition gets a
-selectable section" a model invariant. The tools that refused (gitui,
-lazygit, GitHub Desktop) silently drop mode changes from partial workflows
-or carry years-open bugs about it.
+synthetic hunk (`PROMPT_MODE_CHANGE`) offered independently of content,
+magit renders an independently stageable `'(chmod)` hunk section, and
+scm-record/jj — after shipping this exact bug twice (jj#2548, jj#3016) —
+made "every mode/existence transition gets a selectable section" a model
+invariant. The tools that refused (gitui, lazygit, GitHub Desktop)
+silently drop mode changes from partial workflows or carry years-open
+bugs about it.
 
-## Identity & matching (ADR 0009 reused, no new record shape)
+## The mode hunk (issue #101)
 
-- Identity is `WholeFile` with the blob-OID pair anchor. Empty add and
-  empty delete are discriminated by the anchor's sides (HEAD-side absent /
-  changed-side empty blob, and the reverse). Membership records, the
-  record discriminator, and the matcher arms are unchanged.
-- For a mode-only change the two sides are equal, so exact-match is
-  vacuous and matching rests on path continuity — the same strength the
-  binary inheritance tier already has. Consequence: a mode re-flip at the
-  same path revives a dormant record. That is the intended behaviour:
-  same predicament, same home.
-- Records carry no mode bits. Mode is snapshot data on the changed file,
-  present for display and stage derivation only.
+- Each diff side's mode delta pairs across the two diffs as content hunks
+  do: at most one mode hunk per file, `○` when only the worktree side
+  carries the delta, `●` when both sides agree, `◑` staged-stale when a
+  staged flip was worktree-reverted (index-only). A diff side's delta is
+  never dropped because the other side's hunks survived pairing — the
+  gate that created the synthetic hunk only "when the change would
+  otherwise have zero hunks" made a worktree mode flip invisible and
+  undrivable whenever the content hunks lived on the index side, and made
+  the mirror (staged flip, unstaged edit) misread `◑` as `○`.
+- Stage writes the index entry's mode and keeps its blob; unstage
+  restores HEAD's mode and keeps the blob. A mode-only change's hunk *is*
+  its mode hunk — the whole-file treatment it previously received
+  collapses into the general rule.
+- **No ride-along.** No stage op carries a mode as a rider: content-hunk
+  staging and the binary whole-file index write preserve the index
+  entry's existing mode. A rider is what silently clobbers a separately
+  staged flip.
+- **Boundary:** an added or deleted file carries no separate mode hunk —
+  its mode is part of the add/delete whole. This line keeps scm-record's
+  `FileMode::Absent` implication rules out of gitchange: a chmod between
+  two existing modes participates in no dependency rule (scm-record
+  PR #95's rules all guard absence).
 
-## Staging & ride-along
+## Identity & matching
 
-- The synthetic hunk routes through the whole-file index ops, as binaries
-  do: stage writes the index entry from the worktree (content and mode),
-  unstage restores HEAD's entry (or drops a new one). No apply machinery.
-- Stage derivation: by OID compare per ADR 0009, except the mode-only
-  case, where the OIDs are equal and derivation compares mode bits across
-  HEAD, index, and worktree. `◑` staged-stale is reachable (staged mode
-  flip, then worktree revert).
-- The synthetic hunk exists **only when the change would otherwise have
-  zero hunks**. When content hunks exist, the mode rides along: any stage
-  op that writes the file's index entry carries the worktree mode. This
-  promotes today's accidental `index.add_path` behaviour to a documented
-  rule and extends it to partial staging. gitchange does not stage a mode
-  independently of content in the same file.
+- A whole-file hunk's identity is `WholeFile` with the blob-OID pair
+  anchor (ADR 0009 reused). Empty add and empty delete are discriminated
+  by the anchor's sides (HEAD-side absent / changed-side empty blob, and
+  the reverse).
+- A mode hunk carries a dedicated mode-change identity, matching on
+  **path continuity alone** — the strength the binary inheritance tier
+  has. The blob-pair anchor cannot serve it: once mode hunks coexist with
+  content hunks, the file's blobs belong to the content records, and any
+  edit would shift a blob anchor out from under the mode record. A mode
+  re-flip at the same path revives a dormant record — intended: same
+  predicament, same home.
+- Records carry no mode bits. Mode is snapshot data, present for display
+  and stage derivation only.
 
 ## Presentation
 
-- Diff panel: one-line placeholders on the binary/conflicted channel
-  (ADR 0007): `Mode changed (100644 → 100755)`, `Empty file added`,
-  `Empty file deleted`. Octal, as git prints it.
-- No new glyphs: rows derive `●○` (and `◑`) normally — `○ 0/1` replaces
-  the inert `0/0`. Hunk-mode entry on a lone degenerate hunk stays the
+- The mode hunk renders as a selectable placeholder row among the file's
+  hunks, positioned first (git's pseudo-hunk #0 position):
+  `Mode changed (100644 → 100755)`, octal, as git prints it. It takes
+  the same changelist tag, stage glyph, and dimming treatment as a text
+  hunk.
+- Whole-file placeholders stay on the binary/conflicted channel
+  (ADR 0007): `Empty file added`, `Empty file deleted`.
+- No new glyphs: rows derive `●○` (and `◑`) normally — a chmod+edit
+  counts the mode hunk (`0/2` where a bare edit reads `0/1`). Hunk-mode
+  entry on a lone degenerate hunk — whole-file or mode — stays the
   polite no-op (ADR 0009 idiom).
 
 ## Considered options
@@ -62,33 +83,40 @@ or carry years-open bugs about it.
   will not appear in a gitchange commit. Rejected: the politer cousin of
   ADR 0009's rejected "invisible to gitchange"; it leaves a class of
   change gitchange cannot drive, permanently.
-- **A dedicated mode-transition identity variant** (`old → new` in the
-  record) — rejected: its only behavioural difference is refusing dormant
-  revival on a different mode flip at the same path, and revival there is
-  right anyway; it costs a new record shape and matcher arms.
-- **Always-stand-alone mode hunk beside content hunks** (git `add -p`,
-  magit, scm-record) — rejected for now: needs a mode-only index write op
-  and the implication rules scm-record had to add (PR #95) once
-  independent selection allowed contradictory states. A chmod+edit is one
-  logical change in practice. Reopenable without unwinding this decision.
+- **A mode-transition identity carrying `old → new` in the record** —
+  rejected: recording the modes only buys refusing dormant revival on a
+  different flip at the same path, and revival there is right anyway. The
+  adopted identity is the path-continuity form, which carries no modes.
+- **Ride-along** (this ADR's original choice: synthetic hunk only at zero
+  hunks, mode carried by any index-entry write) — superseded
+  (issue #101): it dropped a diff side's mode or type delta whenever the
+  other side's hunks survived pairing — invisible and undrivable in all
+  four corners (mode/type × forward/mirror) — and the rider clobbered
+  separately staged flips.
+- **Display-only surfacing** of the orphaned delta — rejected
+  (issue #101): fails drivability, which is this ADR's own invariant.
+- **A scoped mode hunk** (only when the delta would otherwise be
+  invisible) — rejected (issue #101): precedent-free; mode as
+  sometimes-a-hunk/sometimes-a-rider preserves the failure shape it
+  fixes, conditionally.
 
 ## Consequences
 
 - ADR 0003's zero-hunk exception ("`space` moves nothing and says so") is
   superseded; its staging-scopes section now reads per this ADR.
-- The apply-corpus cases pinning the inertness flip to assert the
-  whole-file index write, and empty-tracked-file deletion — the same
-  class, previously uncovered — gains cases.
+- The apply corpus pins the mode-only index write, mode staging beside
+  index-only content hunks (both directions), the mode-preserving content
+  and binary stages, and empty-tracked-file deletion.
 - *Amended (issue #98):* `TypeChanged` (file↔symlink) presents a
   zero-hunk shape — git reports it with mode bits alone, no hunks,
   whatever the file holds — so the invariant takes it in: the same
   whole-file hunk, and the same whole-file index write, which is what
   staging a symlink swap needs anyway. Its diff placeholder reads
   `Type changed (100644 → 120000)`, since calling a symlink swap a mode
-  change would misname it. The rest of its treatment — how a type change
-  should present and match — stays with its own issue (#100); this ADR
-  only stops it falling out of membership, staging and commit with the
-  rest of the class.
+  change would misname it. The pairing rule above — no diff side's delta
+  is dropped for the other side's content — covers its corner cases
+  mechanically; how a type change presents and matches stays with its
+  own issue (#100), which also pins those corners.
 - Submodule pointer changes stay invisible (`ignore_submodules` on every
   diff) — a standing scope decision, not a zero-hunk file.
 - An **embedded repository** — a nested clone or a linked worktree inside
