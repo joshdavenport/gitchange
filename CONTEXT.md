@@ -68,7 +68,10 @@ spanning the file, anchored by a blob-OID pair instead of verbatim
 lines. Follows normal assign rules; keeps membership by path continuity;
 `◐` unreachable, `◑` derives by OID and object-kind compare —
 permission bits belong to the mode hunk. Hunk-mode entry is a polite
-no-op where it is the file's only hunk.
+no-op where it is the file's only hunk. Assigns as one unit with any
+content hunks sharing its index entry — they move together and capture
+joins the unit's owner (ADR 0009); committing a leftover split refuses,
+naming the other holder (ADR 0004).
 _Avoid_: binary hunk, file-level membership (as a general mode)
 
 **Mode hunk**:

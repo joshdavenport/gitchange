@@ -38,6 +38,12 @@ is exactly the other changelists' staged hunks, so derived staged state
   staged payload is unchanged, otherwise the flow returns to the confirm
   step with a notice. The confirm dialog's contents are a guarantee, not a
   hope.
+- **Foreign-content refusal (issue #106).** A whole-file payload copies
+  its live index entry verbatim, so before any temp-index work the commit
+  checks the entry's other content deltas: if any is held by another
+  changelist or by unassigned, the commit refuses with an advisory naming
+  the holder. ADR 0009's one-owner unit makes the state exceptional; this
+  refusal is the backstop — a payload never broadens silently (ADR 0015).
 - **`--no-verify` is supported**; how the commit UI exposes it is the
   commit-flow UI's decision (ticket 10).
 - Known limitation, documented not solved: hooks that inspect the
@@ -83,6 +89,11 @@ to guard. Keybinding/UI is ticket 10's.
 - **Block commit on `◑` hunks** — rejected: fights the
   stage-a-checkpoint-keep-experimenting workflow ADR 0003 explicitly
   preserved.
+- **Commit a foreign-content entry loudly** (proceed, with the payload
+  inspection naming the foreign holder) — rejected: no field precedent
+  (git's nearest "proceed" silently destroys the foreign staged content),
+  and disclosure aside, the committed entry stays semantically wrong for
+  one owner or the other (issue #106 research).
 - **Silent auto-stage on zero-staged `c` / hard block** — rejected for the
   offer: silent makes `c` mean two things invisibly; blocking adds friction
   to the most common starting state.

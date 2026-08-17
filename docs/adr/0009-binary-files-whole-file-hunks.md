@@ -5,7 +5,8 @@ membership has nothing to attach to. gitchange treats a changed binary file
 as **one degenerate whole-file "hunk"** with a normal membership record,
 flowing through the existing assignment rules unchanged: new binary change →
 the active changelist, unassigned when unassigned is active, assignable
-between changelists like any hunk. This preserves ADR 0003's visibility invariant
+between changelists like any hunk (as one unit with any content hunks
+sharing its index entry — see below). This preserves ADR 0003's visibility invariant
 (every hunk that would be in a commit is visible in the TUI) and keeps
 binaries first-class — no code path forks on binary-ness at the
 staging/commit layer.
@@ -29,6 +30,31 @@ staging/commit layer.
   match, mirroring the text rule (revival is never inheritance-based). A
   different binary change at a path with a dormant record is a fresh change
   → active changelist.
+
+## One owner per index entry (issue #106)
+
+One index entry can hold deltas presented as a whole-file hunk *and*
+content hunks — the index carries a staged text edit while the worktree
+holds a binary rewrite (reachable since the pairing fix, issue #103). A
+whole-file payload commits the live entry verbatim, so two owners in one
+entry would broaden a commit silently (ADR 0015). Prior art forbids the
+state rather than handling it (Perforce: a file belongs to exactly one
+pending changelist; scm-record/hg: the binary is one all-or-nothing
+toggle — issue #106 research).
+
+- **The whole-file hunk and the content hunks sharing its index entry are
+  one assignable unit.** Explicit assignment moves them together; a hunk
+  newly joining such an entry is captured into the unit's existing owner
+  (including unassigned), not the active changelist.
+- **The mode hunk is not part of the unit** — it stays independently
+  assignable (ADR 0017); the commit severs the mode from the entry copy,
+  taking the changelist's own staged flip or HEAD's mode.
+- **A split can still exist** — records predating this rule, an entry
+  whose content hunks already held two owners when the whole-file hunk
+  arrived (it then captures normally, into the active changelist), or
+  external actors. ADR 0004's foreign-content refusal backstops those:
+  the split is visible and assignable apart from commit, never
+  committable.
 
 ## Staging & commit (ADR 0003/0004 unchanged in mechanism)
 
@@ -69,6 +95,10 @@ staging/commit layer.
   hash suffices.
 - **Hunk-mode entry showing one whole-file hunk row** — rejected: a state
   that can only waste a keypress to enter and another to leave.
+- **Auto-unify a split entry at refresh** — rejected: a forced ownership
+  move needs an attribution answer (whose changelist absorbs whose?) that
+  ADR 0015's multi-actor rules don't give; the commit-time refusal names
+  the holder and leaves the move to the user.
 
 ## Consequences
 
