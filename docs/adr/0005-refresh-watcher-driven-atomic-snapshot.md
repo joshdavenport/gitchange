@@ -83,7 +83,9 @@ Who runs which: the engine's refreshes persist, as do the refreshes inside
 every mutating op (assign, stage, commit) — the op's receipt carries the
 advisories its refresh produced. Every read-only CLI invocation (`status`,
 `diff`, listing; with or without `--json`) refreshes read-only: a glance at
-the tree never moves membership. Deferred capture is the accepted cost:
+the tree never moves membership. The CLI reaches the persisting form only
+by name: `gitchange refresh` is the manual refresh key's CLI form — one
+deliberate persisting refresh whose receipt carries its advisories. Deferred capture is the accepted cost:
 with no TUI running, a new hunk stays unassigned until the next mutation's
 persisting refresh captures it, so that mutation's receipt can advise
 decisions unrelated to its target.
