@@ -8,6 +8,7 @@
 
 use crate::backend::HunkHeader;
 use crate::diff::{DiffHunk, FileDiff};
+use crate::error::Error;
 use crate::matcher::anchor_lines;
 use crate::state::{MembershipRecord, RecordAnchors, RecordIdentity, State};
 use crate::universe::{ChangedFile, Hunk, HunkStage, ranges_overlap};
@@ -216,11 +217,15 @@ pub(crate) struct Retained {
 
 /// Derive the payload and aftermath plan for one changelist (`None` is
 /// unassigned) from a refresh's universe and its diff(HEAD↔index).
+///
+/// Refuses where the payload would draw content out of an index entry a
+/// second holder also has content in (ADR 0004's foreign-content refusal) —
+/// here, before the caller does any temp-index work.
 pub(crate) fn plan(
     files: &[ChangedFile],
     index: &[FileDiff],
     changelist: Option<&str>,
-) -> CommitPlan {
+) -> Result<CommitPlan, Error> {
     let mut payload_files = Vec::new();
     let mut paths = Vec::new();
 
@@ -234,6 +239,13 @@ pub(crate) fn plan(
             .collect();
         if owned.is_empty() {
             continue;
+        }
+        let holders = foreign_entry_holders(file, changelist);
+        if !holders.is_empty() {
+            return Err(Error::ForeignEntryContent {
+                path: file.path.clone(),
+                holders,
+            });
         }
         let index_file = index.iter().find(|candidate| candidate.path == file.path);
         let staged_hunks = owned
@@ -265,12 +277,11 @@ pub(crate) fn plan(
         // here, so the index diff sees the path and carries sides; the
         // `else` is defensive only.
         //
-        // Whatever *content* the entry holds still rides along with it,
-        // being one entry: committing a whole-file hunk over staged text
-        // lands that text. The whole-file grain is ADR 0009's — a binary
-        // has no smaller committable unit — but two changelists can hold
-        // one entry's deltas, so the text may be another's. Issue #106
-        // has it.
+        // Whatever *content* the entry holds rides along with it, being
+        // one entry: committing a whole-file hunk over staged text lands
+        // that text. That is honest only while this changelist is the
+        // entry's one holder, which is what the guard above has just
+        // established (issue #106).
         if owned.iter().any(|hunk| hunk.is_whole_file()) {
             let Some(sides) = index_file.and_then(|file| file.sides.as_ref()) else {
                 continue;
@@ -361,12 +372,35 @@ pub(crate) fn plan(
         });
     }
 
-    CommitPlan {
+    Ok(CommitPlan {
         payload: CommitPayload {
             files: payload_files,
         },
         paths,
+    })
+}
+
+/// Who besides `changelist` holds content in the index entry this payload
+/// draws content out of — ADR 0004's foreign-content refusal, over
+/// ADR 0009's one owner per index entry. Empty says the payload is honest:
+/// the file presents no whole-file hunk (its content commits hunk by hunk,
+/// each hunk its own unit), the payload takes no content out of the entry,
+/// or `changelist` is its only holder.
+///
+/// Both sides of a split refuse, not just the whole-file hunk's holder,
+/// for the two different reasons ADR 0004 gives: the whole-file payload
+/// copies the entry and so carries the other holder's content outright,
+/// while a content-hunk payload carries nothing of anyone else's but cannot
+/// be committed apart from the whole-file hunk claiming the same blob.
+fn foreign_entry_holders(file: &ChangedFile, changelist: Option<&str>) -> Vec<Option<String>> {
+    let holders = file.entry_holders();
+    if !holders.iter().any(|holder| holder.as_deref() == changelist) {
+        return Vec::new();
     }
+    holders
+        .into_iter()
+        .filter(|holder| holder.as_deref() != changelist)
+        .collect()
 }
 
 /// Split the payload's owned hunks into the records the aftermath

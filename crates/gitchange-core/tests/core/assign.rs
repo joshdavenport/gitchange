@@ -5,7 +5,7 @@
 //! (ADR 0008); the state file is read only to prove recordlessness.
 
 use crate::support::RepoFixture;
-use gitchange_core::{Advisory, Error, Repo, Snapshot};
+use gitchange_core::{Advisory, Error, HunkStage, Repo, Snapshot};
 
 /// `count` numbered lines, with `edits` as (1-based line, replacement).
 fn numbered(count: usize, edits: &[(usize, &str)]) -> String {
@@ -309,5 +309,202 @@ fn an_assigned_hunk_keeps_its_new_owner_when_edited() {
     assert_eq!(
         owners(&after, "a.txt"),
         vec![Some("fixes".into()), Some("chores".into())]
+    );
+}
+
+/// The #106 content shape: HEAD holds text, the index holds a staged text
+/// edit, and the worktree holds binary bytes — one index entry presenting
+/// a whole-file hunk and an index-only content hunk. Both arrive together,
+/// so the active changelist captures the unit whole; 'chores' waits as an
+/// assign target.
+fn shared_entry_fixture() -> (RepoFixture, Repo, Snapshot) {
+    let fixture = RepoFixture::new();
+    fixture.write("notes.txt", "original\n").commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("fixes").unwrap();
+    repo.create_changelist("chores").unwrap();
+    repo.switch(Some("fixes")).unwrap();
+    fixture
+        .write("notes.txt", "staged text\n")
+        .stage("notes.txt");
+    fixture.write_bytes("notes.txt", &[0u8, 1, 2, 3]);
+    let snapshot = repo.refresh().unwrap();
+    assert!(
+        snapshot.files[0].hunks[0].is_whole_file(),
+        "the worktree's binary rewrite, as a whole-file hunk"
+    );
+    assert_eq!(
+        owners(&snapshot, "notes.txt"),
+        vec![Some("fixes".into()), Some("fixes".into())],
+        "precondition: one owner across the entry"
+    );
+    (fixture, repo, snapshot)
+}
+
+#[test]
+fn assigning_a_whole_file_hunk_moves_the_content_sharing_its_index_entry() {
+    // ADR 0009: the entry holds one blob and a whole-file payload commits
+    // it verbatim, so the whole-file hunk and the content hunks beside it
+    // are one assignable unit — pointing at either moves both, and the
+    // echo counts what actually moved.
+    let (_fixture, repo, snapshot) = shared_entry_fixture();
+    let whole_file = snapshot.files[0].hunks[0].clone();
+
+    let outcome = repo
+        .assign_hunks("notes.txt", &[whole_file], Some("chores"))
+        .unwrap();
+    assert_eq!(
+        outcome.echo.as_deref(),
+        Some("assigned 2 hunks — notes.txt → 'chores'"),
+        "the unit's other hunk is in the payload, so the echo says two"
+    );
+
+    let after = repo.refresh().unwrap();
+    assert_eq!(
+        owners(&after, "notes.txt"),
+        vec![Some("chores".into()), Some("chores".into())]
+    );
+}
+
+#[test]
+fn assigning_the_entrys_content_hunk_moves_the_whole_file_hunk_with_it() {
+    // The other direction of the same unit: the index-only content hunk
+    // cannot leave the entry on its own either.
+    let (_fixture, repo, snapshot) = shared_entry_fixture();
+    let content = snapshot.files[0].hunks[1].clone();
+
+    let outcome = repo
+        .assign_hunks("notes.txt", &[content], Some("chores"))
+        .unwrap();
+    assert_eq!(
+        outcome.echo.as_deref(),
+        Some("assigned 2 hunks — notes.txt → 'chores'")
+    );
+
+    let after = repo.refresh().unwrap();
+    assert_eq!(
+        owners(&after, "notes.txt"),
+        vec![Some("chores".into()), Some("chores".into())]
+    );
+}
+
+#[test]
+fn releasing_a_shared_entry_releases_the_whole_unit() {
+    // The unit holds for a release too (ADR 0016): the records of both
+    // hunks are deleted, so neither is left behind claimed while the other
+    // is loose. Capture-off first, or the uniform rule would re-claim them
+    // on the next refresh.
+    let (_fixture, repo, snapshot) = shared_entry_fixture();
+    let whole_file = snapshot.files[0].hunks[0].clone();
+
+    repo.switch(None).unwrap();
+    let outcome = repo.assign_hunks("notes.txt", &[whole_file], None).unwrap();
+    assert_eq!(
+        outcome.echo.as_deref(),
+        Some("released 2 hunks — notes.txt")
+    );
+
+    let after = repo.refresh().unwrap();
+    assert_eq!(owners(&after, "notes.txt"), vec![None, None]);
+}
+
+#[test]
+#[cfg(unix)]
+fn a_mode_hunk_stays_outside_the_index_entry_unit() {
+    // ADR 0017's boundary, which the unit rule leaves alone: a mode hunk
+    // has its own index write and no content, so it neither moves with the
+    // entry nor drags the entry with it.
+    let fixture = RepoFixture::new();
+    fixture.write("notes.txt", "original\n").commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("fixes").unwrap();
+    repo.create_changelist("chores").unwrap();
+    repo.switch(Some("fixes")).unwrap();
+    fixture
+        .write("notes.txt", "staged text\n")
+        .stage("notes.txt");
+    fixture.write_bytes("notes.txt", &[0u8, 1, 2, 3]);
+    fixture.set_exec("notes.txt");
+    let snapshot = repo.refresh().unwrap();
+    let hunks = &snapshot.files[0].hunks;
+    assert!(hunks[0].is_mode_change(), "the mode hunk sits first");
+    assert!(hunks[1].is_whole_file());
+
+    // The entry's unit moves without the mode hunk.
+    let outcome = repo
+        .assign_hunks("notes.txt", &[hunks[1].clone()], Some("chores"))
+        .unwrap();
+    assert_eq!(
+        outcome.echo.as_deref(),
+        Some("assigned 2 hunks — notes.txt → 'chores'")
+    );
+    let after = repo.refresh().unwrap();
+    assert_eq!(
+        owners(&after, "notes.txt"),
+        vec![
+            Some("fixes".into()),
+            Some("chores".into()),
+            Some("chores".into())
+        ],
+        "the mode hunk stays where it was"
+    );
+
+    // And the mode hunk moves without the entry.
+    let mode = after.files[0].hunks[0].clone();
+    let outcome = repo
+        .assign_hunks("notes.txt", &[mode], Some("fixes"))
+        .unwrap();
+    assert_eq!(
+        outcome.echo.as_deref(),
+        Some("assigned 1 hunk — notes.txt → 'fixes'"),
+        "a mode hunk is its own unit"
+    );
+    let after = repo.refresh().unwrap();
+    assert_eq!(
+        owners(&after, "notes.txt"),
+        vec![
+            Some("fixes".into()),
+            Some("chores".into()),
+            Some("chores".into())
+        ]
+    );
+}
+
+#[test]
+fn the_entry_unit_holds_across_unstaged_content() {
+    // ADR 0009: unit membership is independent of staging. Here the index
+    // holds the binary rewrite and the worktree has been edited back to
+    // text, so the entry's whole-file hunk is index-only and the content
+    // hunk beside it is unstaged. They still assign as one unit — were the
+    // unit only what the index holds, staging that content hunk would slide
+    // it into the entry under a second owner, which is the split the rule
+    // exists to prevent.
+    let fixture = RepoFixture::new();
+    fixture.write("notes.txt", "original\n").commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("fixes").unwrap();
+    repo.create_changelist("chores").unwrap();
+    repo.switch(Some("fixes")).unwrap();
+    fixture
+        .write_bytes("notes.txt", &[0u8, 1, 2, 3])
+        .stage("notes.txt");
+    fixture.write("notes.txt", "edited text\n");
+    let snapshot = repo.refresh().unwrap();
+    let hunks = &snapshot.files[0].hunks;
+    assert!(hunks[0].is_whole_file(), "the staged binary");
+    assert_eq!(hunks[1].stage, HunkStage::Unstaged, "the worktree's text");
+
+    let outcome = repo
+        .assign_hunks("notes.txt", &[hunks[0].clone()], Some("chores"))
+        .unwrap();
+    assert_eq!(
+        outcome.echo.as_deref(),
+        Some("assigned 2 hunks — notes.txt → 'chores'"),
+        "the unstaged content hunk is in the unit too"
+    );
+    let after = repo.refresh().unwrap();
+    assert_eq!(
+        owners(&after, "notes.txt"),
+        vec![Some("chores".into()), Some("chores".into())]
     );
 }

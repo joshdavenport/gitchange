@@ -38,12 +38,25 @@ is exactly the other changelists' staged hunks, so derived staged state
   staged payload is unchanged, otherwise the flow returns to the confirm
   step with a notice. The confirm dialog's contents are a guarantee, not a
   hope.
-- **Foreign-content refusal (issue #106).** A whole-file payload copies
-  its live index entry verbatim, so before any temp-index work the commit
-  checks the entry's other content deltas: if any is held by another
-  changelist or by unassigned, the commit refuses with an advisory naming
-  the holder. ADR 0009's one-owner unit makes the state exceptional; this
-  refusal is the backstop — a payload never broadens silently (ADR 0015).
+- **Foreign-content refusal (issue #106).** An index entry presenting a
+  whole-file hunk has no smaller committable unit (ADR 0009), so before any
+  temp-index work the commit checks who holds that entry's staged content:
+  where a holder other than the committing changelist — unassigned
+  included — has content in it, the commit refuses with an advisory naming
+  that holder. **Either side of a split refuses**, not only the whole-file
+  hunk's holder, though the two sides are refused for different reasons.
+  The whole-file payload's case is mechanical: it copies the entry, so it
+  carries the other holder's staged content outright. The content-hunk side
+  commits by hunk selection and carries nothing of anyone else's — it is
+  refused because the grain cuts both ways: that content cannot be
+  committed apart from the whole-file hunk claiming the same blob, so
+  committing it lands what that hunk describes and leaves the other
+  holder's payload meaning something it never confirmed. Two things sit
+  outside the entry and so never refuse a commit — its unstaged hunks,
+  which are in the worktree alone, and its mode hunk, which carries no
+  content (ADR 0017).
+  ADR 0009's one-owner unit makes a split exceptional; this refusal is the
+  backstop — a payload never broadens silently (ADR 0015).
 - **`--no-verify` is supported**; how the commit UI exposes it is the
   commit-flow UI's decision (ticket 10).
 - Known limitation, documented not solved: hooks that inspect the

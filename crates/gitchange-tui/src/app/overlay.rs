@@ -2,7 +2,7 @@
 //! inputs, delete confirmation, the assign popup, and the commit
 //! dialog's whole warn/drift/restore lifecycle (ADR 0004).
 
-use gitchange_core::{ChangeKind, CommitPayload, Hunk, UNASSIGNED, count_noun};
+use gitchange_core::{ChangeKind, CommitPayload, Hunk, UNASSIGNED, count_noun, holder_label};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::selection::step;
@@ -513,6 +513,11 @@ impl App {
         }))
     }
 
+    /// The hunks a payload names, widened to whole index-entry units
+    /// (ADR 0009): hunks sharing an entry that commits whole move together,
+    /// so the count and provenance this popup states are the ones the op
+    /// applies. Core widens the op itself — this reads the same rule for
+    /// the description, it is not a second copy of it.
     pub(super) fn resolve_payload(&self, payload: &AssignPayload) -> Option<(String, Vec<Hunk>)> {
         let snapshot = self.snapshot.as_ref()?;
         let path = payload.path();
@@ -522,6 +527,14 @@ impl App {
             AssignPayload::AllHunks { .. } => file()?.hunks.clone(),
             AssignPayload::UnassignedHunks { .. } => owned_hunks(file()?, None),
             AssignPayload::FileRow(entry) => owned_hunks(file()?, entry.group.owner()?),
+        };
+        let hunks = match file() {
+            Some(file) => file
+                .widen_to_entry_unit(hunks.iter())
+                .into_iter()
+                .cloned()
+                .collect(),
+            None => hunks,
         };
         Some((path.to_owned(), hunks))
     }
@@ -617,10 +630,7 @@ impl App {
             if hunk.owned_by(owner.as_deref()) {
                 continue;
             }
-            let label = match &hunk.changelist {
-                Some(name) => format!("'{name}'"),
-                None => UNASSIGNED.to_owned(),
-            };
+            let label = holder_label(hunk.changelist.as_deref());
             match sources.iter_mut().find(|(seen, _)| *seen == label) {
                 Some((_, count)) => *count += 1,
                 None => sources.push((label, 1)),

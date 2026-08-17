@@ -418,3 +418,128 @@ fn a_zero_hunk_change_captures_and_is_assignable_like_any_other() {
     assert_eq!(owners(&snapshot, "tool.sh"), vec![None]);
     assert_eq!(snapshot.files_in(None).len(), 1, "released to unassigned");
 }
+
+#[test]
+fn a_whole_file_hunk_joins_the_owner_of_the_entry_it_lands_in() {
+    // ADR 0009's one owner per index entry, at the seam issue #106 found:
+    // the index holds a staged text edit 'work' owns, then the worktree
+    // turns binary. The whole-file hunk that arrives shares that entry —
+    // a whole-file payload would commit the entry verbatim — so it joins
+    // 'work' rather than the active changelist, and says so.
+    let fixture = RepoFixture::new();
+    fixture.write("notes.txt", "original\n").commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("work").unwrap();
+    repo.switch(Some("work")).unwrap();
+    fixture
+        .write("notes.txt", "staged text\n")
+        .stage("notes.txt");
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(owners(&snapshot, "notes.txt"), vec![Some("work".into())]);
+
+    // Another changelist is active when the bytes land.
+    repo.create_changelist("other").unwrap();
+    repo.switch(Some("other")).unwrap();
+    fixture.write_bytes("notes.txt", &[0u8, 1, 2, 3]);
+
+    let snapshot = repo.refresh().unwrap();
+    assert!(snapshot.files[0].hunks[0].is_whole_file());
+    assert_eq!(
+        owners(&snapshot, "notes.txt"),
+        vec![Some("work".into()), Some("work".into())],
+        "the newcomer joins the entry's owner, not the active changelist"
+    );
+    assert_eq!(
+        snapshot.advisories,
+        vec![Advisory::EntryUnitCapture {
+            path: "notes.txt".into(),
+            new_start: 0,
+            changelist: "work".into(),
+        }],
+        "capture into another changelist is visible, and names why"
+    );
+
+    // The decision became a record: the next refresh is quiet.
+    let snapshot = repo.refresh().unwrap();
+    assert!(snapshot.advisories.is_empty());
+}
+
+#[test]
+fn content_landing_in_an_owned_entry_joins_its_whole_file_hunks_owner() {
+    // The same rule the other way round: 'art' owns the binary rewrite,
+    // then a text edit is staged into the same entry. The index-only
+    // content hunk is the newcomer, and it joins 'art'.
+    let fixture = RepoFixture::new();
+    fixture.write("notes.txt", "original\n").commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("art").unwrap();
+    repo.switch(Some("art")).unwrap();
+    fixture.write_bytes("notes.txt", &[0u8, 1, 2, 3]);
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(owners(&snapshot, "notes.txt"), vec![Some("art".into())]);
+
+    // A text edit staged under a second active changelist, the worktree
+    // put back to the bytes 'art' holds.
+    repo.create_changelist("other").unwrap();
+    repo.switch(Some("other")).unwrap();
+    fixture
+        .write("notes.txt", "staged text\n")
+        .stage("notes.txt");
+    fixture.write_bytes("notes.txt", &[0u8, 1, 2, 3]);
+
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(
+        owners(&snapshot, "notes.txt"),
+        vec![Some("art".into()), Some("art".into())],
+        "the staged content joins the whole-file hunk's owner"
+    );
+    assert_eq!(
+        snapshot.advisories,
+        vec![Advisory::EntryUnitCapture {
+            path: "notes.txt".into(),
+            new_start: 1,
+            changelist: "art".into(),
+        }]
+    );
+}
+
+#[test]
+fn an_ownerless_entry_captures_as_one_unit() {
+    // Nothing to join: both hunks of the entry arrive together, so
+    // ordinary capture already lands them on one target — unassigned
+    // under capture-off (ADR 0015), and the active changelist once one is
+    // switched on, records or no records (ADR 0016). The unit rule adds no
+    // advisory of its own to either.
+    let fixture = RepoFixture::new();
+    fixture.write("notes.txt", "original\n").commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("work").unwrap();
+    fixture
+        .write("notes.txt", "staged text\n")
+        .stage("notes.txt");
+    fixture.write_bytes("notes.txt", &[0u8, 1, 2, 3]);
+
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(
+        owners(&snapshot, "notes.txt"),
+        vec![None, None],
+        "capture-off leaves the whole unit unassigned"
+    );
+    assert!(snapshot.advisories.is_empty(), "{:?}", snapshot.advisories);
+
+    repo.switch(Some("work")).unwrap();
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(
+        owners(&snapshot, "notes.txt"),
+        vec![Some("work".into()), Some("work".into())],
+        "the recordless unit captures whole, still one owner"
+    );
+    assert!(
+        snapshot
+            .advisories
+            .iter()
+            .all(|advisory| matches!(advisory, Advisory::AutoCaptured { .. })),
+        "ordinary capture, ordinary advisories: {:?}",
+        snapshot.advisories
+    );
+}

@@ -64,6 +64,18 @@ pub fn target_named(name: &str) -> Option<&str> {
     (name != UNASSIGNED).then_some(name)
 }
 
+/// A hunk's holder as prose: `'feature'` for a changelist, the bare
+/// reserved label for unassigned (`None`), which is not quoted because it
+/// is not a name anyone chose. Shared by every line that names a holder —
+/// the assign popup's provenance tail, the commit's foreign-content
+/// refusal (ADR 0004) — so the two cannot spell one holder two ways.
+pub fn holder_label(holder: Option<&str>) -> String {
+    match holder {
+        Some(name) => format!("'{name}'"),
+        None => UNASSIGNED.to_owned(),
+    }
+}
+
 /// The reserved name and display label for the All pseudo-view
 /// (`CONTEXT.md`'s "All"): every changed file grouped by changelist.
 pub const ALL: &str = "all";

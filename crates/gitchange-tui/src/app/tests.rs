@@ -3261,3 +3261,57 @@ fn the_jump_keys_are_one_help_row_and_no_keybar_arm() {
         }
     }
 }
+
+// ── one owner per index entry: the assign unit (issue #106) ──────────
+
+/// The #106 shape as core reports it: a binary rewrite in the worktree
+/// over a staged text edit, so one index entry carries a whole-file hunk
+/// and an index-only content hunk — here held by different changelists.
+fn shared_entry_file() -> ChangedFile {
+    let mut file = binary_file(
+        ChangeKind::Modified,
+        Some(blob(120)),
+        Some(blob(240)),
+        HunkStage::StagedStale,
+    );
+    file.hunks[0].changelist = Some("fixes".into());
+    let mut content = hunk(14, Some("chores"), HunkStage::StagedStale);
+    content.index_only = true;
+    file.hunks.push(content);
+    file
+}
+
+#[test]
+fn the_assign_popup_states_the_whole_index_entry_unit() {
+    // ADR 0009: hunks sharing an index entry that commits whole assign as
+    // one unit, so the subject line states the unit — its count and where
+    // its hunks come from — not the row the cursor sits on. That line is
+    // what licenses reaching a hunk rendered elsewhere, so it must name the
+    // one coming along.
+    let mut snapshot = snapshot();
+    snapshot.files = vec![shared_entry_file()];
+    let mut app = App::new("repo");
+    app.apply_snapshot(snapshot);
+    app.on_key(key(KeyCode::Char('j'))); // drill into 'fixes'
+    app.on_key(key(KeyCode::Char('3')));
+    app.on_key(key(KeyCode::Enter)); // hunk mode, on the whole-file hunk
+    assert_eq!(app.hunk_sel, Some(0));
+
+    app.on_key(key(KeyCode::Char('a')));
+    let Some(Overlay::Assign { payload, .. }) = app.overlay.clone() else {
+        panic!("expected the assign popup");
+    };
+    assert_eq!(
+        app.assign_description(&payload),
+        "2 hunks in assets/logo.png (1 from 'chores')",
+        "the unit's other hunk is in the payload, and it is another changelist's"
+    );
+
+    // And the op carries the unit, as core would widen it anyway.
+    app.on_key(key(KeyCode::Char('j'))); // fixes → chores
+    let Some(Action::Op(Op::Assign { hunks, target, .. })) = app.on_key(key(KeyCode::Enter)) else {
+        panic!("expected the assign op");
+    };
+    assert_eq!(hunks.len(), 2);
+    assert_eq!(target, AssignTarget::Existing("chores".into()));
+}

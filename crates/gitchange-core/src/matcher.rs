@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use crate::diff::ChangeKind;
 use crate::state::{MembershipRecord, RecordIdentity};
 use crate::universe::{ChangedFile, Hunk, HunkIdentity, ranges_overlap};
-use crate::vocabulary::{ARROW, count_noun};
+use crate::vocabulary::{ARROW, count_noun, holder_label};
 
 /// Dormant records prune after 14 days (ADR 0002).
 const DORMANT_TTL_SECS: u64 = 14 * 24 * 60 * 60;
@@ -51,6 +51,21 @@ pub enum Advisory {
         /// Worktree-side line the hunk starts at.
         new_start: u32,
         /// The active changelist that captured it.
+        changelist: String,
+    },
+    /// A new hunk joined the owner of the index entry it shares rather
+    /// than the active changelist — ADR 0009's one owner per index entry:
+    /// a whole-file hunk arriving beside owned content hunks, or content
+    /// arriving beside an owned whole-file hunk. Fired only where that
+    /// owner is not the active changelist; where the two agree, the
+    /// capture is an ordinary one and says so as [`Advisory::AutoCaptured`].
+    EntryUnitCapture {
+        path: String,
+        /// Line the hunk starts at — worktree-side, index-side for an
+        /// index-only hunk, and 0 for a whole-file one, which addresses
+        /// no line at all.
+        new_start: u32,
+        /// The entry's owner, which now holds the newcomer too.
         changelist: String,
     },
     /// Dormant records revived by exact anchor match this refresh
@@ -105,6 +120,16 @@ impl Advisory {
                     ),
                 }
             }
+            Advisory::EntryUnitCapture {
+                path,
+                new_start,
+                changelist,
+            } => {
+                format!(
+                    "auto-captured hunk at {path}:{new_start} {ARROW} '{changelist}' \
+                     (one owner per index entry)"
+                )
+            }
             Advisory::DormantRevival {
                 path,
                 changelist,
@@ -130,11 +155,14 @@ impl Advisory {
     }
 }
 
-/// `'a', 'b', 'c'` — changelist names as quoted prose.
+/// `'a', 'b', 'c'` — changelist names as quoted prose, each spelled by
+/// [`holder_label`] so one holder reads the same here and in the commit's
+/// refusal (ADR 0006). These are always real names, never unassigned: a
+/// changelist has to hold a record to be listed.
 fn quoted_list(names: &[String]) -> String {
     names
         .iter()
-        .map(|name| format!("'{name}'"))
+        .map(|name| holder_label(Some(name)))
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -296,6 +324,57 @@ fn match_file(
     // capture under the disabled tier (ADR 0012).
     let mut guarded_capture = false;
 
+    // Tier 2's claims, gathered before any hunk is decided: the live
+    // records overlapping each hunk tier 1 left undecided, and the
+    // changelists they name. Per-hunk independent — consumption is
+    // deferred to `superseded` so one record can serve every fragment of a
+    // split — so gathering first changes no outcome, and it lets ADR 0009's
+    // one-owner-per-index-entry rule below read the entry's owner before
+    // capture decides anything. Empty under the ADR 0012 guard, where
+    // overlap proves nothing.
+    let claims: Vec<Vec<usize>> = file
+        .hunks
+        .iter()
+        .enumerate()
+        .map(|(i, hunk)| {
+            if owners[i].is_some() || tier2_disabled {
+                return Vec::new();
+            }
+            stored
+                .iter()
+                .enumerate()
+                .filter(|(j, record)| {
+                    !consumed[*j] && !record.is_dormant() && overlap_claim(record, hunk)
+                })
+                .map(|(j, _)| j)
+                .collect()
+        })
+        .collect();
+    let candidates: Vec<BTreeSet<&str>> = claims
+        .iter()
+        .map(|claim| {
+            claim
+                .iter()
+                .map(|&j| stored[j].changelist.as_str())
+                .collect()
+        })
+        .collect();
+    // Each hunk's owner as records establish it: tier 1's exact match, or
+    // tier 2's single overlap claim. `None` where no record puts it
+    // anywhere — a genuinely new hunk, or one whose overlap is ambiguous,
+    // both of which capture. Owned rather than borrowed so the decision
+    // loop can still write `owners`.
+    let established: Vec<Option<String>> = (0..file.hunks.len())
+        .map(|i| match &owners[i] {
+            // Tier 1 matched a record for it.
+            Some(owner) => owner.clone(),
+            // Tier 2's inheritance, and only where it is unambiguous: two
+            // candidates resolve to active below, which is a capture.
+            None if candidates[i].len() == 1 => candidates[i].first().copied().map(str::to_owned),
+            None => None,
+        })
+        .collect();
+
     // Tier 2: overlap inheritance on HEAD-side ranges, live records only
     // — dormant records never re-claim edited content (ADR 0002).
     for (i, hunk) in file.hunks.iter().enumerate() {
@@ -325,24 +404,37 @@ fn match_file(
         }
         // Consumption is deferred to `superseded` so one record can
         // serve every fragment of a split.
-        let overlapping: Vec<usize> = stored
-            .iter()
-            .enumerate()
-            .filter(|(j, record)| {
-                !consumed[*j] && !record.is_dormant() && overlap_claim(record, hunk)
-            })
-            .map(|(j, _)| j)
-            .collect();
-        for &j in &overlapping {
+        for &j in &claims[i] {
             superseded[j] = true;
         }
 
-        let candidates: BTreeSet<&str> = overlapping
-            .iter()
-            .map(|&j| stored[j].changelist.as_str())
-            .collect();
+        // ADR 0009, ahead of the uniform rule: a hunk landing in an index
+        // entry that already has an owner joins that owner. The entry holds
+        // one blob and a whole-file payload commits it verbatim, so
+        // capturing the newcomer to the active changelist instead is
+        // exactly the two-owner entry issue #106 found.
+        //
+        // It redirects a capture; it never turns capture on. Under
+        // capture-off gitchange claims nothing (ADR 0015), so the entry
+        // keeps its split — visible and assignable, with ADR 0004's commit
+        // refusal as the backstop. Silent, too, where the entry's owner
+        // *is* active, where no single owner is established in it, and
+        // where the hunk is in no such entry at all.
+        let joins_entry = match (active, claims[i].is_empty()) {
+            (Some(active), true) => {
+                entry_owner(file, &established, i).filter(|owner| owner != active)
+            }
+            _ => None,
+        };
 
-        let owner = if overlapping.is_empty() {
+        let owner = if let Some(owner) = joins_entry {
+            out.advisories.push(Advisory::EntryUnitCapture {
+                path: file.path.clone(),
+                new_start: hunk.new_start,
+                changelist: owner.clone(),
+            });
+            Some(owner)
+        } else if claims[i].is_empty() {
             // Genuinely new: the active changelist, or unassigned when
             // unassigned is active (ADR 0015's capture-off). No record
             // for a hunk nobody claims — a changelist-less repo must not
@@ -359,13 +451,13 @@ fn match_file(
                 });
             }
             active.map(String::from)
-        } else if candidates.len() >= 2 {
+        } else if candidates[i].len() >= 2 {
             // Two or more changelists could claim it: active + advisory —
             // visible, never a silent misfile.
             out.advisories.push(Advisory::AmbiguousOverlap {
                 path: file.path.clone(),
                 new_start: hunk.new_start,
-                candidates: candidates.iter().map(|&name| name.into()).collect(),
+                candidates: candidates[i].iter().map(|&name| name.into()).collect(),
                 assigned_to: active.map(String::from),
             });
             active.map(String::from)
@@ -373,7 +465,7 @@ fn match_file(
             // Exactly one changelist: inherit. Editing your own hunk
             // never sheds membership; splits inherit the parent's owner
             // because each fragment overlaps the parent record.
-            candidates.iter().next().map(|&name| name.into())
+            established[i].clone()
         };
 
         owners[i] = Some(owner.clone());
@@ -417,6 +509,33 @@ fn match_file(
             out.records.extend(into_dormant(record, now_epoch_secs));
         }
     }
+}
+
+/// The owner the index-entry unit around hunk `at` already has — ADR
+/// 0009's one owner per index entry, read off the owners records establish
+/// for the unit's *other* hunks.
+///
+/// `None` where there is nothing to join: the hunk is in no such unit, the
+/// unit's other hunks are recordless too (they capture together, so the
+/// entry still lands on one owner), or two owners are already established
+/// in it.
+/// That last case is the split ADR 0004's commit refusal backstops —
+/// nothing here forces a move, which would need an attribution answer ADR
+/// 0015 doesn't give.
+fn entry_owner(file: &ChangedFile, established: &[Option<String>], at: usize) -> Option<String> {
+    if !file.in_entry_unit(&file.hunks[at]) {
+        return None;
+    }
+    let mut mates = file
+        .hunks
+        .iter()
+        .enumerate()
+        .filter(|&(i, mate)| i != at && file.in_entry_unit(mate))
+        .filter_map(|(i, _)| established[i].as_deref());
+    let owner = mates.next()?;
+    mates
+        .all(|candidate| candidate == owner)
+        .then(|| owner.to_owned())
 }
 
 pub(crate) fn record_for(

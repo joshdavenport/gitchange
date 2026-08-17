@@ -250,7 +250,7 @@ impl Repo {
     pub fn commit_payload(&self, changelist: Option<&str>) -> Result<CommitPayload, Error> {
         let (snapshot, index_diff) = self.refresh_capturing_index()?;
         validate_changelist(&snapshot, changelist)?;
-        Ok(commit::plan(&snapshot.files, &index_diff, changelist).payload)
+        Ok(commit::plan(&snapshot.files, &index_diff, changelist)?.payload)
     }
 
     /// Commit `changelist`'s staged hunks (ADR 0004): a temporary index
@@ -285,7 +285,7 @@ impl Repo {
         }
         let (snapshot, index_diff) = self.refresh_capturing_index()?;
         validate_changelist(&snapshot, changelist)?;
-        let plan = commit::plan(&snapshot.files, &index_diff, changelist);
+        let plan = commit::plan(&snapshot.files, &index_diff, changelist)?;
         if plan.payload.is_empty() {
             return Err(Error::NothingStaged);
         }
@@ -493,6 +493,11 @@ impl Repo {
     /// The caller's follow-up refresh re-derives membership from the
     /// written records. The echo counts what was acted on (`None` when
     /// nothing was).
+    ///
+    /// Hunks sharing an index entry that commits whole move together
+    /// (ADR 0009): a payload naming any of them is widened to the whole
+    /// unit here, so no frontend and no scope can file one owner's blob
+    /// under two. The echo counts the widened payload — what moved.
     pub fn assign_hunks(
         &self,
         path: &str,
@@ -502,11 +507,18 @@ impl Repo {
         let files = universe::build(self.backend.diffs()?);
         let mut advisories = Vec::new();
         let mut fresh = Vec::new();
+        let mut found_in = None;
         for hunk in hunks {
             match find_fresh(&files, path, hunk) {
-                Some((_, found)) => fresh.push(found),
+                Some((file, found)) => {
+                    found_in = Some(file);
+                    fresh.push(found);
+                }
                 None => advisories.push(stale_advisory(path, hunk)),
             }
+        }
+        if let Some(file) = found_in {
+            fresh = file.widen_to_entry_unit(fresh);
         }
         let echo = (!fresh.is_empty()).then(|| match target {
             Some(name) => format!(

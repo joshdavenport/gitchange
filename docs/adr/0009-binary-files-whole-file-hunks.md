@@ -43,18 +43,34 @@ pending changelist; scm-record/hg: the binary is one all-or-nothing
 toggle — issue #106 research).
 
 - **The whole-file hunk and the content hunks sharing its index entry are
-  one assignable unit.** Explicit assignment moves them together; a hunk
-  newly joining such an entry is captured into the unit's existing owner
-  (including unassigned), not the active changelist.
+  one assignable unit.** Explicit assignment moves them together, at every
+  scope and in a release too. A hunk newly joining such an entry is
+  captured into the unit's existing owner rather than the active
+  changelist; where the unit has no owner yet, ordinary capture lands the
+  whole of it on one target anyway. The rule **redirects capture, it never
+  turns capture on**: under capture-off nothing joins anything (ADR 0015),
+  because unassigned is the absence of a claim (ADR 0016) and reading it as
+  an owner would be claiming on its behalf.
+- **Unit membership is independent of staging.** Were the unit only the
+  hunks the index currently holds, `space` on a content hunk would slide it
+  into the entry under a second owner — the split the rule exists to
+  prevent. The commit-side refusal narrows to what the entry actually
+  holds, an unstaged hunk riding along with nothing (ADR 0004).
 - **The mode hunk is not part of the unit** — it stays independently
   assignable (ADR 0017); the commit severs the mode from the entry copy,
   taking the changelist's own staged flip or HEAD's mode.
-- **A split can still exist** — records predating this rule, an entry
+- **A split can still exist**, because the rule only ever redirects a
+  capture — it overrides no established ownership, a forced move being the
+  rejected option below. The sources: records predating this rule; an entry
   whose content hunks already held two owners when the whole-file hunk
-  arrived (it then captures normally, into the active changelist), or
-  external actors. ADR 0004's foreign-content refusal backstops those:
-  the split is visible and assignable apart from commit, never
-  committable.
+  arrived (it then captures normally, into the active changelist); a hunk
+  arriving under capture-off; a hunk whose overlap inherits a different
+  owner, or resolves ambiguously to the active one (ADR 0001) — both are
+  records deciding, not capture; a path under ADR 0012's HEAD-move guard,
+  where anchor-broken hunks capture to active while the rest keep their
+  records; and external actors. ADR 0004's foreign-content refusal
+  backstops all of them: the split is visible and assignable apart from
+  commit, never committable.
 
 ## Staging & commit (ADR 0003/0004 unchanged in mechanism)
 

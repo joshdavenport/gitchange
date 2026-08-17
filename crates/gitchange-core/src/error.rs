@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use crate::snapshot::GitOperation;
+use crate::vocabulary::holder_label;
 
 /// Core's error contract. Variants are carved by what the caller must do
 /// about them (ADR 0006); `git2::Error` never appears here — backend
@@ -41,6 +42,19 @@ pub enum Error {
     /// offer, never a silent auto-stage).
     #[error("nothing staged to commit")]
     NothingStaged,
+
+    /// ADR 0004's foreign-content refusal: the payload would commit
+    /// content out of an index entry a second holder also has content in,
+    /// and the entry commits whole — a whole-file hunk has no smaller
+    /// committable unit (ADR 0009). Refused before any temp-index work, so
+    /// nothing was committed and neither index was touched. ADR 0009's
+    /// one-owner unit keeps the state exceptional; `holders` names who
+    /// else is in the entry, `None` being unassigned.
+    #[error("{}", foreign_entry_content_message(.path, .holders))]
+    ForeignEntryContent {
+        path: String,
+        holders: Vec<Option<String>>,
+    },
 
     /// A hunk-wise apply was refused (ADR 0003). Nothing was written —
     /// every postimage is computed before anything is touched, so the
@@ -100,6 +114,24 @@ pub enum ApplySite {
     /// Commit's payload apply against HEAD's tree while the temp index
     /// is assembled (ADR 0004).
     CommitTempIndex,
+}
+
+/// [`Error::ForeignEntryContent`]'s message: what is in the way, why it
+/// cannot be split, and the one move that clears it — assigning the file's
+/// hunks to a single holder, which is one op since they assign as a unit
+/// (ADR 0009). It names ADR 0004's guarantee too: a refusal here precedes
+/// every write, so nothing was committed.
+fn foreign_entry_content_message(path: &str, holders: &[Option<String>]) -> String {
+    let holders: Vec<String> = holders
+        .iter()
+        .map(|holder| holder_label(holder.as_deref()))
+        .collect();
+    format!(
+        "cannot commit {path}: one index entry holds both this payload's content and \
+         content held by {}, and a whole-file change leaves the entry indivisible\n\
+         assign the file's hunks to one changelist and retry; nothing was committed",
+        holders.join(", ")
+    )
 }
 
 /// [`Error::ApplyFailed`]'s message, per site. The staging site offers

@@ -100,6 +100,87 @@ impl ChangedFile {
     pub fn owned_hunks(&self, owner: Option<&str>) -> impl Iterator<Item = &Hunk> {
         self.hunks.iter().filter(move |hunk| hunk.owned_by(owner))
     }
+
+    /// This file's content hunks as the one assignable unit they are when
+    /// they share an index entry that commits whole — ADR 0009's one owner
+    /// per index entry. Empty unless the file presents a whole-file hunk;
+    /// where it does, the unit is that hunk *and* every content hunk
+    /// beside it, because the entry holds one blob and a whole-file
+    /// payload commits it verbatim (issue #106).
+    ///
+    /// Membership is deliberately independent of staging: were the unit
+    /// only the hunks the index currently holds, `space` on a content hunk
+    /// would slide it into the entry under a second owner — creating the
+    /// very split the rule exists to prevent. Assignment moves the unit
+    /// together; the commit's foreign-content refusal (ADR 0004) narrows
+    /// to the hunks the entry actually holds, an unstaged hunk being in
+    /// the worktree only.
+    ///
+    /// The mode hunk is never a member: it has its own index write and no
+    /// content, so it stays independently assignable (ADR 0017).
+    pub fn entry_unit(&self) -> impl Iterator<Item = &Hunk> {
+        self.hunks
+            .iter()
+            .filter(move |hunk| self.in_entry_unit(hunk))
+    }
+
+    /// Whether `hunk` belongs to this file's [`ChangedFile::entry_unit`] —
+    /// asked of a hunk the caller already has in hand, whether borrowed
+    /// from this file or cloned out of a snapshot of it. The membership
+    /// test itself, which `entry_unit` filters by.
+    pub fn in_entry_unit(&self, hunk: &Hunk) -> bool {
+        self.presents_whole_file_hunk() && !hunk.is_mode_change()
+    }
+
+    /// Who holds the content of the index entry behind
+    /// [`ChangedFile::entry_unit`] — the distinct owners of the unit's
+    /// hunks the index actually holds, sorted, `None` among them being
+    /// unassigned. Empty where the file presents no whole-file hunk, or
+    /// where the entry holds no delta at all.
+    ///
+    /// Unstaged hunks are left out: such a hunk is in the worktree alone,
+    /// so a commit of the entry neither carries it nor broadens it. More
+    /// than one holder is the state ADR 0009's unit prevents and ADR 0004's
+    /// commit refusal backstops — which is why the entry's shape is
+    /// answered here, beside the unit, and only the decision is the commit
+    /// planner's.
+    pub fn entry_holders(&self) -> Vec<Option<String>> {
+        let mut holders: Vec<Option<String>> = self
+            .entry_unit()
+            .filter(|hunk| hunk.stage != HunkStage::Unstaged)
+            .map(|hunk| hunk.changelist.clone())
+            .collect();
+        holders.sort();
+        holders.dedup();
+        holders
+    }
+
+    /// `requested` widened to whole index-entry units (ADR 0009): where
+    /// any requested hunk shares this file's entry, the unit's every hunk
+    /// joins the payload, in file order, with the rest of `requested`
+    /// after it. Otherwise `requested` passes through unchanged.
+    ///
+    /// Every assign scope funnels through this — core's
+    /// [`assign_hunks`] so no frontend can skip the rule, and the TUI's
+    /// popup so the payload it names is the payload that moves.
+    ///
+    /// [`assign_hunks`]: crate::Repo::assign_hunks
+    pub fn widen_to_entry_unit<'a>(
+        &'a self,
+        requested: impl IntoIterator<Item = &'a Hunk>,
+    ) -> Vec<&'a Hunk> {
+        let requested: Vec<&Hunk> = requested.into_iter().collect();
+        if !requested.iter().any(|hunk| self.in_entry_unit(hunk)) {
+            return requested;
+        }
+        let mut widened: Vec<&Hunk> = self.entry_unit().collect();
+        widened.extend(
+            requested
+                .into_iter()
+                .filter(|hunk| !self.in_entry_unit(hunk)),
+        );
+        widened
+    }
 }
 
 /// Per-file marker per ADR 0003 for an arbitrary hunk set: `●` all

@@ -1,12 +1,14 @@
 //! ADR 0004's temporary index: what a commit writes through it — the
 //! changelist's staged hunks and nothing else, live index and worktree
-//! untouched — what the hooks see of it, and the two ways it refuses:
-//! a rejecting hook and a refused apply.
+//! untouched — what the hooks see of it, and the three ways it refuses:
+//! a rejecting hook, a refused apply, and an index entry a second holder
+//! has content in (issue #106), which refuses before the temp index
+//! exists at all.
 
 use std::fs;
 
 use crate::support::RepoFixture;
-use gitchange_core::{CommitOptions, CommitOutcome, Error, HunkStage};
+use gitchange_core::{CommitOptions, CommitOutcome, Error, HunkStage, Repo};
 
 // Gated with its only user below, so Windows builds this file clean.
 #[cfg(unix)]
@@ -461,5 +463,258 @@ fn a_binary_worktree_over_staged_text_commits_the_staged_text() {
         std::fs::read(fixture.path().join("notes.txt")).unwrap(),
         vec![0u8, 1, 2, 3],
         "the worktree is untouched"
+    );
+}
+
+/// The #106 content shape with two holders in one index entry, built out
+/// of nothing but real ops: a staged text edit split between two holders
+/// *before* the worktree turns binary. The whole-file hunk then arrives at
+/// an entry ADR 0009's unit rule cannot unify — two owners are already
+/// established in it — and captures normally, which is the state ADR 0004's
+/// refusal exists to backstop. `second` is the other holder, `None` being
+/// unassigned, which counts as a holder like any changelist.
+///
+/// Returns the staged lines too: the live index must still hold them after
+/// a refusal.
+fn split_entry(second: Option<&str>) -> (RepoFixture, Repo, Vec<String>) {
+    let fixture = RepoFixture::new();
+    fixture
+        .write("notes.txt", &text(&numbered_lines(30)))
+        .commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("art").unwrap();
+    if let Some(name) = second {
+        repo.create_changelist(name).unwrap();
+    }
+    repo.switch(Some("art")).unwrap();
+    let mut lines = numbered_lines(30);
+    lines[4] = "five!".into();
+    lines[24] = "twentyfive!".into();
+    fixture.write("notes.txt", &text(&lines)).stage("notes.txt");
+    let snapshot = repo.refresh().unwrap();
+    let far = snapshot.files[0].hunks[1].clone();
+    // Capture-off before a release, or the uniform rule captures the
+    // released hunk straight back (ADR 0016).
+    if second.is_none() {
+        repo.switch(None).unwrap();
+    }
+    repo.assign_hunks("notes.txt", &[far], second).unwrap();
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(
+        owners(&snapshot, "notes.txt"),
+        vec![Some("art".to_owned()), second.map(str::to_owned)],
+        "precondition: two holders in the entry, before any binary appears"
+    );
+
+    // The worktree turns binary: one entry, a whole-file hunk over content
+    // two holders own.
+    fixture.write_bytes("notes.txt", &[0u8, 1, 2, 3]);
+    let snapshot = repo.refresh().unwrap();
+    assert!(
+        snapshot.files[0].hunks[0].is_whole_file(),
+        "the rewrite presents a whole-file hunk"
+    );
+    assert_eq!(
+        owners(&snapshot, "notes.txt")[1..],
+        [Some("art".to_owned()), second.map(str::to_owned)],
+        "precondition: the content hunks keep their two holders"
+    );
+    (fixture, repo, lines)
+}
+
+#[test]
+fn a_whole_file_payload_refuses_an_entry_a_second_changelist_holds_content_in() {
+    // ADR 0004's foreign-content refusal (issue #106): the entry commits
+    // whole, so committing either holder would carry the other's staged
+    // content. Both directions refuse, naming who else is in the entry, and
+    // the refusal precedes every write — no temp index, no commit, and the
+    // live index still holds what it held.
+    let (fixture, repo, lines) = split_entry(Some("other"));
+
+    for (committing, holder) in [(Some("art"), "other"), (Some("other"), "art")] {
+        let err = repo.commit_payload(committing).unwrap_err();
+        let Error::ForeignEntryContent { path, holders } = &err else {
+            panic!("expected a foreign-content refusal, got {err:?}");
+        };
+        assert_eq!(path, "notes.txt");
+        assert_eq!(*holders, vec![Some(holder.to_owned())]);
+        assert!(
+            err.to_string()
+                .contains(&format!("content held by '{holder}'")),
+            "the advisory names the other holder: {err}"
+        );
+
+        // The commit itself refuses the same way, before any temp-index
+        // work.
+        let err = repo
+            .commit(
+                committing,
+                "should not land",
+                &CommitOptions::default(),
+                None,
+            )
+            .unwrap_err();
+        assert!(matches!(err, Error::ForeignEntryContent { .. }), "{err:?}");
+    }
+
+    assert_eq!(fixture.commit_count(), 1, "nothing was committed");
+    assert_eq!(
+        fixture.state_dir_entries(),
+        vec!["state.json"],
+        "no temp index or message file was created"
+    );
+    assert_eq!(
+        fixture.index_content("notes.txt").unwrap(),
+        text(&lines),
+        "the live index is untouched"
+    );
+}
+
+#[test]
+fn unassigned_counts_as_a_holder_of_a_shared_index_entry() {
+    // Unassigned is a holder like any changelist (ADR 0004). The split is
+    // built under capture-off, where the unit rule claims nothing
+    // (ADR 0015): the whole-file hunk and the released content hunk are
+    // both unassigned, 'art' holds the other content hunk, and each side
+    // refuses on the other's content.
+    let (fixture, repo, _lines) = split_entry(None);
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(
+        owners(&snapshot, "notes.txt"),
+        vec![None, Some("art".to_owned()), None],
+        "capture-off leaves the newcomer unassigned, split and all"
+    );
+
+    let err = repo.commit_payload(Some("art")).unwrap_err();
+    assert!(
+        matches!(&err, Error::ForeignEntryContent { holders, .. } if *holders == vec![None]),
+        "{err:?}"
+    );
+    assert!(
+        err.to_string().contains("content held by unassigned"),
+        "the advisory names unassigned as the holder: {err}"
+    );
+
+    let err = repo.commit_payload(None).unwrap_err();
+    assert!(
+        matches!(&err, Error::ForeignEntryContent { holders, .. }
+            if *holders == vec![Some("art".to_owned())]),
+        "{err:?}"
+    );
+    assert_eq!(fixture.commit_count(), 1, "nothing was committed");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_mode_only_payload_commits_past_a_split_entry() {
+    // The carve-out that keeps the refusal from over-firing: a mode hunk
+    // holds no content and takes nothing out of the entry (ADR 0017), so
+    // the changelist owning it commits while the split below is still
+    // unresolved.
+    let (fixture, repo, lines) = split_entry(Some("other"));
+    repo.create_changelist("chores").unwrap();
+    repo.switch(Some("chores")).unwrap();
+    fixture.set_exec("notes.txt");
+    let snapshot = repo.refresh().unwrap();
+    let mode = snapshot.files[0].hunks[0].clone();
+    assert!(mode.is_mode_change(), "the mode hunk sits first");
+    assert_eq!(
+        owners(&snapshot, "notes.txt")[0],
+        Some("chores".to_owned()),
+        "the mode hunk captures to active: it is outside the entry's unit"
+    );
+    // Staged through its own hunk, which keeps the entry's staged blob.
+    repo.stage_hunk("notes.txt", &mode).unwrap();
+
+    commit(&repo, Some("chores"), "chores: make it executable");
+    assert_eq!(fixture.head_mode("notes.txt"), Some(0o100755));
+    assert_eq!(
+        fixture.head_bytes("notes.txt").unwrap(),
+        text(&numbered_lines(30)).into_bytes(),
+        "the mode hunk commits no content, split or not"
+    );
+    assert_eq!(
+        fixture.index_content("notes.txt").unwrap(),
+        text(&lines),
+        "the live index keeps the contested staged text"
+    );
+}
+
+#[test]
+fn assigning_the_unit_clears_a_refusal() {
+    // The advisory's instruction has to work: assigning the file's hunks to
+    // one changelist is a single op, because they assign as a unit
+    // (ADR 0009), and the entry then has one holder and commits. Without
+    // this the refusal would be a dead end.
+    let (fixture, repo, lines) = split_entry(Some("other"));
+    let snapshot = repo.refresh().unwrap();
+    let whole_file = snapshot.files[0].hunks[0].clone();
+    let outcome = repo
+        .assign_hunks("notes.txt", &[whole_file], Some("art"))
+        .unwrap();
+    assert_eq!(
+        outcome.echo.as_deref(),
+        Some("assigned 3 hunks — notes.txt → 'art'"),
+        "one op moves the whole entry, the other holder's hunk included"
+    );
+
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(
+        owners(&snapshot, "notes.txt"),
+        vec![Some("art".to_owned()); 3],
+        "one holder in the entry"
+    );
+    commit(&repo, Some("art"), "art: the staged text");
+    assert_eq!(
+        fixture.head_bytes("notes.txt").unwrap(),
+        text(&lines).into_bytes(),
+        "the entry commits whole, as ADR 0009 has it"
+    );
+}
+
+#[test]
+fn an_unstaged_hunk_of_a_shared_entry_refuses_nothing() {
+    // The refusal's other carve-out (ADR 0004): an unstaged hunk is in the
+    // worktree alone, so a commit of the entry neither carries it nor
+    // broadens it — and refusing over one would be a dead end with no
+    // cause. Here 'text' owns the worktree's edit while unassigned holds
+    // the staged binary the entry actually carries.
+    let fixture = RepoFixture::new();
+    fixture.write("notes.txt", "original\n").commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("text").unwrap();
+    repo.switch(Some("text")).unwrap();
+    fixture.write("notes.txt", "edited text\n");
+    repo.refresh().unwrap();
+
+    // Capture-off, so the whole-file hunk the staged rewrite adds stays
+    // unassigned instead of joining 'text' (ADR 0009): a split, but only
+    // across an unstaged hunk.
+    repo.switch(None).unwrap();
+    fixture
+        .write_bytes("notes.txt", &[0u8, 1, 2, 3])
+        .stage("notes.txt");
+    fixture.write("notes.txt", "edited text\n");
+    let snapshot = repo.refresh().unwrap();
+    assert_eq!(
+        owners(&snapshot, "notes.txt"),
+        vec![None, Some("text".to_owned())],
+    );
+    assert_eq!(
+        stages(&snapshot, "notes.txt")[1],
+        HunkStage::Unstaged,
+        "'text' owns a worktree-only hunk: nothing of it is in the entry"
+    );
+
+    commit(&repo, None, "the staged rewrite");
+    assert_eq!(
+        fixture.head_bytes("notes.txt").unwrap(),
+        vec![0u8, 1, 2, 3],
+        "the entry's one holder commits it"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.path().join("notes.txt")).unwrap(),
+        "edited text\n",
+        "the worktree, and 'text''s hunk with it, is untouched"
     );
 }

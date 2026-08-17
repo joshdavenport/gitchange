@@ -68,11 +68,21 @@ spanning the file, anchored by a blob-OID pair instead of verbatim
 lines. Follows normal assign rules; keeps membership by path continuity;
 `◐` unreachable, `◑` derives by OID and object-kind compare —
 permission bits belong to the mode hunk. Hunk-mode entry is a polite
-no-op where it is the file's only hunk. Assigns as one unit with any
-content hunks sharing its index entry — they move together and capture
-joins the unit's owner (ADR 0009); committing a leftover split refuses,
-naming the other holder (ADR 0004).
+no-op where it is the file's only hunk. Assigns as one index-entry unit
+with the content hunks sharing that entry (ADR 0009).
 _Avoid_: binary hunk, file-level membership (as a general mode)
+
+**Index-entry unit**:
+A whole-file hunk and the content hunks beside it, which assign as one
+unit because they share one index entry and a whole-file payload commits
+that entry whole (ADR 0009, issue #106). Membership ignores staging, and
+the mode hunk is never in it. A hunk landing in a unit that already has an
+owner joins that owner rather than the active changelist — capture
+redirected, never turned on, so capture-off still claims nothing. Its
+**holders** are the owners of the hunks the entry actually holds,
+unassigned counting as one; more than one holder is the split ADR 0004's
+commit refusal names and blocks.
+_Avoid_: entry group, binary unit, holder (of a hunk — a hunk has an owner)
 
 **Mode hunk**:
 The stand-alone hunk a mode delta (100644 ↔ 100755) presents — always,
