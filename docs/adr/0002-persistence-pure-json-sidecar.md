@@ -72,9 +72,10 @@ commit, rebase):
 - State is invisible to git tooling by design; introspection is `cat
   .git/gitchange/state.json` or a future `gitchange` subcommand, never
   `git cat-file`.
-- Concurrency is fail-fast, not queued: two writers (TUI + CLI) are
-  expected to be rare and human-driven; the second one reports the lock
-  and exits.
+- Concurrency is fail-fast, not queued: the lock primitive refuses
+  immediately, and a lock is never taken from a live holder. Frontends
+  may retry briefly on contention — the engine does — but no writer
+  waits in line.
 - The 14-day dormant prune bounds state-file growth; stashes older than
   that lose membership on pop — a visible failure (auto-capture to active
   + notification per ADR 0001), never a silent wrong-list assignment.
