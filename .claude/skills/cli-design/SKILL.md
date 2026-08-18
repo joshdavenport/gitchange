@@ -14,7 +14,10 @@ One item per session. Do not batch.
 
 ## 1. Pick the item
 
-Read the issue and its comments: `gh issue view 51`.
+Read the issue and its comments: `gh issue view 51`. Place the contents
+into `/tmp/issue-51.md`. This file will likely already exist. Delete if so.
+This file should be where dits are placed later, then using it place the changes
+back into the issue once ready.
 
 Don't read the issue comments (i.e. `gh issue view 51 --comments`) unless it is
 clear they are needed (information seems missing or the body describes
