@@ -75,9 +75,14 @@ dormancy — surface as advisories on its output, exactly once, because each
 decision became a record. The read-only form runs the same recompute —
 status, both diffs, matcher against the records as they stand — but
 decides nothing: it writes no records, stamps no baseline HEAD, and emits
-no advisories. Ownership in its snapshot is what the records say — a
-recordless hunk reports as unassigned, never as a preview of what a
-persisting refresh would capture.
+no advisories. Emitting none is a filter, not a vacancy: the recompute
+still produces advisories — revival, ambiguous overlap, and guard dormancy
+fire with capture off — and the read-only form discards them as previews
+of decisions only a persisting refresh commits and delivers; its return
+type carries no advisories, so no frontend can leak them. Ownership in its
+snapshot is what the records say: record-derived ownership (overlap
+inheritance, dormant revival) shows; context-derived ownership (capture,
+entry-unit join) never previews — a recordless hunk reports as unassigned.
 
 Who runs which: the engine's refreshes persist, as do the refreshes inside
 every mutating op (assign, stage, commit) — the op's receipt carries the
