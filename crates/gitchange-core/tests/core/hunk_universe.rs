@@ -3,7 +3,10 @@
 //! per-file ●◐○ derived — asserted through `Repo::refresh()` per ADR 0008.
 
 use crate::support::RepoFixture;
-use gitchange_core::{ChangeKind, FileStage, HunkIdentity, HunkStage, ModeDelta, Repo};
+use gitchange_core::{ChangeKind, FileStage, HunkIdentity, HunkStage, Repo};
+// Mode deltas only arise where the filesystem carries an exec bit.
+#[cfg(unix)]
+use gitchange_core::ModeDelta;
 
 /// Twenty numbered lines, with `edits` as (1-based line, replacement).
 fn numbered(edits: &[(usize, &str)]) -> String {

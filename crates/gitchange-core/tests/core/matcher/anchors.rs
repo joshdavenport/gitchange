@@ -363,6 +363,7 @@ fn a_mode_hunks_record_carries_no_content_and_no_mode_bits() {
 }
 
 /// A record's stored anchor lines, straight off the persisted shape.
+#[cfg(unix)]
 fn stored_anchor_lines(record: &serde_json::Value) -> Vec<String> {
     serde_json::from_value(record["anchor"].clone()).unwrap()
 }
