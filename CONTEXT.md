@@ -113,6 +113,18 @@ escalates in three steps: the selected hunk, a file's unassigned hunks,
 all of a file's hunks including those owned by other changelists.
 _Avoid_: move, add (git's `add` is staging), sort, tag
 
+**Foreign**:
+Belonging to a holder or actor other than the one in scope — an
+adjective, never a condition of its own. Foreign *content* is another
+holder's staged content sharing an index entry with a commit payload,
+which the commit refuses (ADR 0004); a foreign *head* is a HEAD that is
+not the named changelist's own recorded commit, the CLI amend guard's
+condition (#51); the diff view dims foreign hunks — hunks the viewed
+changelist does not own. One meaning across all three; coin no "foreign"
+for a condition that is not about another actor's work.
+_Avoid_: alien; external (an external op is one made outside gitchange,
+whoever made it — foreign is about who, not where)
+
 **Membership record**:
 The persisted claim that a changelist owns a hunk: file path, line
 coordinates, owning changelist, and a content anchor.
