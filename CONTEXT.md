@@ -301,8 +301,9 @@ _Avoid_: message, alert, log level (for severity)
 
 **Advisory**:
 Core's record of an automatic decision or fail-soft outcome worth
-spot-checking (`Advisory` in `matcher.rs`): auto-capture, ambiguous
-overlap, dormant revival, stale hunk, HEAD-move dormancy. Carried as data
+spot-checking (`Advisory` in `matcher.rs`): auto-capture, entry-unit
+capture, ambiguous overlap, dormant revival, stale hunk, HEAD-move
+dormancy. Carried as data
 on snapshots and op results with one canonical message
 (`Advisory::message`, ADR 0006); frontends add channel dressing and
 assign the severity — today every advisory logs at `!` notice, but the
