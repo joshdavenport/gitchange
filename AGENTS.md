@@ -2,7 +2,7 @@
 
 ### Issue tracker
 
-Issues live in this repo's GitHub Issues (`gh` CLI). The wayfinder map for the initial-implementation effort is [issue #20](https://github.com/joshdavenport/gitchange/issues/20). See `docs/agents/issue-tracker.md`.
+Issues live in this repo's GitHub Issues (`gh` CLI). See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
