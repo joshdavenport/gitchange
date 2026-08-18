@@ -21,10 +21,7 @@ clear they are needed (information seems missing or the body describes
 comments/discussion that needs referencing). There are long comments on the
 issue so loading all by default will bloat the session immediately.
 
-Take the first item, in this order of precedence:
-
-1. the first bullet under `## Open`
-2. the first bullet under `## Parity gaps`
+Take the first item from the `## Open` section.
 
 If the user named an item, take theirs instead. Say which item you took in one
 line, then start.
@@ -63,7 +60,7 @@ exactly — same sections, same order, same entry shape.
 - **Decisions** — add an entry only when the reasoning would otherwise be
   re-litigated: bold title, provenance, a short paragraph in present tense
   stating what is true.
-- **Open** and **Parity gaps** — delete the item you resolved. If the session
+- **Open** — delete the item you resolved. If the session
   opened a genuinely new question, add it as a new Open bullet; do not leave the
   old item behind as a hedge.
 
@@ -79,6 +76,6 @@ This skill does not build the subcommand. The clap tree stays untouched.
 
 ## Done when
 
-- The item is gone from Open / Parity gaps.
+- The item is gone from Open
 - Command reference states the verb, its flags, and their status.
 - The body layout is unchanged apart from those edits.
