@@ -186,6 +186,12 @@ tests plus one real smoke test:
 codes, `Engine::spawn`/`Repo::discover` wiring, spawning the real
 input-reader thread) and real terminal input/focus-event *capture*
 stay uncovered — they want a live terminal and a terminal emulator.
+*Amended (issue #110):* the order of that wiring needs no terminal.
+`run()` refuses a non-terminal invocation between `Repo::discover` and
+`Engine::spawn`, so the binary's CLI suite pins the sequence from a
+piped child — discovery's message wins outside a repository, and the
+refusal leaves no state file behind. Only the successful path through
+the glue still wants a live terminal.
 Every behavior behind that edge is covered from the seam inward;
 `FocusGained` *handling* is tested by injecting the event, only its
 delivery is not.

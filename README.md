@@ -17,7 +17,10 @@ and [docs/adr/](docs/adr/); agent-facing workflow docs in
   must resolve the per-worktree git dir, which 2.5 introduced. If you use
   `core.hooksPath`, your git is ≥ 2.9 by definition and hooks fire from the
   configured path.
-- A terminal. Linux, macOS, and Windows are all supported and CI-tested.
+- A terminal. Bare `gitchange` launches the TUI, so it needs a terminal on
+  both stdin and stdout; given a pipe or a file on either, it refuses with
+  exit `1` and points at `gitchange --help` for the command-line surface.
+  Linux, macOS, and Windows are all supported and CI-tested.
 
 ## Development
 

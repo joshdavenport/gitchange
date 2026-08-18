@@ -66,12 +66,16 @@ fn dirty_repo() -> tempfile::TempDir {
     dir
 }
 
+/// This worktree's state file, spelled once. Tests that seed it and
+/// tests that assert on it read the same path.
+fn state_path(dir: &Path) -> std::path::PathBuf {
+    dir.join(".git/gitchange/state.json")
+}
+
 /// Seed a state file directly (the CLI has no create subcommand by
 /// design — ticket 13 fixed the surface to `status` + `switch`). Doubles
 /// as a schema-v1 stability check: this JSON must stay readable.
 fn seed_state(dir: &Path, active: &str, names: &[&str]) {
-    let gitchange_dir = dir.join(".git/gitchange");
-    std::fs::create_dir_all(&gitchange_dir).unwrap();
     let changelists: Vec<String> = names
         .iter()
         .map(|name| format!("{{ \"name\": \"{name}\" }}"))
@@ -80,14 +84,14 @@ fn seed_state(dir: &Path, active: &str, names: &[&str]) {
         "{{ \"version\": 1, \"active\": \"{active}\", \"changelists\": [{}] }}\n",
         changelists.join(", ")
     );
-    std::fs::write(gitchange_dir.join("state.json"), json).unwrap();
+    seed_state_raw(dir, &json);
 }
 
 /// Seed a verbatim state file, for fixtures that need records.
 fn seed_state_raw(dir: &Path, json: &str) {
-    let gitchange_dir = dir.join(".git/gitchange");
-    std::fs::create_dir_all(&gitchange_dir).unwrap();
-    std::fs::write(gitchange_dir.join("state.json"), json).unwrap();
+    let path = state_path(dir);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, json).unwrap();
 }
 
 #[test]
@@ -415,10 +419,10 @@ fn unknown_subcommand_exits_2() {
 
 #[test]
 fn bare_invocation_outside_a_repo_exits_1() {
-    // Bare `gitchange` launches the TUI, which needs a terminal — the
-    // testable slice is the pre-terminal failure path: repository
-    // discovery fails loudly with an operational exit code. The
-    // launched TUI itself is smoke-tested in gitchange-tui.
+    // Discovery runs before the terminal guard (#110), so outside a
+    // repository this message wins over the refusal — the diagnostic
+    // names the condition the user can act on. The launched TUI itself
+    // is smoke-tested in gitchange-tui.
     let dir = tempfile::tempdir().unwrap();
     let output = gitchange(dir.path(), &[]);
 
@@ -427,5 +431,62 @@ fn bare_invocation_outside_a_repo_exits_1() {
     assert!(
         stderr.contains("not a git repository"),
         "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn bare_invocation_without_a_terminal_refuses_before_the_tui() {
+    // `Command::output()` gives the child pipes, not a terminal — the
+    // condition the terminal guard refuses on. Inside a repo, so
+    // discovery succeeds and the refusal is what speaks (#110).
+    let repo = dirty_repo();
+    let output = gitchange(repo.path(), &[]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        output.stdout,
+        Vec::<u8>::new(),
+        "a refusal renders nothing: not a frame, not an escape byte"
+    );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(
+        stderr,
+        "gitchange: the TUI needs a terminal on stdin and stdout; \
+         run 'gitchange --help' for the command-line surface\n"
+    );
+}
+
+#[test]
+fn the_terminal_refusal_decides_nothing() {
+    // The terminal guard runs before the Engine, so a refused run persists
+    // nothing (ADR 0005): no capture, no records, no baseline stamp.
+    // The fixture is the shape that would move most — a real changelist
+    // active over a dirty tree, so a single persisting refresh would
+    // claim both hunks and stamp the baseline.
+    let repo = dirty_repo();
+    seed_state(repo.path(), "feature", &["feature"]);
+    let state = state_path(repo.path());
+    let before = std::fs::read(&state).unwrap();
+
+    let output = gitchange(repo.path(), &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        std::fs::read(&state).unwrap(),
+        before,
+        "the refused run rewrote the state file"
+    );
+}
+
+#[test]
+fn the_terminal_refusal_writes_no_state_file() {
+    // The same property from the other side: a repo that has never run
+    // gitchange still has none after the refusal.
+    let repo = dirty_repo();
+    let output = gitchange(repo.path(), &[]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        !state_path(repo.path()).exists(),
+        "the refused run created a state file"
     );
 }

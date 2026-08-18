@@ -18,6 +18,7 @@ pub mod ui;
 #[cfg(test)]
 mod tests;
 
+use std::io::IsTerminal;
 use std::time::Instant;
 
 use crossbeam_channel::{Receiver, at, never, select, unbounded};
@@ -47,6 +48,14 @@ pub enum Error {
     Core(#[from] gitchange_core::Error),
     #[error("terminal error: {0}")]
     Terminal(#[from] std::io::Error),
+    /// The pre-flight guard's refusal: bare `gitchange` was run with a
+    /// pipe or file on stdin or stdout. The message is a decided string,
+    /// so it lives here rather than being assembled at the call site.
+    #[error(
+        "the TUI needs a terminal on stdin and stdout; \
+         run 'gitchange --help' for the command-line surface"
+    )]
+    NotATerminal,
     /// The Engine's event channel disconnected: its threads died.
     #[error("the refresh engine terminated unexpectedly")]
     EngineDied,
@@ -54,12 +63,27 @@ pub enum Error {
 
 /// Run the TUI until quit. The Engine's initial refresh arrives unasked,
 /// so the first snapshot needs no request.
+///
+/// Refuses with [`Error::NotATerminal`] when stdin or stdout is not a
+/// terminal — before the Engine is spawned, so nothing is decided and
+/// nothing is drawn.
 pub fn run() -> Result<(), Error> {
     let cwd = std::env::current_dir()?;
-    let engine = Engine::spawn(&cwd)?;
     // Sync mutations run on this handle, never the Engine's (its Repo
-    // belongs to the refresh thread).
+    // belongs to the refresh thread). Discovery comes first so that
+    // outside a repository the diagnostic stays `not a git repository`
+    // rather than the terminal refusal below.
     let repo = Repo::discover(&cwd)?;
+    // Pre-flight: refuse a non-terminal invocation before the Engine is
+    // spawned (#110). Engine refreshes persist (ADR 0005), so a refusal
+    // that ran one would have decided something on its way out —
+    // capture, record writes, a baseline stamp. Refusing on *stdout*
+    // too is deliberate: a TUI drawn into a pipe is useless, and the
+    // CLI named in the message is the answer for both.
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        return Err(Error::NotATerminal);
+    }
+    let engine = Engine::spawn(&cwd)?;
     // Static context, read once off the sync handle — workdir is
     // process-constant, so it is not the snapshot channel's to carry.
     let repo_name = repo
@@ -70,7 +94,22 @@ pub fn run() -> Result<(), Error> {
         })
         .unwrap_or_else(|| "repository".to_owned());
 
-    let mut terminal = ratatui::init();
+    // The fallible initialiser, not `ratatui::init()`: that one panics,
+    // which would exit `101` and break the 0/1/2 contract. The guard
+    // above covers the common case; this closes the residual one, where
+    // both streams are terminals and setup still fails.
+    let mut terminal = match ratatui::try_init() {
+        Ok(terminal) => terminal,
+        // Setup is several steps, so a failure can land with raw mode
+        // already on and no terminal to turn it off. `init()`'s panic
+        // hook used to undo that; the error path has to undo it here or
+        // the refusal hands back a wrecked shell. `restore` reports its
+        // own failure and returns — it is not the panicking one.
+        Err(err) => {
+            ratatui::restore();
+            return Err(err.into());
+        }
+    };
     let _ = execute!(std::io::stdout(), EnableFocusChange);
     // No kitty keyboard-protocol push: nothing in the keymap depends on a
     // modifier only that protocol reports (ADR 0013), so the flags would
