@@ -310,6 +310,15 @@ severity is the presentation layer's, which is why the type is not named
 after one. "Notice" is the severity level only.
 _Avoid_: notice (the type — that's a severity), warning
 
+**Receipt**:
+A mutating CLI command's one-time output: the op's echo on stdout, each
+advisory as a `notice:` line on stderr (#51). The sole delivery of the
+decisions the op's persisting refresh made — nothing replays a discarded
+receipt; the records keep the facts, the receipt carries the narrative.
+Not a parsing contract: agents act on exit codes and re-read state
+through the JSON reads.
+_Avoid_: response, report, output (for this surface)
+
 **Condition**:
 A state that currently holds (watcher degraded, git operation in
 progress, detached HEAD), surfaced as a pin at the top of the Log panel.
