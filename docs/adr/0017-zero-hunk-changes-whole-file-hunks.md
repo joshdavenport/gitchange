@@ -75,7 +75,15 @@ bugs about it.
   re-flip at the same path revives a dormant record — intended: same
   predicament, same home.
 - Records carry no mode bits. Mode is snapshot data, present for display
-  and stage derivation only.
+  and stage derivation only. *Amended (issue #112):* the snapshot carrier
+  is the degenerate hunk, not the file. The mode hunk carries its
+  permission flip's `before → after`; the whole-file hunk carries the
+  type delta when the change is a type change, and no delta otherwise.
+  The file carries no mode-delta slot — the two diffs share HEAD's mode
+  but not their changed side's, so one file-level slot cannot carry both
+  sides' deltas when they diverge in flavour (a staged chmod beside a
+  worktree type-swap, or the mirror). The delta sits outside the hunk's
+  identity, so record matching and hunk IDs stay mode-free.
 
 ## Presentation
 
