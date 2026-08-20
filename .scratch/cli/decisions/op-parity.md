@@ -1,0 +1,1 @@
+Every core op the TUI can invoke has a CLI form. The design challenge is always addressing — how the CLI names a hunk, a changelist, a scope — never whether the op is exposed. Interaction patterns are exempt: the TUI's three-step scope escalation is ergonomics, not an op. The CLI's native form for a scope is an explicit set of arguments, so escalation needs no CLI mirror.

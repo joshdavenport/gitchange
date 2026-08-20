@@ -1,0 +1,1 @@
+A path holding hunks owned by another changelist refuses, naming the owner; **unassigned** hunks are not owned. Polarity follows the loud-CLI rule: an opt-in guard (`--no-clobber`) is one forgotten argument from silent cross-contamination, so the guard is default-on and the _override_ is the named flag, `--take-owned`.

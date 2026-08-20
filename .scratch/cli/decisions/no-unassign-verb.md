@@ -1,0 +1,1 @@
+**Unassigned** is a pseudo-changelist, so assigning to it is an ordinary assignment, not an inverse operation. One verb, one code path. `unassigned` being a reserved name means `--to unassigned` can never collide with a real changelist.

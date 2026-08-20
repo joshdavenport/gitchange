@@ -1,0 +1,1 @@
+`status` stays file/changelist-shaped; hunk content and hunk IDs are `diff`'s job. Both take `--json`. Familiarity is the principle: an agent wouldn't run `git status` to inspect its changes' content, so gitchange shouldn't teach that leap either.

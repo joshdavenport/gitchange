@@ -1,0 +1,1 @@
+`add` collides head-on with `git add`: same shell, same repo, same path argument, different operation — gitchange's staging is a separate op. `move` implies a source the operation has never had (core sets an owner; it takes no source argument). `assign` matches the language already emitted in notices (`assigned to active changelist`).
