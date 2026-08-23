@@ -4,7 +4,7 @@ Governed by CONTEXT.md's Conventions: _where a gitchange concept has a git analo
 
 One section per command. The synopsis line is the grammar; each element below it carries a status. The clap tree in `crates/gitchange/src/main.rs` is the source of truth for what is built — markers here record status as of the last edit.
 
-Legend: **[built]** shipped · **[reserved]** decided, not built
+Legend: **[built]** shipped · **[reserved]** decided and settled, not yet built. `reserved` is an artefact of the #51 process (built/open/reserved) — no open items remain, so every non-built element here is decided. Do not carry the word `reserved` into ground truth, specs, or tickets; state built vs. to-build plainly.
 
 Global flags precede the subcommand and bind to every command, bare invocation included; clap marks them `global`, so each command's `--help` lists them and each synopsis below writes them in position:
 
