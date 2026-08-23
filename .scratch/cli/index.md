@@ -44,3 +44,13 @@ Each synopsis line carries the command's type: _read-only_ runs a read-only refr
 ## Agent skill
 
 [The skill and the escalation ladder](12-skill.md)
+
+### Audited, not gaps
+
+- Reorder does not exist anywhere (user order is creation-append order — no parity debt until an op ships);
+- discard/restore-worktree,
+- undo,
+- conflict resolution,
+- dormant-record inspection
+
+These exist in neither frontend (dormant visibility is a `status --json` candidate, not parity). Reverse parity: `--unassign` is reserved here while the TUI's assign popup could not target unassigned — resolved by #94.
