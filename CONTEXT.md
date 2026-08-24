@@ -181,8 +181,10 @@ _Avoid_: stored OID, HEAD anchor, snapshot commit
 
 **State file**:
 The single JSON sidecar (`$GIT_DIR/gitchange/state.json`, per-worktree)
-holding changelists, the active marker, and membership records. Plain text,
-atomic rename, lockfile-guarded, schema-versioned. Strictly local.
+holding changelists, the active marker, membership records, and the last
+gitchange commit record (`{ oid, changelist }`, the amend guard's
+reference — ADR 0004). Plain text, atomic rename, lockfile-guarded,
+schema-versioned. Strictly local.
 _Avoid_: database, metadata store
 
 **Staging set**:

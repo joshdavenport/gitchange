@@ -80,13 +80,41 @@ is exactly the other changelists' staged hunks, so derived staged state
   with no remaining owned hunks leave their lists naturally.
 - **An emptied changelist is kept** until explicitly deleted — deletion
   stays a deliberate act; no post-commit dialog.
+- **Every commit records itself as the last gitchange commit** —
+  `{ oid, changelist }` in the state file (core work, still to build).
+  This is the reference the CLI amend guard checks (§Amend); an amend
+  re-records it, and renaming the changelist rewrites its name in the
+  record.
 
 ## Amend
 
 **In for v0.1.** Same temp-index path with `--amend`: message reused for
-editing, hooks run, `--no-verify` applies, identical guards and
-bookkeeping. Rewriting pushed commits is standard git territory, not ours
-to guard. Keybinding/UI is ticket 10's.
+editing, hooks run, `--no-verify` applies, the same guards and
+bookkeeping — plus one guard and one refusal of amend's own:
+
+- **The attribution guard (CLI only).** The temp index builds on HEAD's
+  tree, so amending while HEAD is another actor's changelist commit
+  folds the payload into their commit — the cross-contamination ADR
+  0015's loud-CLI rule exists to prevent — and commits carry no
+  provenance to check. So the CLI's `--amend` refuses unless HEAD is
+  the named changelist's own recorded gitchange commit (§Aftermath's
+  record); `--allow-foreign-head` is the named override (**foreign**
+  per CONTEXT.md: another actor's, not the scoped owner's). An amend
+  re-records, so amend-after-amend passes; no record yet refuses. The
+  guard fires exactly on the hazard — another actor's commit, an
+  external commit, no record — and the happy path (commit, notice a
+  miss, amend) is unguarded. The guard is the CLI's, not core's: a
+  policy guard against agent misfire, the same CLI-stricter-than-TUI
+  split as the CLI's commit-unassigned refusal — the TUI stays
+  gate-free, one human's stated intent. Pushed commits stay unguarded:
+  rewriting them is standard git territory, not ours to guard.
+- **Reword stays git's job.** gitchange's commit filters a payload
+  through the temp index, and a reword has no payload to filter —
+  wrapping `git commit --amend` would be git re-implementation, not
+  parity. An empty payload under `--amend` refuses, naming
+  `add <changelist>` and raw `git commit --amend` as the resolutions.
+
+Keybinding/UI is ticket 10's.
 
 ## Considered options
 
@@ -117,6 +145,10 @@ to guard. Keybinding/UI is ticket 10's.
   auto-delete silently loses the name and forces the active marker to move;
   a prompt adds a dialog to a flow that already carries message entry and
   possible `◑` confirmation.
+- **A categorical amend gate (every CLI `--amend` needs the flag)** —
+  rejected: it fires on the legitimate commit-notice-a-miss-amend loop
+  too and teaches reflexive overrides; the recorded commit lets the
+  guard fire exactly on the hazard.
 
 ## Consequences
 
