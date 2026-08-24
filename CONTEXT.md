@@ -20,7 +20,9 @@ for a CLI surface is always addressing — how it names a hunk, a
 changelist, a scope — never whether the op is exposed. Interaction
 patterns are exempt: the TUI's three-step scope escalation is
 ergonomics, not an op, and the CLI's native form for a scope is an
-explicit set of arguments.
+explicit set of arguments. Parity is measured against core's ops, not
+TUI reachability: a frontend may exceed the other's reach where core
+already makes the write — parity forbids gaps, never surplus.
 
 ## Language
 
