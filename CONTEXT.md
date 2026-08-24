@@ -9,7 +9,18 @@ changelists that can be staged and committed independently.
 Where a gitchange concept has a git analog, borrow git's vocabulary for
 what users type — commands, flags, args (e.g. `switch` sets the active
 changelist, as `git switch` sets the current branch). Governs naming only;
-internals like exit-code schemes follow their own conventions.
+internals like exit-code schemes follow their own conventions. Short
+flags follow the borrow: a flag whose git spelling has a short takes it
+wholesale with the borrowed grammar; a short for a gitchange-native flag
+must earn its place through user demand or observed agent mistakes.
+
+**Op parity**:
+Every core op the TUI can invoke has a CLI form; the design question
+for a CLI surface is always addressing — how it names a hunk, a
+changelist, a scope — never whether the op is exposed. Interaction
+patterns are exempt: the TUI's three-step scope escalation is
+ergonomics, not an op, and the CLI's native form for a scope is an
+explicit set of arguments.
 
 ## Language
 
@@ -144,7 +155,9 @@ distinct), printed with an `h` prefix so it reads as neither a commit
 nor a blob OID. An address, not identity: identity
 stays with membership records and matching (ADR 0001), so an ID from an
 aged snapshot fails loud as not-found. Identical hunks in a file share a
-base ID, told apart by an ordinal suffix (`/0`, `/1`).
+base ID, told apart by an ordinal suffix (`/0`, `/1`). Composed with its
+path as `<path>:<id>[/<n>]` — the address every hunk-addressing verb
+speaks.
 _Avoid_: hunk hash (that names the anchor mistake), hunk ref, durable ID
 
 **Drift**:
@@ -331,6 +344,14 @@ receipt; the records keep the facts, the receipt carries the narrative.
 Not a parsing contract: agents act on exit codes and re-read state
 through the JSON reads.
 _Avoid_: response, report, output (for this surface)
+
+**Escalation ladder**:
+The agent workflow spine: `assign <path> --to <changelist>` → refusal
+names the owner → retry with `--containing <line>` → refusal lists
+candidate hunk IDs or names the owner → scoped `diff --json`, or
+escalate to the human. Each refusal's text is the instruction for the
+next rung; the happy path is one command and zero reads.
+_Avoid_: retry loop, fallback chain, error recovery
 
 **Condition**:
 A state that currently holds (watcher degraded, git operation in
