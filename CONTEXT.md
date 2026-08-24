@@ -225,7 +225,9 @@ hunk-granular at every scope — anything `○` or `◑` stages, and only a
 fully `●` selection unstages. gitchange has no
 whole-file stage: `git add` is that op, and is absorbed at refresh. `all`
 is a view, so it is not a staging target.
-_Avoid_: stage key and unstage key (as two actions), whole-file stage
+_Avoid_: stage key and unstage key (as two TUI keys — a presentation
+rule about keybindings, not ops; the CLI's explicit-direction `add` and
+`unstage` verbs are separate ops by design), whole-file stage
 
 **Staged-stale**:
 Per-hunk state `◑`: the index holds an overlapping-but-different version of
