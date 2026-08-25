@@ -16,6 +16,7 @@ use std::path::{Component, Path, PathBuf};
 
 use gitchange_core::{
     ChangeKind, ChangedFile, Hunk, HunkId, Snapshot, UNASSIGNED, conflicted_hint, holder_label,
+    target_named,
 };
 
 /// One resolved `<path>[:<hunk-id>]` argument: the path in the spelling
@@ -357,6 +358,29 @@ pub fn locate_paths<'a>(
         }
     }
     (resolved, offenders)
+}
+
+/// The changelist a token names as core takes it (`None` is unassigned),
+/// or the gh-shaped refusal an unrecognised name earns
+/// ([`changelist_scopes`]).
+///
+/// Shared by every verb that takes a changelist, so what counts as
+/// recognised and what a typo costs are one answer everywhere. What `all`
+/// means, and what a refusal teaches beyond the candidates, stays each
+/// verb's own — those differ by verb, where this does not.
+pub fn recognised<'a>(name: &'a str, snapshot: &Snapshot) -> Result<Option<&'a str>, String> {
+    let known = name == UNASSIGNED
+        || snapshot
+            .changelists
+            .iter()
+            .any(|changelist| changelist.name == name);
+    match known {
+        true => Ok(target_named(name)),
+        false => Err(format!(
+            "no changelist named '{name}' — {}",
+            changelist_scopes(snapshot)
+        )),
+    }
 }
 
 /// The gh-borrowed error shape (#122): an unrecognised changelist refuses

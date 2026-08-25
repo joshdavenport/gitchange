@@ -33,9 +33,7 @@
 
 use std::path::Path;
 
-use gitchange_core::{
-    AssignTarget, ChangedFile, Hunk, Snapshot, UNASSIGNED, holder_label, target_named,
-};
+use gitchange_core::{AssignTarget, ChangedFile, Hunk, Snapshot, holder_label};
 
 use crate::AssignScope;
 use crate::scope;
@@ -322,18 +320,7 @@ fn target_of<'a>(args: &'a AssignScope, snapshot: &Snapshot) -> Result<Option<&'
         );
         return Ok(None);
     };
-    let known = name == UNASSIGNED
-        || snapshot
-            .changelists
-            .iter()
-            .any(|changelist| changelist.name == name);
-    match known {
-        true => Ok(target_named(name)),
-        false => Err(format!(
-            "no changelist named '{name}' — {}",
-            scope::changelist_scopes(snapshot)
-        )),
-    }
+    scope::recognised(name, snapshot)
 }
 
 /// Whether this path may be swept into `target`, or the refusal it earns.

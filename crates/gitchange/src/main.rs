@@ -7,12 +7,14 @@ use clap::builder::NonEmptyStringValueParser;
 use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand};
 
 use gitchange_core::{
-    Advisory, ChangedFile, Deletion, GroupKind, HunkContent, LockHolder, OpOutcome, Release, Repo,
-    Snapshot, SweepOutcome, diff_envelope, status_envelope, target_line, target_named,
+    Advisory, ChangedFile, CommitOptions, Deletion, GroupKind, HunkContent, LockHolder, OpOutcome,
+    Release, Repo, Snapshot, SweepOutcome, diff_envelope, status_envelope, target_line,
+    target_named,
 };
 
 mod assign;
 mod changelist;
+mod commit;
 mod diff;
 mod scope;
 mod staging;
@@ -168,43 +170,9 @@ enum Command {
         scope: StagingScope,
     },
     /// Commit a changelist's staged hunks, each guard's override named
-    // There is no editor, so no default message source exists: exactly
-    // one of `-m`, `-F`, `--no-edit` is required.
-    #[command(group(ArgGroup::new("message_source").required(true)))]
     Commit {
-        /// The changelist whose staged hunks form the commit payload
-        #[arg(value_name = "changelist")]
-        changelist: String,
-        /// The commit message; repeatable, as git's
-        #[arg(
-            short,
-            long,
-            value_name = "message",
-            allow_hyphen_values = true,
-            group = "message_source"
-        )]
-        message: Vec<String>,
-        /// Read the commit message from this file (`-` for stdin)
-        #[arg(short = 'F', long, value_name = "file", group = "message_source")]
-        file: Option<String>,
-        /// Keep the message being amended (amend only)
-        #[arg(long, group = "message_source", requires = "amend")]
-        no_edit: bool,
-        /// Amend the changelist's own last commit
-        #[arg(long)]
-        amend: bool,
-        /// Bypass the pre-commit and commit-msg hooks
-        #[arg(short = 'n', long)]
-        no_verify: bool,
-        /// Commit even while unassigned hunks are staged
-        #[arg(long)]
-        allow_unassigned: bool,
-        /// Commit even while staged-stale hunks are in the payload
-        #[arg(long)]
-        allow_staged_stale: bool,
-        /// Amend even though HEAD is not the changelist's own last commit
-        #[arg(long)]
-        allow_foreign_head: bool,
+        #[command(flatten)]
+        args: CommitArgs,
     },
     /// Show a changelist's hunks, annotated with owner and hunk ID — the
     /// patch git cannot print
@@ -267,6 +235,48 @@ struct AssignScope {
     /// Release the hunks to unassigned
     #[arg(long, group = "target")]
     unassign: bool,
+}
+
+/// `commit`'s grammar (#140): the target, the message sources, and the
+/// three named overrides. There is no editor, so no default message
+/// source exists — exactly one of `-m`, `-F`, `--no-edit` is required,
+/// which clap raises as exit 2 for none and for two alike.
+#[derive(Args)]
+#[command(group(ArgGroup::new("message_source").required(true)))]
+struct CommitArgs {
+    /// The changelist whose staged hunks form the commit payload
+    #[arg(value_name = "changelist")]
+    changelist: String,
+    /// The commit message; repeatable, as git's
+    #[arg(
+        short,
+        long,
+        value_name = "message",
+        allow_hyphen_values = true,
+        group = "message_source"
+    )]
+    message: Vec<String>,
+    /// Read the commit message from this file (`-` for stdin)
+    #[arg(short = 'F', long, value_name = "file", group = "message_source")]
+    file: Option<String>,
+    /// Keep the message being amended (amend only)
+    #[arg(long, group = "message_source", requires = "amend")]
+    no_edit: bool,
+    /// Amend the changelist's own last commit
+    #[arg(long)]
+    amend: bool,
+    /// Bypass the pre-commit and commit-msg hooks
+    #[arg(short = 'n', long)]
+    no_verify: bool,
+    /// Commit even while unassigned hunks are staged
+    #[arg(long)]
+    allow_unassigned: bool,
+    /// Commit even while staged-stale hunks are in the payload
+    #[arg(long)]
+    allow_staged_stale: bool,
+    /// Amend even though HEAD is not the changelist's own last commit
+    #[arg(long)]
+    allow_foreign_head: bool,
 }
 
 /// `add`'s grammar, which `unstage` carries verbatim: one symmetric
@@ -391,7 +401,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Some(Command::Assign { scope }) => with_lock_retry(|| assign(&scope)),
         Some(Command::Add { scope }) => with_lock_retry(|| staging(Staging::Add, &scope)),
         Some(Command::Unstage { scope }) => with_lock_retry(|| staging(Staging::Unstage, &scope)),
-        Some(Command::Commit { .. }) => not_implemented("commit"),
+        // Its own retry, narrower than the whole command: see `commit`.
+        Some(Command::Commit { args }) => commit(&args),
         // A read, like `status`: no lock, so no contention to absorb.
         Some(Command::Diff {
             scope,
@@ -433,7 +444,7 @@ fn enter(dir: &Path) -> anyhow::Result<()> {
 /// decides, so no class short-circuits: a live holder that dies mid-budget
 /// leaves the stale lock the dead refusal names, and a stale lock someone
 /// clears mid-budget lets the retry through.
-fn with_lock_retry(op: impl Fn() -> anyhow::Result<()>) -> anyhow::Result<()> {
+fn with_lock_retry<T>(op: impl Fn() -> anyhow::Result<T>) -> anyhow::Result<T> {
     let started = Instant::now();
     loop {
         let result = op();
@@ -767,6 +778,72 @@ fn assign(scope: &AssignScope) -> anyhow::Result<()> {
         )?,
         assignment.past_tense(),
     )
+}
+
+/// `commit <changelist>` (#151): the changelist's staged hunks as index
+/// content, filtered through ADR 0004's temp index and committed by a
+/// native `git commit` — so hooks run against the commit's true content,
+/// and the live index is never touched.
+///
+/// One persisting refresh per invocation, and everything downstream reads
+/// its snapshot: the target validation, every guard, and the payload that
+/// ships. Deferred capture therefore feeds the op's own scope (#122) —
+/// `switch fix-login` → edit → raw `git add` → `commit fix-login` commits
+/// the hunks that refresh just captured — and a refusal is a complete
+/// instruction about one state of the repo.
+///
+/// **No drift guard** by decision: drift re-confirmation guarantees a
+/// dialog's promise, and a one-shot command has no prior glance to
+/// guarantee — the synchronous refresh inside the command *is* the
+/// snapshot.
+///
+/// The retry is narrower than every other mutating verb's (#122): commit
+/// takes the state lock twice — once for the refresh's own persist, once
+/// for the aftermath — and [`with_lock_retry`] is only safe over a
+/// command whose writes sit under one take. So the refresh is retried,
+/// and the commit that follows runs once: replaying it would replay a
+/// commit that already exists.
+fn commit(args: &CommitArgs) -> anyhow::Result<()> {
+    // Interim (#170): `--amend` is this batch's third ticket (#171),
+    // which deletes this. Ahead of the repository, so the unbuilt mode
+    // refuses exactly as the skeleton's stubs do (#140).
+    if args.amend {
+        return not_implemented("commit --amend");
+    }
+    let repo = open_repo()?;
+    let refreshed = with_lock_retry(|| Ok(repo.commit_refresh()?))?;
+    // Delivered before anything can refuse, and so exactly once: the
+    // capture is already written, and a guard's refusal must not swallow
+    // the decisions this invocation made on the way to it.
+    print_notices(&refreshed.advisories);
+    // Target validation precedes the whole stack, so an invalid target is
+    // answered as one even mid-merge.
+    let target = commit::target(&args.changelist, &refreshed.snapshot)?;
+    // Rung 1, the operation guard: this commit would conclude that
+    // operation with one changelist's payload (ADR 0007). Read off the
+    // snapshot, which is what puts it ahead of rung 2 — core raises that
+    // one deriving the payload — and core enforces this one again at the
+    // commit itself.
+    if let Some(operation) = refreshed.snapshot.operation {
+        anyhow::bail!(operation.in_progress_message());
+    }
+    // Rung 2, foreign content: core's refusal already names every holder
+    // and the one-op resolution (ADR 0004), so it needs no dressing here.
+    let prepared = repo.prepare_commit(&refreshed, target)?;
+    // Rungs 4 to 6, the CLI's own.
+    if let Some(refusal) = commit::refuse(&prepared, args) {
+        anyhow::bail!(refusal);
+    }
+    let message = commit::message(args)?;
+    receipt(repo.commit_prepared(
+        &prepared,
+        message.source(),
+        &CommitOptions {
+            no_verify: args.no_verify,
+            amend: args.amend,
+        },
+    )?);
+    Ok(())
 }
 
 /// The worktree every path argument resolves against. A bare repository —

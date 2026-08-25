@@ -12,7 +12,7 @@ use crate::error::Error;
 use crate::matcher::anchor_lines;
 use crate::state::{MembershipRecord, RecordAnchors, RecordIdentity, State};
 use crate::universe::{ChangedFile, Hunk, HunkStage, ranges_overlap};
-use crate::vocabulary::{UNASSIGNED, count_noun};
+use crate::vocabulary::{UNASSIGNED, count_noun, holder_label};
 
 /// Flags for [`crate::Repo::commit`], both forwarded to the underlying
 /// `git commit` (ADR 0004).
@@ -85,13 +85,30 @@ pub fn commit_echo(
         echo.push(' ');
         echo.push_str(NO_EDIT_FLAG);
     }
-    let hunks = payload.staged_hunks() + payload.stale_hunks();
     echo.push_str(&format!(
         " (temp index — '{}', {})",
         changelist.unwrap_or(UNASSIGNED),
-        count_noun(hunks, "hunk"),
+        count_noun(payload.hunk_count(), "hunk"),
     ));
     echo
+}
+
+/// One commit's receipt line (#122): the handle the op minted, the scope
+/// it committed, and how much went. Composed in core like every other
+/// echo (ADR 0006), so a frontend prints the sentence rather than
+/// inventing one.
+///
+/// Distinct from [`commit_echo`], which reports the *command git ran* for
+/// the Log's transparency line; this reports the commit that resulted, and
+/// only where one did. It names the *short* id because that is the handle
+/// a caller pastes back into git — the full oid is what the state file
+/// records, and no reader needs both.
+pub fn committed_echo(short_id: &str, changelist: Option<&str>, payload: &CommitPayload) -> String {
+    format!(
+        "committed {short_id} — {}, {}",
+        holder_label(changelist),
+        count_noun(payload.hunk_count(), "hunk"),
+    )
 }
 
 /// What [`crate::Repo::commit`] produced.
@@ -140,6 +157,13 @@ impl CommitPayload {
     /// warn-and-confirm count (ADR 0004).
     pub fn stale_hunks(&self) -> usize {
         self.files.iter().map(|file| file.stale_hunks).sum()
+    }
+
+    /// Every hunk the commit would carry — what the echoes count. `●` and
+    /// `◑` alike, since both ship: the split is the guards' business, not
+    /// the receipt's.
+    pub fn hunk_count(&self) -> usize {
+        self.staged_hunks() + self.stale_hunks()
     }
 }
 
@@ -191,11 +215,13 @@ pub struct PayloadHunk {
 
 /// Everything `commit()` needs: the inspectable payload plus the
 /// per-path aftermath bookkeeping.
+#[derive(Debug)]
 pub(crate) struct CommitPlan {
     pub payload: CommitPayload,
     pub paths: Vec<PathPlan>,
 }
 
+#[derive(Debug)]
 pub(crate) struct PathPlan {
     pub path: String,
     /// Headers of the committed diff(HEAD↔index) hunks; empty for a
@@ -216,6 +242,7 @@ pub(crate) struct PathPlan {
 /// A record's identity as the pre-commit refresh persisted it: fresh
 /// live records mirror universe hunks exactly, so coordinates plus
 /// anchor pin one record.
+#[derive(Debug)]
 pub(crate) struct RecordKey {
     old_start: u32,
     old_lines: u32,
@@ -239,6 +266,7 @@ impl RecordKey {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct Retained {
     pub key: RecordKey,
     /// Where the committed content lands in the new HEAD (old-side

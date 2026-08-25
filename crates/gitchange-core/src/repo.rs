@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::backend::{CommitPathSpec, GitBackend};
+use crate::backend::{CommitPathSpec, CommittedId, GitBackend};
 use crate::commit::{self, CommitMessage, CommitOptions, CommitOutcome, CommitPayload};
 use crate::diff::{ChangeKind, FileDiff};
 use crate::error::Error;
@@ -93,6 +93,61 @@ impl SweepOutcome {
 pub struct RefreshOutcome {
     pub snapshot: Snapshot,
     pub advisories: Vec<Advisory>,
+}
+
+/// One commit's own persisting refresh ([`Repo::commit_refresh`]): the
+/// snapshot, the decisions it made, and the diff(HEAD↔index) the payload
+/// is derived from — one instant, held so a frontend can ask several
+/// questions of it without refreshing again.
+///
+/// The index diff is private: it is raw material for
+/// [`Repo::prepare_commit`], not a fact about the repo a frontend has any
+/// business reading (ADR 0006).
+#[derive(Debug)]
+pub struct CommitRefresh {
+    pub snapshot: Snapshot,
+    pub advisories: Vec<Advisory>,
+    index: Vec<FileDiff>,
+}
+
+/// A commit derived and not yet made ([`Repo::prepare_commit`]): the
+/// payload, the aftermath bookkeeping that ships with it, and the
+/// staged-stale hunks a frontend's own guard may want to name.
+///
+/// Everything but the payload is opaque — what a frontend decides about a
+/// commit, it decides from the payload and the snapshot it came out of.
+#[derive(Debug)]
+pub struct PreparedCommit {
+    /// What this commit would carry, per file.
+    pub payload: CommitPayload,
+    /// The changelist it was derived for, carried rather than re-passed
+    /// so no caller can commit one scope's payload under another's name.
+    changelist: Option<String>,
+    paths: Vec<commit::PathPlan>,
+    stale: Vec<String>,
+}
+
+impl PreparedCommit {
+    /// The changelist this commit was derived for (`None` is
+    /// unassigned) — what a frontend's own rungs name in their refusals,
+    /// read back here rather than carried alongside, so a guard cannot
+    /// come to speak for a scope other than the one that would commit.
+    pub fn changelist(&self) -> Option<&str> {
+        self.changelist.as_deref()
+    }
+
+    /// The payload's staged-stale (`◑`) hunks — content the index holds
+    /// an overlapping-but-different version of — each as the composed
+    /// address (#122) a refusal names and a caller pastes back, in
+    /// payload order. Empty is a payload that ships exactly what the
+    /// worktree shows.
+    ///
+    /// The condition the TUI warns and confirms on and the CLI refuses
+    /// (ADR 0015): the split is the frontends', so core reports the
+    /// hunks and decides nothing.
+    pub fn stale_addresses(&self) -> &[String] {
+        &self.stale
+    }
 }
 
 /// A repository's changelist set on its own: the names in user order
@@ -498,23 +553,81 @@ impl Repo {
     /// flow shows and what [`Repo::commit`] later compares against for
     /// drift (ADR 0004's freshness guard).
     pub fn commit_payload(&self, changelist: Option<&str>) -> Result<CommitPayload, Error> {
-        let (refreshed, index_diff) = self.refresh_capturing_index()?;
-        let snapshot = refreshed.snapshot;
-        validate_changelist(&snapshot, changelist)?;
-        Ok(commit::plan(&snapshot.files, &index_diff, changelist)?.payload)
+        let refreshed = self.commit_refresh()?;
+        Ok(self.prepare_commit(&refreshed, changelist)?.payload)
     }
 
-    /// Commit `changelist`'s staged hunks (ADR 0004): a temporary index
-    /// built as HEAD's tree plus only this payload, committed via a
-    /// native `git commit` so hooks run — the live index and worktree
-    /// are never touched, and any failure changes nothing. On success,
-    /// one locked state update runs the ADR 0012 aftermath: consumed
-    /// records removed, retained `◑` records rewritten against the new
-    /// HEAD, surviving same-file records commuted, the new baseline
-    /// HEAD stamped so the external-move guard never arms for an own
-    /// commit, and the commit recorded as the last one gitchange made
-    /// (ADR 0004 §Aftermath). A full refresh should follow; this method
-    /// leaves the state file consistent for it.
+    /// Commit's own persisting refresh (ADR 0005's persisting set): the
+    /// snapshot a commit is derived from and validated against, the
+    /// decisions that refresh made for its caller to deliver once, and —
+    /// held privately — the diff(HEAD↔index) the payload comes out of,
+    /// captured at the same instant so payload and snapshot describe one
+    /// moment.
+    ///
+    /// Split from [`Repo::prepare_commit`] so that one invocation runs
+    /// one refresh however many questions its frontend asks: the CLI's
+    /// guard stack (#151) reads this snapshot, delivers these advisories
+    /// before anything can refuse, and commits what the same instant
+    /// derived — where a stack built on [`Repo::commit_payload`] would
+    /// refresh once per question.
+    pub fn commit_refresh(&self) -> Result<CommitRefresh, Error> {
+        let (refreshed, index) = self.refresh_capturing_index()?;
+        Ok(CommitRefresh {
+            snapshot: refreshed.snapshot,
+            advisories: refreshed.advisories,
+            index,
+        })
+    }
+
+    /// The payload `changelist` (`None` = unassigned) would commit out of
+    /// `refreshed`, with the aftermath bookkeeping that ships with it —
+    /// everything [`Repo::commit_prepared`] needs, and nothing written
+    /// yet.
+    ///
+    /// Refuses for an unrecognised changelist, and for ADR 0004's
+    /// foreign-content condition — both before any temp-index work
+    /// exists to abandon.
+    pub fn prepare_commit(
+        &self,
+        refreshed: &CommitRefresh,
+        changelist: Option<&str>,
+    ) -> Result<PreparedCommit, Error> {
+        validate_changelist(&refreshed.snapshot, changelist)?;
+        let plan = commit::plan(&refreshed.snapshot.files, &refreshed.index, changelist)?;
+        Ok(PreparedCommit {
+            stale: stale_addresses(&refreshed.snapshot, &plan.payload, changelist),
+            changelist: changelist.map(str::to_owned),
+            payload: plan.payload,
+            paths: plan.paths,
+        })
+    }
+
+    /// Commit what [`Repo::prepare_commit`] derived (ADR 0004): a
+    /// temporary index built as HEAD's tree plus only this payload,
+    /// committed via a native `git commit` so hooks run — the live index
+    /// and worktree are never touched, and any failure changes nothing.
+    /// The receipt is core's echo naming the commit git made (ADR 0006);
+    /// the refresh's own advisories are the caller's to have delivered.
+    ///
+    /// A full refresh should follow; this leaves the state file
+    /// consistent for it.
+    pub fn commit_prepared(
+        &self,
+        prepared: &PreparedCommit,
+        message: CommitMessage<'_>,
+        options: &CommitOptions,
+    ) -> Result<OpOutcome, Error> {
+        let committed = self.execute_commit(prepared, message, options)?;
+        Ok(OpOutcome::applied(commit::committed_echo(
+            &committed.short_id,
+            prepared.changelist.as_deref(),
+            &prepared.payload,
+        )))
+    }
+
+    /// Commit `changelist`'s staged hunks behind a synchronous refresh —
+    /// the whole cycle in one call, for the frontend that confirms a
+    /// payload rather than guarding one.
     ///
     /// `expected` is a payload from [`Repo::commit_payload`]: when the
     /// synchronous refresh finds the live payload differs, nothing is
@@ -527,30 +640,58 @@ impl Repo {
         options: &CommitOptions,
         expected: Option<&CommitPayload>,
     ) -> Result<CommitOutcome, Error> {
-        // The operation guard (ADR 0007), ahead of everything: git
-        // honours MERGE_HEAD & co. even under GIT_INDEX_FILE, so this
-        // commit would conclude the operation with one changelist's
-        // payload. Checked in core, not just the TUI — every frontend
-        // gets the guard.
-        if let Some(operation) = self.backend.operation()? {
-            return Err(Error::OperationInProgress { operation });
-        }
-        let (refreshed, index_diff) = self.refresh_capturing_index()?;
-        let snapshot = refreshed.snapshot;
-        validate_changelist(&snapshot, changelist)?;
-        let plan = commit::plan(&snapshot.files, &index_diff, changelist)?;
-        if plan.payload.is_empty() {
+        // The operation guard (ADR 0007), ahead of everything — ahead of
+        // the refresh too, which is what this entry point has that the
+        // prepared path cannot: a caller guarding a payload has already
+        // refreshed to see one.
+        self.refuse_mid_operation()?;
+        let refreshed = self.commit_refresh()?;
+        let prepared = self.prepare_commit(&refreshed, changelist)?;
+        // Ahead of the drift comparison rather than left to
+        // `execute_commit`, which checks it too: an empty payload is
+        // nothing to commit, not a confirmation gone stale, and it should
+        // say so even where a confirmed payload no longer matches.
+        if prepared.payload.is_empty() {
             return Err(Error::NothingStaged);
         }
         if let Some(expected) = expected
-            && *expected != plan.payload
+            && *expected != prepared.payload
         {
             return Ok(CommitOutcome::Drifted {
-                payload: plan.payload,
+                payload: prepared.payload,
             });
         }
+        let committed = self.execute_commit(&prepared, message, options)?;
+        Ok(CommitOutcome::Committed {
+            oid: committed.oid,
+            short_id: committed.short_id,
+        })
+    }
 
-        let specs: Vec<CommitPathSpec> = plan
+    /// The temp-index commit and the locked aftermath, shared by the two
+    /// public entry points so neither can come to bookkeep differently.
+    ///
+    /// On success one locked state update runs the ADR 0012 aftermath:
+    /// consumed records removed, retained `◑` records rewritten against
+    /// the new HEAD, surviving same-file records commuted, the new
+    /// baseline HEAD stamped so the external-move guard never arms for an
+    /// own commit, and the commit recorded as the last one gitchange made
+    /// (ADR 0004 §Aftermath).
+    fn execute_commit(
+        &self,
+        prepared: &PreparedCommit,
+        message: CommitMessage<'_>,
+        options: &CommitOptions,
+    ) -> Result<CommittedId, Error> {
+        // Both guards again at the last moment: this is where the commit
+        // becomes irreversible, and a public prepared path means the
+        // caller's own stack is not the only thing standing between an
+        // in-progress operation — or an empty payload — and git.
+        self.refuse_mid_operation()?;
+        if prepared.payload.is_empty() {
+            return Err(Error::NothingStaged);
+        }
+        let specs: Vec<CommitPathSpec> = prepared
             .paths
             .iter()
             .map(|path| CommitPathSpec {
@@ -573,7 +714,7 @@ impl Repo {
         // and the aftermath it feeds; the hold stays short (one diff).
         let residual = self.backend.diffs()?.worktree;
         let mut state = state_file::load(&dir)?;
-        commit::apply_aftermath(&mut state, &plan.paths, &residual);
+        commit::apply_aftermath(&mut state, &prepared.paths, &residual);
         state.baseline_head = Some(committed.oid.clone());
         state.prune_records_of_unknown_changelists();
         // Every commit records itself (ADR 0004 §Aftermath), which is why
@@ -581,12 +722,20 @@ impl Repo {
         // records to commute, but the amend that may follow still needs
         // the record to tell this commit from another actor's — so a
         // state file grows here, holding nothing it was not asked to hold.
-        state.record_commit(&committed.oid, changelist);
+        state.record_commit(&committed.oid, prepared.changelist.as_deref());
         state_file::save(&dir, &state)?;
-        Ok(CommitOutcome::Committed {
-            oid: committed.oid,
-            short_id: committed.short_id,
-        })
+        Ok(committed)
+    }
+
+    /// The operation guard (ADR 0007): git honours `MERGE_HEAD` & co.
+    /// even under `GIT_INDEX_FILE`, so a commit made now would conclude
+    /// that operation with one changelist's payload. Enforced in core, so
+    /// every frontend has it whatever its own stack says.
+    fn refuse_mid_operation(&self) -> Result<(), Error> {
+        match self.backend.operation()? {
+            Some(operation) => Err(Error::OperationInProgress { operation }),
+            None => Ok(()),
+        }
     }
 
     /// The bulk align op (ADR 0004): set index := worktree for each of
@@ -1539,6 +1688,37 @@ impl Tally {
         }
         self.advisories.extend(outcome.advisories);
     }
+}
+
+/// The payload's staged-stale hunks as composed addresses, in payload
+/// order — [`PreparedCommit::stale_addresses`]'s content, minted here
+/// while the snapshot the payload came out of is still in hand.
+///
+/// Read off the snapshot rather than carried out of the plan because an
+/// address is a fact about the file's whole hunk list (the ID's ordinal
+/// disambiguates among identical hunks, ADR 0011), which the plan's
+/// per-path selection no longer has. Payload files with no `◑` are
+/// skipped, so the common case walks nothing.
+fn stale_addresses(
+    snapshot: &Snapshot,
+    payload: &CommitPayload,
+    changelist: Option<&str>,
+) -> Vec<String> {
+    let mut addresses = Vec::new();
+    for file in &payload.files {
+        if file.stale_hunks == 0 {
+            continue;
+        }
+        let Some(changed) = snapshot.files.iter().find(|it| it.path == file.path) else {
+            continue;
+        };
+        for (hunk, address) in changed.hunks.iter().zip(changed.hunk_addresses()) {
+            if hunk.owned_by(changelist) && hunk.stage == HunkStage::StagedStale {
+                addresses.push(address.abbreviated_at(&changed.path));
+            }
+        }
+    }
+    addresses
 }
 
 /// A named changelist must exist to be committed or aligned; `None`

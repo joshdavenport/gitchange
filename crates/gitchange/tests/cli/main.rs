@@ -27,6 +27,7 @@ mod support;
 mod add;
 mod assign;
 mod changelist;
+mod commit;
 mod diff;
 mod grammar;
 mod invocation;

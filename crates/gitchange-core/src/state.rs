@@ -96,6 +96,7 @@ pub(crate) enum RecordIdentity<'a> {
 /// direction infers a flavour from a field being empty.
 ///
 /// [`Hunk::record_anchors`]: crate::universe::Hunk::record_anchors
+#[derive(Debug)]
 pub(crate) struct RecordAnchors {
     pub anchor: Vec<String>,
     pub oid_anchor: Option<OidAnchor>,

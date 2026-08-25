@@ -18,9 +18,7 @@
 
 use std::path::Path;
 
-use gitchange_core::{
-    ALL, ChangedFile, Hunk, Snapshot, StagingTarget, UNASSIGNED, holder_label, target_named,
-};
+use gitchange_core::{ALL, ChangedFile, Hunk, Snapshot, StagingTarget, UNASSIGNED, holder_label};
 
 use crate::StagingScope;
 use crate::scope;
@@ -244,19 +242,12 @@ fn changelist_scope<'a>(
             teach: None,
         });
     }
-    let known = name == UNASSIGNED
-        || snapshot
-            .changelists
-            .iter()
-            .any(|changelist| changelist.name == name);
-    if known {
-        return Ok(target_named(name));
-    }
+    let offender = match scope::recognised(name, snapshot) {
+        Ok(target) => return Ok(target),
+        Err(offender) => offender,
+    };
     Err(BadScope {
-        offender: format!(
-            "no changelist named '{name}' — {}",
-            scope::changelist_scopes(snapshot)
-        ),
+        offender,
         teach: scope::names_a_path(name, snapshot, workdir).then(|| {
             format!(
                 "'{verb}' names the changelist first: 'gitchange {verb} <changelist> \

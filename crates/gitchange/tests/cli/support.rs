@@ -35,13 +35,21 @@ pub fn gitchange(dir: &Path, args: &[&str]) -> Output {
 /// `gitchange-test-support` — these fixtures stay on the git CLI so git2
 /// is no direct dependency of this crate (ADR 0006).
 pub fn git_command(dir: &Path) -> Command {
-    let absent = dir.join(".git/absent-config");
+    let absent = absent_config(dir);
     let mut command = Command::new("git");
     command
         .current_dir(dir)
         .env("GIT_CONFIG_GLOBAL", &absent)
         .env("GIT_CONFIG_SYSTEM", &absent);
     command
+}
+
+/// A path no config file lives at, which git reads as empty config — the
+/// cut-out above, named here because `commit`'s tests apply the same one
+/// to the binary itself, whose child `git commit` would otherwise read
+/// the host's.
+pub fn absent_config(dir: &Path) -> std::path::PathBuf {
+    dir.join(".git/absent-config")
 }
 
 /// A git command that must succeed, its trimmed stdout.
