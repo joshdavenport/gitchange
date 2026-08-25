@@ -404,27 +404,36 @@ fn normalize(path: &Path) -> PathBuf {
     normalized
 }
 
-/// `path` with its longest existing ancestor canonicalized and everything
-/// below that left exactly as it arrived.
+/// `path` with its longest resolvable ancestor canonicalized and whatever
+/// hangs below it left exactly as it arrived.
 ///
-/// The tail stays lexical for [`normalize`]'s reason — a deleted file has
-/// no on-disk path to canonicalize — and the last component is never
-/// canonicalized even when it does exist, so a symlink named as an argument
-/// still resolves to the link's own repo-relative path rather than to
-/// wherever it points.
+/// What cannot be resolved stays lexical, for [`normalize`]'s reason: a
+/// deleted file has no on-disk path to canonicalize, and it is still a path
+/// of this worktree. A symlink is left as typed too — resolving one would
+/// send an argument naming a link inside the worktree off to wherever it
+/// points, and the link is the path the caller named.
 fn canonical_ancestor(path: &Path) -> PathBuf {
     let mut tail: Vec<&OsStr> = Vec::new();
     let mut current = path;
-    while let (Some(parent), Some(name)) = (current.parent(), current.file_name()) {
-        tail.push(name);
-        current = parent;
-        if let Ok(canonical) = current.canonicalize() {
+    loop {
+        if !is_symlink(current)
+            && let Ok(canonical) = current.canonicalize()
+        {
             let mut resolved = canonical;
             resolved.extend(tail.iter().rev());
             return resolved;
         }
+        let (Some(parent), Some(name)) = (current.parent(), current.file_name()) else {
+            return path.to_owned();
+        };
+        tail.push(name);
+        current = parent;
     }
-    path.to_owned()
+}
+
+fn is_symlink(path: &Path) -> bool {
+    path.symlink_metadata()
+        .is_ok_and(|meta| meta.file_type().is_symlink())
 }
 
 /// `absolute` as the repo-relative, `/`-separated path every gitchange
@@ -433,9 +442,14 @@ fn canonical_ancestor(path: &Path) -> PathBuf {
 /// Both sides are canonicalized before they are compared (#181), because
 /// they reach here from different sources and the same directory can carry
 /// two spellings: the argument side is built on the cwd the process was
-/// launched with, and `workdir` is libgit2's. A lexical `strip_prefix`
-/// across that divergence reads every path inside the worktree as an
-/// escape.
+/// launched with, and `workdir` is libgit2's. The divergence CI confirmed
+/// is Windows 8.3 short names — the cwd arrived as
+/// `C:\Users\RUNNER~1\AppData\Local\Temp\…` where libgit2 gave
+/// `C:/Users/runneradmin/AppData/Local/Temp/…` — one aliased component of
+/// the same directory, which a lexical `strip_prefix` cannot see through.
+/// (The separators differ too, harmlessly: Windows `Path` reads `/` and
+/// `\` alike.) The result was that every path inside the worktree read as
+/// an escape.
 ///
 /// Canonicalized at the comparison rather than held in both spellings the
 /// way core's watcher self-loop filter holds its roots: that filter answers
