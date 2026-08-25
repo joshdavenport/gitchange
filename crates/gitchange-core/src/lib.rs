@@ -4,6 +4,7 @@ mod diff;
 mod engine;
 mod error;
 mod git2_backend;
+mod hunk_id;
 mod matcher;
 mod repo;
 mod snapshot;
@@ -23,6 +24,7 @@ pub use diff::{
 };
 pub use engine::{Condition, Engine, EngineEvent};
 pub use error::{ApplySite, Error, LockHolder};
+pub use hunk_id::{HunkAddress, HunkId};
 pub use matcher::Advisory;
 pub use repo::{OpOutcome, RefreshOutcome, Repo};
 pub use snapshot::{CommitInfo, FileGroup, GitOperation, GroupKind, Head, Snapshot};

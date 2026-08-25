@@ -49,6 +49,21 @@ fn diff_file(envelope: &Value, path: &str) -> Value {
         .clone()
 }
 
+/// `file` with every hunk's `id` removed, for literal comparisons of the
+/// rest: the ID is a hash no literal should pin, so its shape is asserted
+/// on its own (`every_hunk_object_carries_its_id_with_the_sigil_and_its_offset`)
+/// and here only its presence is.
+fn sans_hunk_ids(mut file: Value) -> Value {
+    for hunk in file["hunks"].as_array_mut().expect("the hunks array") {
+        let id = hunk.as_object_mut().expect("a hunk object").remove("id");
+        assert!(
+            id.is_some_and(|id| id.is_string()),
+            "every hunk carries an id"
+        );
+    }
+    file
+}
+
 /// The group labels an envelope carries, in serialised order: a
 /// changelist by name, the two derived groups by their `kind`.
 fn group_order(envelope: &Value) -> Vec<String> {
@@ -96,6 +111,20 @@ fn long_file(first: &str, last: &str) -> String {
     lines[0] = format!("{first}\n");
     lines[11] = format!("{last}\n");
     lines.concat()
+}
+
+/// A binary rewritten and chmod'd in the worktree: the one file that
+/// presents both degenerate hunk kinds, a mode hunk beside a whole-file
+/// hunk (ADR 0017).
+#[cfg(unix)]
+fn chmodded_binary() -> RepoFixture {
+    let fixture = RepoFixture::new();
+    fixture
+        .write_bytes("blob.bin", &[0u8, 1, 2, 3])
+        .commit_all("init")
+        .write_bytes("blob.bin", &[0u8, 9, 9, 9, 9])
+        .set_exec("blob.bin");
+    fixture
 }
 
 /// A repo mid-merge with `a.txt` quarantined (ADR 0007) — the `conflicts`
@@ -370,7 +399,7 @@ fn a_text_hunk_carries_its_coordinates_and_verbatim_lines() {
     let snapshot = repo.read_only_refresh().unwrap();
 
     assert_eq!(
-        diff_file(&diff_of(&snapshot), "a.txt"),
+        sans_hunk_ids(diff_file(&diff_of(&snapshot), "a.txt")),
         json!({
             "path": "a.txt",
             "change_kind": "modified",
@@ -378,6 +407,7 @@ fn a_text_hunk_carries_its_coordinates_and_verbatim_lines() {
             "sides": null,
             "hunks": [{
                 "kind": "text",
+                "offset": null,
                 "changelist": null,
                 "stage": "unstaged",
                 "index_only": false,
@@ -394,6 +424,74 @@ fn a_text_hunk_carries_its_coordinates_and_verbatim_lines() {
             }],
         })
     );
+}
+
+#[test]
+fn every_hunk_object_carries_its_id_with_the_sigil_and_its_offset() {
+    // The address travels on the wire with its `h` sigil — agents copy
+    // IDs out of JSON, so the anti-misread device belongs here (#122) —
+    // and `offset` is non-null exactly when the base ID is shared
+    // (#155). Two identical hunks beside a unique one show both arms in
+    // one file.
+    let block = "alpha\nbeta\ngamma\ndelta\nepsilon\nzeta\neta\n";
+    let fixture = RepoFixture::new();
+    fixture
+        .write("a.txt", &block.repeat(3))
+        .write("b.txt", "one\n")
+        .commit_all("init")
+        .write(
+            "a.txt",
+            &[
+                block.replace("delta", "DELTA"),
+                block.to_owned(),
+                block.replace("delta", "DELTA"),
+            ]
+            .concat(),
+        )
+        .write("b.txt", "edited\n");
+    let repo = Repo::discover(fixture.path()).unwrap();
+
+    let snapshot = repo.read_only_refresh().unwrap();
+    let envelope = diff_of(&snapshot);
+
+    let twins = diff_file(&envelope, "a.txt")["hunks"].clone();
+    let id = twins[0]["id"].as_str().expect("id is a string");
+    assert!(id.starts_with('h'), "the sigil travels: {id}");
+    assert_eq!(
+        twins[1]["id"], twins[0]["id"],
+        "identical hunks share the base ID"
+    );
+    assert_eq!(twins[0]["offset"], json!(0));
+    assert_eq!(twins[1]["offset"], json!(1));
+
+    let unique = &diff_file(&envelope, "b.txt")["hunks"][0];
+    assert_eq!(unique["offset"], json!(null), "{unique}");
+    assert!(
+        unique.get("offset").is_some(),
+        "null is spelled, never omitted: {unique}"
+    );
+    assert_ne!(unique["id"], twins[0]["id"]);
+}
+
+#[test]
+#[cfg(unix)]
+fn the_degenerate_hunk_kinds_carry_id_and_offset_too() {
+    // The address fields are common to every hunk flavour, not the text
+    // hunk's alone — the two degenerate kinds in one file show both.
+    let fixture = chmodded_binary();
+    let repo = Repo::discover(fixture.path()).unwrap();
+
+    let snapshot = repo.read_only_refresh().unwrap();
+    let hunks = diff_file(&diff_of(&snapshot), "blob.bin")["hunks"].clone();
+
+    for (hunk, kind) in [(&hunks[0], "mode"), (&hunks[1], "whole_file")] {
+        assert_eq!(hunk["kind"], json!(kind));
+        assert!(
+            hunk["id"].as_str().is_some_and(|id| id.starts_with('h')),
+            "{hunk}"
+        );
+        assert_eq!(hunk["offset"], json!(null), "{hunk}");
+    }
 }
 
 #[test]
@@ -448,7 +546,7 @@ fn a_changed_binary_carries_its_sides_and_no_lines() {
     let repo = Repo::discover(fixture.path()).unwrap();
 
     let snapshot = repo.read_only_refresh().unwrap();
-    let file = diff_file(&diff_of(&snapshot), "blob.bin");
+    let file = sans_hunk_ids(diff_file(&diff_of(&snapshot), "blob.bin"));
 
     assert_eq!(file["binary"], json!(true));
     assert_eq!(file["sides"]["head"]["size"], json!(4));
@@ -463,6 +561,7 @@ fn a_changed_binary_carries_its_sides_and_no_lines() {
         file["hunks"],
         json!([{
             "kind": "whole_file",
+            "offset": null,
             "changelist": null,
             "stage": "unstaged",
             "index_only": false,
@@ -477,12 +576,7 @@ fn a_changed_binary_carries_its_sides_and_no_lines() {
 fn a_chmod_serialises_as_a_mode_hunk_carrying_the_flip() {
     // Mode facts are hunk-attributed (#112), and the mode hunk sits
     // first — git's pseudo-hunk #0 position (ADR 0017).
-    let fixture = RepoFixture::new();
-    fixture
-        .write_bytes("blob.bin", &[0u8, 1, 2, 3])
-        .commit_all("init")
-        .write_bytes("blob.bin", &[0u8, 9, 9, 9, 9])
-        .set_exec("blob.bin");
+    let fixture = chmodded_binary();
     let repo = Repo::discover(fixture.path()).unwrap();
 
     let snapshot = repo.read_only_refresh().unwrap();

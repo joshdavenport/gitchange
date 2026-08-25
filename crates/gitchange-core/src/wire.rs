@@ -17,6 +17,7 @@
 use serde::Serialize;
 
 use crate::diff::{ChangeKind, FileSides, HunkLine, ModeDelta, SideInfo};
+use crate::hunk_id::HunkAddress;
 use crate::snapshot::{FileGroup, GitOperation, GroupKind, Head, Snapshot};
 use crate::universe::{ChangedFile, FileStage, Hunk, HunkIdentity, HunkStage};
 
@@ -239,10 +240,13 @@ impl<'a> From<&'a ChangedFile> for DiffFileWire<'a> {
             change_kind: file.kind.into(),
             binary: file.binary,
             sides: file.sides.as_ref().map(SidesWire::from),
+            // Addresses are minted per file: the ordinal that tells
+            // identical hunks apart is a fact about the whole file.
             hunks: file
                 .hunks
                 .iter()
-                .map(|hunk| HunkWire::of(file, hunk))
+                .zip(file.hunk_addresses())
+                .map(|(hunk, address)| HunkWire::of(file, hunk, address))
                 .collect(),
         }
     }
@@ -318,8 +322,8 @@ impl<'a> HunkWire<'a> {
     /// data (#112), and which delta a hunk owns follows from its flavour:
     /// the permission flip is the mode hunk's, the type delta the
     /// whole-file hunk's (ADR 0017).
-    fn of(file: &'a ChangedFile, hunk: &'a Hunk) -> Self {
-        let common = HunkCommonWire::from(hunk);
+    fn of(file: &'a ChangedFile, hunk: &'a Hunk, address: HunkAddress) -> Self {
+        let common = HunkCommonWire::of(hunk, address);
         match &hunk.identity {
             HunkIdentity::Text { lines } => HunkWire::Text {
                 common,
@@ -355,6 +359,15 @@ fn mode_delta_of(
 /// the document reads as one object per hunk.
 #[derive(Serialize)]
 struct HunkCommonWire<'a> {
+    /// The hunk's ID with its `h` sigil and all 64 hex digits
+    /// (`CONTEXT.md` §Hunk ID). The sigil travels: agents copy addresses
+    /// out of this document, so the anti-misread device belongs on it
+    /// (#122). Text faces abbreviate; the wire never does.
+    id: String,
+    /// The file-order ordinal among hunks sharing `id`, `null` for a
+    /// unique hunk — non-`null` exactly when the composed address needs
+    /// its `/<n>`.
+    offset: Option<usize>,
     /// Owning changelist, `null` for unassigned.
     changelist: Option<&'a str>,
     stage: HunkStageWire,
@@ -363,9 +376,11 @@ struct HunkCommonWire<'a> {
     index_only: bool,
 }
 
-impl<'a> From<&'a Hunk> for HunkCommonWire<'a> {
-    fn from(hunk: &'a Hunk) -> Self {
+impl<'a> HunkCommonWire<'a> {
+    fn of(hunk: &'a Hunk, address: HunkAddress) -> Self {
         Self {
+            id: address.id.to_string(),
+            offset: address.offset,
             changelist: hunk.changelist.as_deref(),
             stage: hunk.stage.into(),
             index_only: hunk.index_only,

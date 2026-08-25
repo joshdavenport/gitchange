@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::convert;
 
 use crate::diff::{ChangeKind, DiffHunk, FileDiff, FileSides, HunkLine, ModeDelta, RepoDiffs};
+use crate::hunk_id::{self, HunkAddress};
 use crate::state::{OidAnchor, RecordAnchors};
 use crate::vocabulary;
 
@@ -93,6 +94,16 @@ impl ChangedFile {
     /// file-level surfaces (Diff title, CLI file list) show.
     pub fn stage(&self) -> FileStage {
         file_stage(&self.hunks)
+    }
+
+    /// Every hunk's address (`CONTEXT.md` §Hunk ID), aligned with
+    /// [`ChangedFile::hunks`]: the ID hashed from this path and the hunk's
+    /// content anchor, plus the file-order ordinal where identical hunks
+    /// share one. Minted together because the ordinal is a file-level
+    /// fact; minted on demand because the address is a pure function of
+    /// what this file already holds (see [`HunkAddress`]).
+    pub fn hunk_addresses(&self) -> Vec<HunkAddress> {
+        hunk_id::mint_addresses(self)
     }
 
     /// This file's hunks owned by `owner` ([`Hunk::owned_by`]), in file

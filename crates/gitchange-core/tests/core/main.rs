@@ -11,6 +11,7 @@
 //! | `refresh`           | `discover`/`refresh()`, `Snapshot`'s head and log     |
 //! | `read_only_refresh` | the read form: writes nothing, decides nothing        |
 //! | `hunk_universe`     | the HEAD↔worktree ∪ HEAD↔index union, ○●◑ derivation  |
+//! | `hunk_id`           | the hunk address: the hash, the `h` sigil, ordinals  |
 //! | `matcher`           | membership records, assignment rules, dormancy        |
 //! | `assign`            | explicit `Repo::assign_hunks` re-anchoring            |
 //! | `changelists`       | changelist sync ops and state-file persistence        |
@@ -38,6 +39,7 @@ mod commit;
 mod conflicts;
 mod engine;
 mod head_moves;
+mod hunk_id;
 mod hunk_universe;
 mod lockfile;
 mod matcher;
