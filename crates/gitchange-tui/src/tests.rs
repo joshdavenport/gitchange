@@ -201,7 +201,7 @@ fn a_hard_op_failure_takes_the_error_modal_and_logs_at_error() {
 fn a_fail_soft_op_logs_its_advisories_at_notice_with_no_echo() {
     let (fixture, repo) = repo_with_commit();
     fixture.write("a.txt", "line 1\nedited\nline 3\n");
-    let stale = repo.refresh().unwrap().files[0].hunks[0].clone();
+    let stale = repo.refresh().unwrap().snapshot.files[0].hunks[0].clone();
     // The hunk leaves the universe before the op lands, so nothing
     // applies and the whole outcome is one advisory.
     fixture.write("a.txt", "line 1\nline 2\nline 3\n");
@@ -232,10 +232,13 @@ fn n_creates_a_changelist_and_switches_to_it() {
     run_op(&repo, &mut app, Op::CreateChangelist { name: "wip".into() });
 
     assert!(app.error_modal.is_none());
-    assert_eq!(repo.refresh().unwrap().active.as_deref(), Some("wip"));
+    assert_eq!(
+        repo.refresh().unwrap().snapshot.active.as_deref(),
+        Some("wip")
+    );
 
     fixture.write("a.txt", "line 1\nedited\nline 3\n");
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(
         snapshot.files[0].hunks[0].changelist.as_deref(),
         Some("wip")
@@ -253,9 +256,9 @@ fn s_on_the_unassigned_row_switches_capture_off() {
     run_op(&repo, &mut app, Op::SetActive { changelist: None });
 
     assert!(app.error_modal.is_none());
-    assert_eq!(repo.refresh().unwrap().active, None);
+    assert_eq!(repo.refresh().unwrap().snapshot.active, None);
     fixture.write("a.txt", "line 1\nedited\nline 3\n");
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(
         snapshot.files[0].hunks[0].changelist, None,
         "capture is off: the edit stays unassigned"
@@ -267,7 +270,7 @@ fn assign_treats_an_existing_target_as_a_valid_target_rather_than_a_create_failu
     let (fixture, repo) = repo_with_commit();
     fixture.write("a.txt", "line 1\nedited\nline 3\n");
     repo.create_changelist("wip").unwrap();
-    let hunks = repo.refresh().unwrap().files[0].hunks.clone();
+    let hunks = repo.refresh().unwrap().snapshot.files[0].hunks.clone();
     let mut app = App::new("repo");
 
     run_op(
@@ -282,7 +285,7 @@ fn assign_treats_an_existing_target_as_a_valid_target_rather_than_a_create_failu
 
     assert!(app.error_modal.is_none(), "the assign is not stranded");
     assert_eq!(entries(&app, Severity::Info).len(), 1, "the assign echoed");
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(
         snapshot.files[0].hunks[0].changelist.as_deref(),
         Some("wip")
@@ -298,7 +301,7 @@ fn assign_to_unassigned_releases_the_hunks_records() {
     repo.create_changelist("wip").unwrap();
     repo.switch(Some("wip")).unwrap();
     fixture.write("a.txt", "line 1\nedited\nline 3\n");
-    let hunks = repo.refresh().unwrap().files[0].hunks.clone();
+    let hunks = repo.refresh().unwrap().snapshot.files[0].hunks.clone();
     assert_eq!(hunks[0].changelist.as_deref(), Some("wip"), "captured");
     repo.switch(None).unwrap();
     let mut app = App::new("repo");
@@ -319,7 +322,7 @@ fn assign_to_unassigned_releases_the_hunks_records() {
         vec!["released 1 hunk — a.txt"],
         "the echo states a release, not an assignment"
     );
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(snapshot.files[0].hunks[0].changelist, None);
 }
 
@@ -327,7 +330,7 @@ fn assign_to_unassigned_releases_the_hunks_records() {
 fn assign_stops_at_the_create_modal_when_the_target_name_is_refused() {
     let (fixture, repo) = repo_with_commit();
     fixture.write("a.txt", "line 1\nedited\nline 3\n");
-    let hunks = repo.refresh().unwrap().files[0].hunks.clone();
+    let hunks = repo.refresh().unwrap().snapshot.files[0].hunks.clone();
     let mut app = App::new("repo");
 
     run_op(
@@ -420,7 +423,7 @@ fn an_empty_payload_routes_to_the_stage_all_offer_rather_than_the_dialog() {
     // Changed but unstaged: core never auto-stages (ADR 0004).
     fixture.write("a.txt", "line 1\nedited\nline 3\n");
     let mut app = App::new("repo");
-    app.apply_snapshot(repo.refresh().unwrap());
+    app.apply_snapshot(repo.refresh().unwrap().snapshot);
 
     run_commit_step(&repo, &mut app, CommitStep::Open { changelist: None });
 
@@ -772,6 +775,7 @@ fn a_completed_mutation_requests_a_refresh() {
     assert!(
         repo.refresh()
             .unwrap()
+            .snapshot
             .changelists
             .iter()
             .any(|changelist| changelist.name == "wip")
@@ -791,7 +795,7 @@ fn every_commit_step_requests_a_refresh() {
     // a second step to reach the dialog.
     fixture.write("a.txt", "line 1\nedited\nline 3\n");
     let mut app = App::new("repo");
-    app.apply_snapshot(repo.refresh().unwrap());
+    app.apply_snapshot(repo.refresh().unwrap().snapshot);
 
     // `j` scopes the unassigned row — committable like any changelist
     // (ADR 0004).
@@ -822,7 +826,7 @@ fn keys_still_act_while_a_refresh_is_in_flight() {
     // The snapshot the panels hold before the keys: one changed file,
     // no changelists. `apply_snapshot` clears the in-flight marker, so
     // the refresh starts after it lands.
-    app.apply_snapshot(repo.refresh().unwrap());
+    app.apply_snapshot(repo.refresh().unwrap().snapshot);
     let started = Instant::now();
     app.on_refresh_started(started);
 
@@ -839,6 +843,7 @@ fn keys_still_act_while_a_refresh_is_in_flight() {
     assert!(
         repo.refresh()
             .unwrap()
+            .snapshot
             .changelists
             .iter()
             .any(|changelist| changelist.name == "wip"),
@@ -1100,11 +1105,11 @@ fn a_page_key_moves_by_the_height_the_loop_recorded() {
     };
 
     let mut once = App::new("repo");
-    once.apply_snapshot(repo.refresh().unwrap());
+    once.apply_snapshot(repo.refresh().unwrap().snapshot);
     let first = drive_frame(&repo, &mut once, &script(1));
 
     let mut twice = App::new("repo");
-    twice.apply_snapshot(repo.refresh().unwrap());
+    twice.apply_snapshot(repo.refresh().unwrap().snapshot);
     let second = drive_frame(&repo, &mut twice, &script(2));
 
     let height = once.panel_height(Panel::Files);
@@ -1152,8 +1157,8 @@ fn a_mutation_key_drives_a_real_engine_refresh_onto_the_app() {
     let real = engine.events().clone();
     let forwarder = std::thread::spawn(move || {
         while let Ok(event) = real.recv_timeout(Duration::from_secs(30)) {
-            let done = matches!(&event, EngineEvent::RefreshComplete(snapshot)
-                if has_changelist(snapshot, "smoke"));
+            let done = matches!(&event, EngineEvent::RefreshComplete(refreshed)
+                if has_changelist(&refreshed.snapshot, "smoke"));
             if events_tx.send(event).is_err() || done {
                 return;
             }

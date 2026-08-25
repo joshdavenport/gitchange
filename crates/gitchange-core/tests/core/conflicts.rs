@@ -56,7 +56,7 @@ fn a_merge_in_progress_is_reported_and_guards_commit() {
     let fixture = conflicted_merge();
     let repo = repo(&fixture);
 
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(snapshot.operation, Some(GitOperation::Merge));
 
     // The guard fires before anything else — nothing staged, no
@@ -88,7 +88,7 @@ fn an_unmerged_path_is_quarantined_from_the_universe() {
     let fixture = conflicted_merge();
     let repo = repo(&fixture);
 
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let conflicted: Vec<&str> = snapshot
         .conflicted_files()
         .iter()
@@ -120,7 +120,7 @@ fn an_unmerged_path_is_quarantined_from_the_universe() {
     // re-enters the live universe while the merge (and its commit
     // guard) is still in progress.
     fixture.write("a.txt", "resolved\n").stage("a.txt");
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert!(snapshot.conflicted_files().is_empty());
     let file = snapshot
         .files
@@ -196,7 +196,7 @@ fn frozen_records_on_a_conflicted_path(fixture: &RepoFixture) -> (Repo, serde_js
     repo.switch(Some("other")).unwrap();
     worktree[14] = "fifteen-other".into();
     fixture.write("a.txt", &text(&worktree));
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(
         owners(&snapshot, "a.txt"),
         vec![Some("fixes".into()), Some("other".into())]
@@ -211,7 +211,7 @@ fn frozen_records_on_a_conflicted_path(fixture: &RepoFixture) -> (Repo, serde_js
 
     // The path becomes unmerged (stash-pop style: no operation state).
     fixture.add_index_conflict("a.txt");
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(snapshot.operation, None, "no operation, quarantine anyway");
     let file = snapshot
         .files
@@ -244,14 +244,15 @@ fn quarantine_freezes_records_and_resolution_relands_them() {
     // Resolution (worktree content unchanged, conflict staged away)
     // re-enters normal matching: the exact anchors re-land both records.
     fixture.stage("a.txt");
-    let snapshot = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
     assert_eq!(
-        owners(&snapshot, "a.txt"),
+        owners(snapshot, "a.txt"),
         vec![Some("fixes".into()), Some("other".into())],
         "resolution re-lands the frozen records"
     );
     assert_eq!(
-        snapshot.advisories,
+        refreshed.advisories,
         vec![],
         "nothing was captured or revived: the records were frozen live, so \
          neither an AutoCaptured to 'spare' nor a DormantRevival can fire"
@@ -284,16 +285,17 @@ fn a_shifted_resolution_relands_frozen_records_by_overlap() {
     resolved[14] = "fifteen-resolved".into();
     resolved.insert(1, "inserted by the merge".into());
     fixture.write("a.txt", &text(&resolved)).stage("a.txt");
-    let snapshot = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
 
     assert_eq!(
-        owners(&snapshot, "a.txt"),
+        owners(snapshot, "a.txt"),
         vec![Some("fixes".into()), Some("other".into())],
         "a shifted resolution re-lands each frozen record by overlap — and \
          each to its own changelist, which only a positional claim can do"
     );
     assert_eq!(
-        snapshot.advisories,
+        refreshed.advisories,
         vec![],
         "inheritance: no capture to 'spare', no revival, and no ambiguity \
          (an overlap claim indifferent to range would see both records \

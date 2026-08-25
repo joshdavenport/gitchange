@@ -49,7 +49,7 @@ fn two_hunk_fixture() -> (RepoFixture, Repo, Snapshot) {
     repo.create_changelist("chores").unwrap();
     repo.switch(Some("fixes")).unwrap();
     fixture.write("a.txt", &numbered(30, &[(5, "five!"), (25, "twentyfive!")]));
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(
         owners(&snapshot, "a.txt"),
         vec![Some("fixes".into()), Some("fixes".into())],
@@ -69,9 +69,10 @@ fn assigning_a_hunk_to_another_changelist_updates_membership_on_refresh() {
         .advisories;
     assert!(advisories.is_empty());
 
-    let after = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let after = &refreshed.snapshot;
     assert_eq!(
-        owners(&after, "a.txt"),
+        owners(after, "a.txt"),
         vec![Some("fixes".into()), Some("chores".into())]
     );
     // File counts follow hunk-level membership: the file now appears in
@@ -79,7 +80,7 @@ fn assigning_a_hunk_to_another_changelist_updates_membership_on_refresh() {
     assert_eq!(after.files_in(Some("fixes")).len(), 1);
     assert_eq!(after.files_in(Some("chores")).len(), 1);
     assert!(
-        after.advisories.is_empty(),
+        refreshed.advisories.is_empty(),
         "a clean assign raises no advisories"
     );
 }
@@ -95,7 +96,7 @@ fn assigning_every_hunk_empties_the_source_changelist() {
         .advisories;
     assert!(advisories.is_empty());
 
-    let after = repo.refresh().unwrap();
+    let after = repo.refresh().unwrap().snapshot;
     assert_eq!(
         owners(&after, "a.txt"),
         vec![Some("chores".into()), Some("chores".into())]
@@ -132,13 +133,14 @@ fn an_explicit_assign_to_unassigned_releases_to_the_active_changelist() {
         "the echo states a release, not an assignment"
     );
 
-    let after = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let after = &refreshed.snapshot;
     assert_eq!(
-        owners(&after, "a.txt"),
+        owners(after, "a.txt"),
         vec![Some("fixes".into()), Some("fixes".into())]
     );
     assert_eq!(
-        after.advisories,
+        refreshed.advisories,
         vec![Advisory::AutoCaptured {
             path: "a.txt".into(),
             new_start: 22,
@@ -159,7 +161,7 @@ fn with_unassigned_active_a_release_stays_unassigned_across_edits() {
     repo.switch(None).unwrap();
     repo.assign_hunks("a.txt", &[hunk], None).unwrap();
 
-    let after = repo.refresh().unwrap();
+    let after = repo.refresh().unwrap().snapshot;
     assert_eq!(owners(&after, "a.txt"), vec![Some("fixes".into()), None]);
     assert_eq!(
         stored_owners(&fixture),
@@ -171,7 +173,7 @@ fn with_unassigned_active_a_release_stays_unassigned_across_edits() {
         "a.txt",
         &numbered(30, &[(5, "five!"), (25, "twentyfive, edited!")]),
     );
-    let edited = repo.refresh().unwrap();
+    let edited = repo.refresh().unwrap().snapshot;
     assert_eq!(owners(&edited, "a.txt"), vec![Some("fixes".into()), None]);
 }
 
@@ -186,7 +188,7 @@ fn releasing_recordless_hunks_is_a_true_no_op() {
         .commit_all("init")
         .write("a.txt", &numbered(30, &[(5, "five!")]));
     let repo = repo(&fixture);
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(owners(&snapshot, "a.txt"), vec![None]);
 
     let hunk = snapshot.files[0].hunks[0].clone();
@@ -223,7 +225,7 @@ fn a_stale_hunk_fails_soft_and_the_fresh_one_is_still_assigned() {
         "the vanished hunk fails soft; nothing else is reported"
     );
 
-    let after = repo.refresh().unwrap();
+    let after = repo.refresh().unwrap().snapshot;
     assert_eq!(
         owners(&after, "a.txt"),
         vec![Some("fixes".into()), Some("chores".into())],
@@ -247,7 +249,7 @@ fn a_binary_whole_file_hunk_still_assigns_after_a_mid_flight_rewrite() {
     repo.switch(Some("fixes")).unwrap();
     repo.create_changelist("chores").unwrap();
     fixture.write_bytes("logo.png", &[0u8, 9, 9]);
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(owners(&snapshot, "logo.png"), vec![Some("fixes".into())]);
     let hunk = snapshot.files[0].hunks[0].clone();
 
@@ -267,10 +269,11 @@ fn a_binary_whole_file_hunk_still_assigns_after_a_mid_flight_rewrite() {
         Some("assigned 1 hunk — logo.png → 'chores'")
     );
 
-    let after = repo.refresh().unwrap();
-    assert_eq!(owners(&after, "logo.png"), vec![Some("chores".into())]);
+    let refreshed = repo.refresh().unwrap();
+    let after = &refreshed.snapshot;
+    assert_eq!(owners(after, "logo.png"), vec![Some("chores".into())]);
     assert!(
-        after.advisories.is_empty(),
+        refreshed.advisories.is_empty(),
         "a clean assign raises no advisories"
     );
 }
@@ -285,7 +288,7 @@ fn assigning_to_an_unknown_changelist_is_an_error_and_changes_nothing() {
         .unwrap_err();
     assert!(matches!(err, Error::UnknownChangelist { name } if name == "nope"));
 
-    let after = repo.refresh().unwrap();
+    let after = repo.refresh().unwrap().snapshot;
     assert_eq!(
         owners(&after, "a.txt"),
         vec![Some("fixes".into()), Some("fixes".into())]
@@ -305,7 +308,7 @@ fn an_assigned_hunk_keeps_its_new_owner_when_edited() {
         "a.txt",
         &numbered(30, &[(5, "five!"), (25, "twentyfive, edited!")]),
     );
-    let after = repo.refresh().unwrap();
+    let after = repo.refresh().unwrap().snapshot;
     assert_eq!(
         owners(&after, "a.txt"),
         vec![Some("fixes".into()), Some("chores".into())]
@@ -328,7 +331,7 @@ fn shared_entry_fixture() -> (RepoFixture, Repo, Snapshot) {
         .write("notes.txt", "staged text\n")
         .stage("notes.txt");
     fixture.write_bytes("notes.txt", &[0u8, 1, 2, 3]);
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert!(
         snapshot.files[0].hunks[0].is_whole_file(),
         "the worktree's binary rewrite, as a whole-file hunk"
@@ -359,7 +362,7 @@ fn assigning_a_whole_file_hunk_moves_the_content_sharing_its_index_entry() {
         "the unit's other hunk is in the payload, so the echo says two"
     );
 
-    let after = repo.refresh().unwrap();
+    let after = repo.refresh().unwrap().snapshot;
     assert_eq!(
         owners(&after, "notes.txt"),
         vec![Some("chores".into()), Some("chores".into())]
@@ -381,7 +384,7 @@ fn assigning_the_entrys_content_hunk_moves_the_whole_file_hunk_with_it() {
         Some("assigned 2 hunks — notes.txt → 'chores'")
     );
 
-    let after = repo.refresh().unwrap();
+    let after = repo.refresh().unwrap().snapshot;
     assert_eq!(
         owners(&after, "notes.txt"),
         vec![Some("chores".into()), Some("chores".into())]
@@ -404,7 +407,7 @@ fn releasing_a_shared_entry_releases_the_whole_unit() {
         Some("released 2 hunks — notes.txt")
     );
 
-    let after = repo.refresh().unwrap();
+    let after = repo.refresh().unwrap().snapshot;
     assert_eq!(owners(&after, "notes.txt"), vec![None, None]);
 }
 
@@ -425,7 +428,7 @@ fn a_mode_hunk_stays_outside_the_index_entry_unit() {
         .stage("notes.txt");
     fixture.write_bytes("notes.txt", &[0u8, 1, 2, 3]);
     fixture.set_exec("notes.txt");
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let hunks = &snapshot.files[0].hunks;
     assert!(hunks[0].is_mode_change(), "the mode hunk sits first");
     assert!(hunks[1].is_whole_file());
@@ -438,7 +441,7 @@ fn a_mode_hunk_stays_outside_the_index_entry_unit() {
         outcome.echo.as_deref(),
         Some("assigned 2 hunks — notes.txt → 'chores'")
     );
-    let after = repo.refresh().unwrap();
+    let after = repo.refresh().unwrap().snapshot;
     assert_eq!(
         owners(&after, "notes.txt"),
         vec![
@@ -459,7 +462,7 @@ fn a_mode_hunk_stays_outside_the_index_entry_unit() {
         Some("assigned 1 hunk — notes.txt → 'fixes'"),
         "a mode hunk is its own unit"
     );
-    let after = repo.refresh().unwrap();
+    let after = repo.refresh().unwrap().snapshot;
     assert_eq!(
         owners(&after, "notes.txt"),
         vec![
@@ -489,7 +492,7 @@ fn the_entry_unit_holds_across_unstaged_content() {
         .write_bytes("notes.txt", &[0u8, 1, 2, 3])
         .stage("notes.txt");
     fixture.write("notes.txt", "edited text\n");
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let hunks = &snapshot.files[0].hunks;
     assert!(hunks[0].is_whole_file(), "the staged binary");
     assert_eq!(hunks[1].stage, HunkStage::Unstaged, "the worktree's text");
@@ -502,7 +505,7 @@ fn the_entry_unit_holds_across_unstaged_content() {
         Some("assigned 2 hunks — notes.txt → 'chores'"),
         "the unstaged content hunk is in the unit too"
     );
-    let after = repo.refresh().unwrap();
+    let after = repo.refresh().unwrap().snapshot;
     assert_eq!(
         owners(&after, "notes.txt"),
         vec![Some("chores".into()), Some("chores".into())]

@@ -184,7 +184,7 @@ fn event_loop<B: Backend>(
         select! {
             recv(engine_events) -> event => match event {
                 Ok(EngineEvent::RefreshStarted) => app.on_refresh_started(Instant::now()),
-                Ok(EngineEvent::RefreshComplete(snapshot)) => app.apply_snapshot(snapshot),
+                Ok(EngineEvent::RefreshComplete(refreshed)) => app.apply_refresh(refreshed),
                 Ok(EngineEvent::RefreshFailed(error)) => app.on_refresh_failed(error.to_string()),
                 // Conditions become pins (ADR 0007): started sets, ended
                 // self-clears — never manually dismissable.

@@ -146,7 +146,7 @@ fn align_sets_index_to_worktree_for_the_changelists_stale_hunks() {
     assert_eq!(fixture.index_content("a.txt"), Some(text(&worktree_a)));
     assert_eq!(fixture.index_content("b.txt"), Some(text(&head)));
 
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(stages(&snapshot, "a.txt"), vec![HunkStage::Staged]);
     assert!(
         !snapshot.files.iter().any(|file| file.path == "b.txt"),
@@ -176,7 +176,7 @@ fn stage_all_stages_only_the_changelists_unstaged_hunks() {
     let mut worktree_b = head.clone();
     worktree_b[9] = "ten-edited".into();
     fixture.write("b.txt", &text(&worktree_b));
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let b_hunks = snapshot
         .files
         .iter()
@@ -198,7 +198,7 @@ fn stage_all_stages_only_the_changelists_unstaged_hunks() {
         "unassigned hunk left unstaged"
     );
 
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(stages(&snapshot, "a.txt"), vec![HunkStage::Staged]);
     assert_eq!(stages(&snapshot, "b.txt"), vec![HunkStage::Unstaged]);
 
@@ -234,7 +234,7 @@ fn a_stale_binary_warns_and_commits_the_staged_blob() {
 
     // The retained record was rewritten against the new HEAD: the
     // residual worktree change keeps its membership.
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(owners(&snapshot, "logo.png"), vec![Some("art".into())]);
     assert_eq!(stages(&snapshot, "logo.png"), vec![HunkStage::Unstaged]);
 }
@@ -306,7 +306,7 @@ fn a_staged_zero_hunk_change_is_in_the_payload() {
     assert_eq!(fixture.head_mode("tool.sh"), Some(0o100755));
     assert_eq!(fixture.head_bytes("empty.txt"), Some(Vec::new()));
     assert!(
-        repo.refresh().unwrap().files.is_empty(),
+        repo.refresh().unwrap().snapshot.files.is_empty(),
         "nothing left over"
     );
 }
@@ -342,7 +342,7 @@ fn a_staged_mode_flip_commits_alone_beside_an_unstaged_edit() {
 
     // What is left is the edit, unstaged, and no mode hunk: the modes
     // agree again.
-    let file = &repo.refresh().unwrap().files[0];
+    let file = &repo.refresh().unwrap().snapshot.files[0];
     assert_eq!(file.total_hunks(), 1);
     assert_eq!(file.hunks[0].stage, HunkStage::Unstaged);
     assert!(!file.hunks[0].is_mode_change());
@@ -369,7 +369,7 @@ fn a_staged_mode_flip_and_edit_commit_together() {
     assert_eq!(fixture.head_mode("tool.sh"), Some(0o100755));
     assert_eq!(fixture.head_bytes("tool.sh"), Some(b"two\n".to_vec()));
     assert!(
-        repo.refresh().unwrap().files.is_empty(),
+        repo.refresh().unwrap().snapshot.files.is_empty(),
         "nothing left over"
     );
 }
@@ -420,7 +420,7 @@ fn a_committed_type_change_writes_the_symlink_tree_entry() {
     assert_eq!(fixture.head_mode("thing"), Some(0o120000), "link mode");
     assert_eq!(fixture.head_bytes("thing"), Some(b"target.txt".to_vec()));
     assert!(
-        repo.refresh().unwrap().files.is_empty(),
+        repo.refresh().unwrap().snapshot.files.is_empty(),
         "nothing left over"
     );
 }

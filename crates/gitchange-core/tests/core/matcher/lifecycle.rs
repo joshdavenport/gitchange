@@ -45,7 +45,7 @@ fn records_naming_an_unknown_changelist_get_delete_semantics() {
     .unwrap();
 
     let repo = repo(&fixture);
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
 
     assert_eq!(owners(&snapshot, "a.txt"), vec![Some("feature".into())]);
     let json = state_json(&fixture);
@@ -115,10 +115,11 @@ fn deleting_a_changelist_releases_its_hunks_to_the_active_changelist() {
     repo.switch(Some("two")).unwrap();
     repo.delete_changelist("one").unwrap();
 
-    let snapshot = repo.refresh().unwrap();
-    assert_eq!(owners(&snapshot, "a.txt"), vec![Some("two".into())]);
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
+    assert_eq!(owners(snapshot, "a.txt"), vec![Some("two".into())]);
     assert_eq!(
-        snapshot.advisories,
+        refreshed.advisories,
         vec![gitchange_core::Advisory::AutoCaptured {
             path: "a.txt".into(),
             new_start: 7,
@@ -153,9 +154,10 @@ fn deleting_a_changelist_with_unassigned_active_leaves_its_hunks_unassigned() {
     repo.switch(None).unwrap();
     repo.delete_changelist("one").unwrap();
 
-    let snapshot = repo.refresh().unwrap();
-    assert_eq!(owners(&snapshot, "a.txt"), vec![None]);
-    assert!(snapshot.advisories.is_empty(), "nothing was decided");
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
+    assert_eq!(owners(snapshot, "a.txt"), vec![None]);
+    assert!(refreshed.advisories.is_empty(), "nothing was decided");
     assert_eq!(
         state_json(&fixture)["records"].as_array().unwrap().len(),
         0,
@@ -163,7 +165,7 @@ fn deleting_a_changelist_with_unassigned_active_leaves_its_hunks_unassigned() {
     );
 
     fixture.write("a.txt", &numbered(20, &[(10, "ten!!"), (11, "eleven!")]));
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(owners(&snapshot, "a.txt"), vec![None]);
 }
 
@@ -181,7 +183,7 @@ fn renaming_a_changelist_carries_its_records() {
 
     repo.rename_changelist("one", "uno").unwrap();
 
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(owners(&snapshot, "a.txt"), vec![Some("uno".into())]);
 }
 
@@ -194,7 +196,7 @@ fn with_no_changelists_hunks_are_unassigned_and_no_state_file_is_written() {
         .write("a.txt", &numbered(20, &[(10, "ten!")]));
 
     let repo = repo(&fixture);
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
 
     assert_eq!(owners(&snapshot, "a.txt"), vec![None]);
     assert!(
@@ -216,7 +218,8 @@ fn with_no_changelists_a_binary_hunk_is_unassigned_too() {
         .write_bytes("logo.png", &[0u8, 9, 9]);
 
     let repo = repo(&fixture);
-    let snapshot = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
 
     let file = snapshot
         .files
@@ -224,8 +227,8 @@ fn with_no_changelists_a_binary_hunk_is_unassigned_too() {
         .find(|file| file.path == "logo.png")
         .expect("logo.png in snapshot");
     assert!(file.binary, "fixture must produce a binary diff");
-    assert_eq!(owners(&snapshot, "logo.png"), vec![None]);
-    assert!(snapshot.advisories.is_empty());
+    assert_eq!(owners(snapshot, "logo.png"), vec![None]);
+    assert!(refreshed.advisories.is_empty());
     assert!(
         !fixture.path().join(".git/gitchange").exists(),
         "a changelist-less refresh must not grow a state file"
@@ -269,7 +272,7 @@ fn a_binary_whole_file_hunk_is_assignable_like_any_other() {
     repo.switch(Some("art")).unwrap();
     repo.create_changelist("other").unwrap();
     fixture.write_bytes("logo.png", &[0u8, 9, 9]);
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(owners(&snapshot, "logo.png"), vec![Some("art".into())]);
 
     let hunk = snapshot.files[0].hunks[0].clone();
@@ -279,6 +282,6 @@ fn a_binary_whole_file_hunk_is_assignable_like_any_other() {
         .advisories;
     assert!(advisories.is_empty());
 
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(owners(&snapshot, "logo.png"), vec![Some("other".into())]);
 }

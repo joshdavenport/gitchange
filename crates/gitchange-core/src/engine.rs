@@ -19,8 +19,7 @@ use crossbeam_channel::{Receiver, Sender, at, never, select, unbounded};
 use notify::Watcher;
 
 use crate::error::Error;
-use crate::repo::Repo;
-use crate::snapshot::Snapshot;
+use crate::repo::{RefreshOutcome, Repo};
 
 /// An ongoing condition (ADR 0007's pinned vocabulary) the Engine
 /// reports over its event channel — never an `Error` (ADR 0006).
@@ -43,7 +42,7 @@ pub enum EngineEvent {
     RefreshStarted,
     /// One atomic RefreshJob finished; panels swap whole snapshots
     /// (ADR 0005).
-    RefreshComplete(Snapshot),
+    RefreshComplete(RefreshOutcome),
     /// A refresh failed hard (not lock contention, which is transient
     /// and retried internally). The last snapshot stays valid.
     RefreshFailed(Error),
@@ -224,7 +223,7 @@ type Subscribe = Box<dyn FnMut() -> Option<(Receiver<SourceEvent>, Box<dyn Send>
 fn spawn_loops(
     subscribe: Subscribe,
     filter: SelfLoopFilter,
-    refresh: Box<dyn FnMut() -> Result<Snapshot, Error> + Send>,
+    refresh: Box<dyn FnMut() -> Result<RefreshOutcome, Error> + Send>,
     config: Config,
 ) -> Engine {
     let (requests_tx, requests_rx) = unbounded();
@@ -261,14 +260,14 @@ fn spawn_loops(
 fn worker_loop(
     run_rx: Receiver<()>,
     done_tx: Sender<RunOutcome>,
-    mut refresh: Box<dyn FnMut() -> Result<Snapshot, Error> + Send>,
+    mut refresh: Box<dyn FnMut() -> Result<RefreshOutcome, Error> + Send>,
     events: Sender<EngineEvent>,
 ) {
     for () in run_rx {
         let _ = events.send(EngineEvent::RefreshStarted);
         let outcome = match refresh() {
-            Ok(snapshot) => {
-                let _ = events.send(EngineEvent::RefreshComplete(snapshot));
+            Ok(refreshed) => {
+                let _ = events.send(EngineEvent::RefreshComplete(refreshed));
                 RunOutcome::Done
             }
             Err(Error::LockContention { .. }) => RunOutcome::Contended,
@@ -460,6 +459,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+    use crate::snapshot::Snapshot;
 
     /// Generous ceiling for waiting on an event that must arrive; never
     /// asserts real debounce timing (ADR 0008), only that things happen.
@@ -471,17 +471,19 @@ mod tests {
         poll_interval: Duration::from_millis(25),
     };
 
-    fn empty_snapshot() -> Snapshot {
-        Snapshot {
-            files: Vec::new(),
-            changelists: Vec::new(),
-            active: None,
-            advisories: Vec::new(),
-            head: crate::snapshot::Head::Unborn {
-                name: "main".into(),
+    fn empty_refresh() -> RefreshOutcome {
+        RefreshOutcome {
+            snapshot: Snapshot {
+                files: Vec::new(),
+                changelists: Vec::new(),
+                active: None,
+                head: crate::snapshot::Head::Unborn {
+                    name: "main".into(),
+                },
+                recent_commits: Vec::new(),
+                operation: None,
             },
-            recent_commits: Vec::new(),
-            operation: None,
+            advisories: Vec::new(),
         }
     }
 
@@ -564,20 +566,20 @@ mod tests {
 
     impl TestEngine {
         fn spawn() -> Self {
-            Self::spawn_with(|_| Ok(empty_snapshot()))
+            Self::spawn_with(|_| Ok(empty_refresh()))
         }
 
         /// `refresh` receives the 1-based run count and returns what the
         /// RefreshJob should produce.
         fn spawn_with(
-            refresh: impl FnMut(usize) -> Result<Snapshot, Error> + Send + 'static,
+            refresh: impl FnMut(usize) -> Result<RefreshOutcome, Error> + Send + 'static,
         ) -> Self {
             Self::spawn_with_watcher(Subscriptions::healthy(), refresh)
         }
 
         fn spawn_with_watcher(
             watcher: Subscriptions,
-            refresh: impl FnMut(usize) -> Result<Snapshot, Error> + Send + 'static,
+            refresh: impl FnMut(usize) -> Result<RefreshOutcome, Error> + Send + 'static,
         ) -> Self {
             let refreshes = Arc::new(AtomicUsize::new(0));
             let counter = refreshes.clone();
@@ -613,10 +615,10 @@ mod tests {
         /// The next `RefreshComplete`, skipping the `RefreshStarted`
         /// that precedes every run — tests here assert on outcomes, not
         /// the indicator hook.
-        fn recv_complete(&self) -> Snapshot {
+        fn recv_complete(&self) -> RefreshOutcome {
             loop {
                 match self.recv() {
-                    EngineEvent::RefreshComplete(snapshot) => return snapshot,
+                    EngineEvent::RefreshComplete(refreshed) => return refreshed,
                     EngineEvent::RefreshStarted => {}
                     other => panic!("expected RefreshComplete, got {other:?}"),
                 }
@@ -734,7 +736,7 @@ mod tests {
         let (gate_tx, gate_rx) = unbounded::<()>();
         let engine = TestEngine::spawn_with(move |_| {
             gate_rx.recv().unwrap();
-            Ok(empty_snapshot())
+            Ok(empty_refresh())
         });
 
         // The initial refresh is now blocked in flight. Every request
@@ -786,7 +788,7 @@ mod tests {
     #[test]
     fn a_watcher_that_never_comes_up_degrades_at_spawn() {
         let engine =
-            TestEngine::spawn_with_watcher(Subscriptions::broken(), |_| Ok(empty_snapshot()));
+            TestEngine::spawn_with_watcher(Subscriptions::broken(), |_| Ok(empty_refresh()));
 
         match engine.recv_condition() {
             EngineEvent::ConditionStarted(Condition::WatcherDegraded) => {}
@@ -832,7 +834,7 @@ mod tests {
                     path: PathBuf::from("/repo/.git/gitchange/state.json.lock"),
                 })
             } else {
-                Ok(empty_snapshot())
+                Ok(empty_refresh())
             }
         });
 

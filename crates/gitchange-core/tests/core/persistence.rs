@@ -82,7 +82,7 @@ fn owned_dirty_hunks_ride_across_a_branch_switch() {
     repo.create_changelist("feature").unwrap();
     repo.switch(Some("feature")).unwrap();
     fixture.write("a.txt", &numbered(20, &[(5, "five!"), (15, "fifteen!")]));
-    let before = repo.refresh().unwrap();
+    let before = repo.refresh().unwrap().snapshot;
     assert_eq!(
         owners(&before, "a.txt"),
         vec![Some("feature".into()), Some("feature".into())]
@@ -96,7 +96,8 @@ fn owned_dirty_hunks_ride_across_a_branch_switch() {
 
     fixture.switch_branch("other");
 
-    let after = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let after = &refreshed.snapshot;
     // Fixture integrity first: the switch landed, so what follows is
     // asserted on the other branch rather than over an unmoved HEAD.
     assert!(
@@ -105,12 +106,12 @@ fn owned_dirty_hunks_ride_across_a_branch_switch() {
         after.head
     );
     assert_eq!(
-        owners(&after, "a.txt"),
+        owners(after, "a.txt"),
         vec![Some("feature".into()), Some("feature".into())],
         "the same changelist owns the same hunks on the other branch"
     );
     assert_eq!(
-        starts(&after, "a.txt"),
+        starts(after, "a.txt"),
         starts(&before, "a.txt"),
         "and at the same coordinates — the hunks themselves rode across"
     );
@@ -122,7 +123,7 @@ fn owned_dirty_hunks_ride_across_a_branch_switch() {
     assert_eq!(names, vec!["feature", "idle"]);
     assert_eq!(after.active.as_deref(), Some("idle"));
     assert!(
-        after.advisories.is_empty(),
+        refreshed.advisories.is_empty(),
         "a switch that carries hunks untouched is not a membership event"
     );
 
@@ -199,7 +200,7 @@ fn every_state_file_write_leaves_no_temp_sibling() {
     // it a regression that persisted nothing would leave this step
     // asserting that a write-free op writes no temp file.
     fixture.write("a.txt", &numbered(20, &[(5, "five!")]));
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(owners(&snapshot, "a.txt"), vec![Some("feature".into())]);
     only_the_state_file("the record-writing refresh");
 
@@ -272,7 +273,7 @@ fn no_membership_op_writes_a_git_object() {
     // The refresh does the most work of any of these: two diffs, the hunk
     // universe, the matcher, and a record write.
     fixture.write("a.txt", &numbered(20, &[(5, "five!"), (15, "fifteen!")]));
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(
         owners(&snapshot, "a.txt"),
         vec![Some("feature".into()), Some("feature".into())],

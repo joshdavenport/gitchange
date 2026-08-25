@@ -64,9 +64,11 @@ tests already forced.
 
 ## Core's two-layer interface
 
-- **Sync operations** — blocking calls (`refresh() -> Snapshot`,
-  `stage_hunk(...)`, `commit(...)`, …). The CLI's layer: one blocking
-  refresh per invocation.
+- **Sync operations** — blocking calls (`refresh() -> RefreshOutcome`,
+  `read_only_refresh() -> Snapshot`, `stage_hunk(...)`, `commit(...)`, …).
+  The CLI's layer: one blocking refresh per invocation. The two refresh
+  forms differ in their return type because ADR 0005's advisory filter is
+  structural: only the persisting form carries advisories.
 - **`Engine`** — the threaded runtime layered on the sync ops: filesystem
   watcher, ~500ms debounce, self-loop filter, last-request-wins
   RefreshJob slot, mutation-triggered refreshes (all ADR 0005 semantics),
@@ -92,7 +94,7 @@ tests already forced.
   and make any second adapter second-class.
 - **Engine degradation is an event, not an error**: watcher death →
   polling fallback (ADR 0005) arrives on the engine channel
-  (`WatcherDegraded`, alongside `RefreshComplete(Snapshot)`). Hard errors
+  (`WatcherDegraded`, alongside `RefreshComplete(RefreshOutcome)`). Hard errors
   surface only from sync-operation calls.
 - Frontends: the TUI matches variants into ticket 15's presentation
   vocabulary; the bin crate may wrap in `anyhow` for context and maps

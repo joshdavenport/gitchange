@@ -1,7 +1,7 @@
 //! The Log panel: severity glyphs on the stream, core's advisories
 //! arriving verbatim, and pins banding above the stream.
 
-use gitchange_core::{Advisory, ChangeKind, ChangedFile, GitOperation};
+use gitchange_core::{Advisory, ChangeKind, ChangedFile, GitOperation, RefreshOutcome};
 
 use gitchange_tui::app::{App, Severity};
 
@@ -33,9 +33,10 @@ fn the_head_move_dormancy_advisory_reaches_the_log_panel() {
         changelists: vec!["chores".into()],
     };
     let mut app = App::new("repo");
-    let mut moved = snapshot();
-    moved.advisories = vec![advisory.clone()];
-    app.apply_snapshot(moved);
+    app.apply_refresh(RefreshOutcome {
+        snapshot: snapshot(),
+        advisories: vec![advisory.clone()],
+    });
 
     // Taken from the advisory rather than spelled out, so a reworded
     // message can't drift past this test (ADR 0006: core owns phrasing,

@@ -77,7 +77,6 @@ pub(crate) fn snapshot() -> Snapshot {
             },
         ],
         active: Some("fixes".into()),
-        advisories: Vec::new(),
         head: Head::Branch {
             name: "feat/print-page".into(),
         },

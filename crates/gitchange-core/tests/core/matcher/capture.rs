@@ -21,7 +21,7 @@ fn new_hunks_capture_to_the_active_changelist() {
         .write("a.txt", &numbered(20, &[(10, "ten!")]))
         .write("new.txt", "hello\n");
 
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(owners(&snapshot, "a.txt"), vec![Some("two".into())]);
     assert_eq!(owners(&snapshot, "new.txt"), vec![Some("two".into())]);
     let in_two: Vec<&str> = snapshot
@@ -55,15 +55,16 @@ fn an_unowned_externally_staged_hunk_captures_to_active_with_an_advisory() {
         .write("a.txt", &numbered(20, &[(10, "ten!")]))
         .stage("a.txt");
 
-    let snapshot = repo.refresh().unwrap();
-    assert_eq!(owners(&snapshot, "a.txt"), vec![Some("two".into())]);
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
+    assert_eq!(owners(snapshot, "a.txt"), vec![Some("two".into())]);
     assert_eq!(
         snapshot.files[0].hunks[0].stage,
         HunkStage::Staged,
         "captured as it stands: the index is untouched by the capture"
     );
     assert_eq!(
-        snapshot.advisories,
+        refreshed.advisories,
         vec![Advisory::AutoCaptured {
             path: "a.txt".into(),
             new_start: 7,
@@ -74,9 +75,10 @@ fn an_unowned_externally_staged_hunk_captures_to_active_with_an_advisory() {
 
     // And the record persisted, so the capture is a decision rather than a
     // per-refresh re-guess.
-    let snapshot = repo.refresh().unwrap();
-    assert_eq!(owners(&snapshot, "a.txt"), vec![Some("two".into())]);
-    assert!(snapshot.advisories.is_empty());
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
+    assert_eq!(owners(snapshot, "a.txt"), vec![Some("two".into())]);
+    assert!(refreshed.advisories.is_empty());
 }
 
 #[test]
@@ -90,9 +92,9 @@ fn a_routine_auto_capture_notices_once() {
     repo.switch(Some("one")).unwrap();
 
     fixture.write("a.txt", &numbered(20, &[(10, "ten!")]));
-    let snapshot = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
     assert_eq!(
-        snapshot.advisories,
+        refreshed.advisories,
         vec![Advisory::AutoCaptured {
             path: "a.txt".into(),
             new_start: 7,
@@ -102,8 +104,8 @@ fn a_routine_auto_capture_notices_once() {
     );
 
     // The decision became a record: the next refresh is quiet.
-    let snapshot = repo.refresh().unwrap();
-    assert!(snapshot.advisories.is_empty());
+    let refreshed = repo.refresh().unwrap();
+    assert!(refreshed.advisories.is_empty());
 }
 
 #[test]
@@ -117,10 +119,11 @@ fn with_unassigned_active_nothing_notices() {
     // A changelist-less repo: unassigned is active by definition
     // (ADR 0015), so the edit falls through to it.
     let repo = repo(&fixture);
-    let snapshot = repo.refresh().unwrap();
-    assert_eq!(owners(&snapshot, "a.txt"), vec![None]);
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
+    assert_eq!(owners(snapshot, "a.txt"), vec![None]);
     assert!(
-        snapshot.advisories.is_empty(),
+        refreshed.advisories.is_empty(),
         "unassigned fall-through decides nothing worth spot-checking"
     );
 }
@@ -142,19 +145,20 @@ fn with_unassigned_active_new_hunks_stay_out_of_every_changelist() {
         .write("a.txt", &numbered(20, &[(10, "ten!")]))
         .write("new.txt", "hello\n");
 
-    let snapshot = repo.refresh().unwrap();
-    assert_eq!(owners(&snapshot, "a.txt"), vec![None]);
-    assert_eq!(owners(&snapshot, "new.txt"), vec![None]);
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
+    assert_eq!(owners(snapshot, "a.txt"), vec![None]);
+    assert_eq!(owners(snapshot, "new.txt"), vec![None]);
     assert!(snapshot.files_in(Some("one")).is_empty());
     assert!(
-        snapshot.advisories.is_empty(),
+        refreshed.advisories.is_empty(),
         "nothing was decided, so nothing is advised"
     );
 
     // Switching back restores capture for what follows.
     repo.switch(Some("one")).unwrap();
     fixture.write("b.txt", "b\n");
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(owners(&snapshot, "b.txt"), vec![Some("one".into())]);
 }
 
@@ -185,10 +189,11 @@ fn with_unassigned_active_an_ambiguous_overlap_lands_unassigned_and_notices() {
     let edits: Vec<(usize, &str)> = edits.iter().map(|(n, s)| (*n, s.as_str())).collect();
     fixture.write("a.txt", &numbered(40, &edits));
 
-    let snapshot = repo.refresh().unwrap();
-    assert_eq!(owners(&snapshot, "a.txt"), vec![None]);
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
+    assert_eq!(owners(snapshot, "a.txt"), vec![None]);
     assert_eq!(
-        snapshot.advisories,
+        refreshed.advisories,
         vec![Advisory::AmbiguousOverlap {
             path: "a.txt".into(),
             new_start: 7,
@@ -203,9 +208,10 @@ fn with_unassigned_active_an_ambiguous_overlap_lands_unassigned_and_notices() {
     );
 
     // Recordless and capture-off: the next refresh decides nothing.
-    let snapshot = repo.refresh().unwrap();
-    assert_eq!(owners(&snapshot, "a.txt"), vec![None]);
-    assert!(snapshot.advisories.is_empty());
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
+    assert_eq!(owners(snapshot, "a.txt"), vec![None]);
+    assert!(refreshed.advisories.is_empty());
 }
 
 #[test]
@@ -234,9 +240,10 @@ fn with_unassigned_active_a_changed_return_hunk_stays_unassigned() {
     repo.switch(None).unwrap();
     fixture.write("a.txt", &numbered(20, &[(10, "ten-different")]));
 
-    let snapshot = repo.refresh().unwrap();
-    assert_eq!(owners(&snapshot, "a.txt"), vec![None]);
-    assert!(snapshot.advisories.is_empty());
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
+    assert_eq!(owners(snapshot, "a.txt"), vec![None]);
+    assert!(refreshed.advisories.is_empty());
     assert!(
         record_at(&state_json(&fixture), "a.txt")["dormant_since"].is_u64(),
         "'one' keeps its dormant record, unrevived"
@@ -244,7 +251,7 @@ fn with_unassigned_active_a_changed_return_hunk_stays_unassigned() {
 
     // The exact hunk returning still revives it, marker or no marker.
     fixture.write("a.txt", &numbered(20, &[(10, "ten-stashed")]));
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(owners(&snapshot, "a.txt"), vec![Some("one".into())]);
 }
 
@@ -266,13 +273,14 @@ fn dormant_revival_notices_with_a_per_changelist_count() {
     repo.refresh().unwrap();
 
     fixture.stash_pop();
-    let snapshot = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
     assert_eq!(
-        owners(&snapshot, "a.txt"),
+        owners(snapshot, "a.txt"),
         vec![Some("one".into()), Some("one".into())]
     );
     assert_eq!(
-        snapshot.advisories,
+        refreshed.advisories,
         vec![Advisory::DormantRevival {
             path: "a.txt".into(),
             changelist: "one".into(),
@@ -310,14 +318,15 @@ fn a_changed_return_hunk_notices_its_auto_capture() {
     repo.switch(Some("two")).unwrap();
     fixture.write("a.txt", &numbered(20, &[(10, "ten-different")]));
 
-    let snapshot = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
     assert_eq!(
-        owners(&snapshot, "a.txt"),
+        owners(snapshot, "a.txt"),
         vec![Some("two".into())],
         "changed-return captures to active, never to the dormant owner"
     );
     assert_eq!(
-        snapshot.advisories,
+        refreshed.advisories,
         vec![Advisory::AutoCaptured {
             path: "a.txt".into(),
             new_start: 7,
@@ -327,8 +336,8 @@ fn a_changed_return_hunk_notices_its_auto_capture() {
     );
 
     // The decision became a record: the next refresh is quiet.
-    let snapshot = repo.refresh().unwrap();
-    assert!(snapshot.advisories.is_empty());
+    let refreshed = repo.refresh().unwrap();
+    assert!(refreshed.advisories.is_empty());
 }
 
 #[test]
@@ -359,14 +368,15 @@ fn a_changed_return_binary_notices_its_auto_capture() {
     repo.switch(Some("other")).unwrap();
     fixture.write_bytes("logo.png", &[0u8, 5, 5, 5]);
 
-    let snapshot = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
     assert_eq!(
-        owners(&snapshot, "logo.png"),
+        owners(snapshot, "logo.png"),
         vec![Some("other".into())],
         "changed-return captures to active, never to the dormant owner"
     );
     assert_eq!(
-        snapshot.advisories,
+        refreshed.advisories,
         vec![Advisory::AutoCaptured {
             path: "logo.png".into(),
             new_start: 0,
@@ -376,8 +386,8 @@ fn a_changed_return_binary_notices_its_auto_capture() {
     );
 
     // The decision became a record: the next refresh is quiet.
-    let snapshot = repo.refresh().unwrap();
-    assert!(snapshot.advisories.is_empty());
+    let refreshed = repo.refresh().unwrap();
+    assert!(refreshed.advisories.is_empty());
 }
 
 #[test]
@@ -394,7 +404,7 @@ fn a_zero_hunk_change_captures_and_is_assignable_like_any_other() {
     repo.create_changelist("other").unwrap();
 
     fixture.set_exec("tool.sh");
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(owners(&snapshot, "tool.sh"), vec![Some("scripts".into())]);
     let in_scripts: Vec<&str> = snapshot
         .files_in(Some("scripts"))
@@ -408,13 +418,13 @@ fn a_zero_hunk_change_captures_and_is_assignable_like_any_other() {
         .assign_hunks("tool.sh", std::slice::from_ref(&hunk), Some("other"))
         .unwrap();
     assert!(outcome.advisories.is_empty());
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(owners(&snapshot, "tool.sh"), vec![Some("other".into())]);
 
     // Released under capture-off, so nothing re-claims it (ADR 0015/0016).
     repo.switch(None).unwrap();
     repo.assign_hunks("tool.sh", &[hunk], None).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(owners(&snapshot, "tool.sh"), vec![None]);
     assert_eq!(snapshot.files_in(None).len(), 1, "released to unassigned");
 }
@@ -434,7 +444,7 @@ fn a_whole_file_hunk_joins_the_owner_of_the_entry_it_lands_in() {
     fixture
         .write("notes.txt", "staged text\n")
         .stage("notes.txt");
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(owners(&snapshot, "notes.txt"), vec![Some("work".into())]);
 
     // Another changelist is active when the bytes land.
@@ -442,15 +452,16 @@ fn a_whole_file_hunk_joins_the_owner_of_the_entry_it_lands_in() {
     repo.switch(Some("other")).unwrap();
     fixture.write_bytes("notes.txt", &[0u8, 1, 2, 3]);
 
-    let snapshot = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
     assert!(snapshot.files[0].hunks[0].is_whole_file());
     assert_eq!(
-        owners(&snapshot, "notes.txt"),
+        owners(snapshot, "notes.txt"),
         vec![Some("work".into()), Some("work".into())],
         "the newcomer joins the entry's owner, not the active changelist"
     );
     assert_eq!(
-        snapshot.advisories,
+        refreshed.advisories,
         vec![Advisory::EntryUnitCapture {
             path: "notes.txt".into(),
             new_start: 0,
@@ -460,8 +471,8 @@ fn a_whole_file_hunk_joins_the_owner_of_the_entry_it_lands_in() {
     );
 
     // The decision became a record: the next refresh is quiet.
-    let snapshot = repo.refresh().unwrap();
-    assert!(snapshot.advisories.is_empty());
+    let refreshed = repo.refresh().unwrap();
+    assert!(refreshed.advisories.is_empty());
 }
 
 #[test]
@@ -475,7 +486,7 @@ fn content_landing_in_an_owned_entry_joins_its_whole_file_hunks_owner() {
     repo.create_changelist("art").unwrap();
     repo.switch(Some("art")).unwrap();
     fixture.write_bytes("notes.txt", &[0u8, 1, 2, 3]);
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(owners(&snapshot, "notes.txt"), vec![Some("art".into())]);
 
     // A text edit staged under a second active changelist, the worktree
@@ -487,14 +498,15 @@ fn content_landing_in_an_owned_entry_joins_its_whole_file_hunks_owner() {
         .stage("notes.txt");
     fixture.write_bytes("notes.txt", &[0u8, 1, 2, 3]);
 
-    let snapshot = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
     assert_eq!(
-        owners(&snapshot, "notes.txt"),
+        owners(snapshot, "notes.txt"),
         vec![Some("art".into()), Some("art".into())],
         "the staged content joins the whole-file hunk's owner"
     );
     assert_eq!(
-        snapshot.advisories,
+        refreshed.advisories,
         vec![Advisory::EntryUnitCapture {
             path: "notes.txt".into(),
             new_start: 1,
@@ -519,27 +531,33 @@ fn an_ownerless_entry_captures_as_one_unit() {
         .stage("notes.txt");
     fixture.write_bytes("notes.txt", &[0u8, 1, 2, 3]);
 
-    let snapshot = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
     assert_eq!(
-        owners(&snapshot, "notes.txt"),
+        owners(snapshot, "notes.txt"),
         vec![None, None],
         "capture-off leaves the whole unit unassigned"
     );
-    assert!(snapshot.advisories.is_empty(), "{:?}", snapshot.advisories);
+    assert!(
+        refreshed.advisories.is_empty(),
+        "{:?}",
+        refreshed.advisories
+    );
 
     repo.switch(Some("work")).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
     assert_eq!(
-        owners(&snapshot, "notes.txt"),
+        owners(snapshot, "notes.txt"),
         vec![Some("work".into()), Some("work".into())],
         "the recordless unit captures whole, still one owner"
     );
     assert!(
-        snapshot
+        refreshed
             .advisories
             .iter()
             .all(|advisory| matches!(advisory, Advisory::AutoCaptured { .. })),
         "ordinary capture, ordinary advisories: {:?}",
-        snapshot.advisories
+        refreshed.advisories
     );
 }

@@ -30,7 +30,7 @@ fn a_worktree_only_edit_is_a_single_unstaged_hunk() {
         .write("a.txt", "two\n");
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
 
     let file = &snapshot.files[0];
     assert_eq!(file.path, "a.txt");
@@ -49,7 +49,7 @@ fn hunk_lines_carry_verbatim_content_with_origins() {
         .write("a.txt", "two\n");
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
 
     let lines: Vec<(char, &str)> = snapshot.files[0].hunks[0]
         .identity
@@ -72,7 +72,7 @@ fn an_externally_staged_untouched_hunk_is_staged() {
         .stage("a.txt");
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
 
     let file = &snapshot.files[0];
     assert_eq!(file.kind, ChangeKind::Modified);
@@ -99,7 +99,7 @@ fn an_external_git_reset_is_absorbed_as_an_unstaged_hunk() {
     let repo = Repo::discover(fixture.path()).unwrap();
     repo.create_changelist("one").unwrap();
     repo.switch(Some("one")).unwrap();
-    let staged = repo.refresh().unwrap();
+    let staged = repo.refresh().unwrap().snapshot;
     assert_eq!(staged.files[0].hunks[0].stage, HunkStage::Staged);
     assert_eq!(
         staged.files[0].hunks[0].changelist.as_deref(),
@@ -110,7 +110,8 @@ fn an_external_git_reset_is_absorbed_as_an_unstaged_hunk() {
     // `git reset -- a.txt` in another terminal.
     fixture.reset_path("a.txt");
 
-    let snapshot = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
     let file = &snapshot.files[0];
     assert_eq!(file.kind, ChangeKind::Modified);
     assert_eq!(file.stage(), FileStage::Unstaged);
@@ -122,7 +123,7 @@ fn an_external_git_reset_is_absorbed_as_an_unstaged_hunk() {
         "the reset is a staging event, not a membership one"
     );
     assert!(
-        snapshot.advisories.is_empty(),
+        refreshed.advisories.is_empty(),
         "absorbed silently: nothing to spot-check, nothing to error over"
     );
 }
@@ -138,7 +139,7 @@ fn a_staged_then_edited_hunk_is_staged_stale() {
         .write("a.txt", "three\n");
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
 
     let file = &snapshot.files[0];
     assert_eq!(file.stage(), FileStage::PartiallyStaged);
@@ -159,7 +160,7 @@ fn an_index_only_hunk_after_worktree_revert_is_staged_stale() {
         .write("a.txt", "one\n");
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
 
     let file = &snapshot.files[0];
     assert_eq!(file.path, "a.txt");
@@ -183,7 +184,7 @@ fn a_file_with_one_staged_and_one_unstaged_hunk_is_partially_staged() {
         );
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
 
     let file = &snapshot.files[0];
     assert_eq!(file.stage(), FileStage::PartiallyStaged);
@@ -202,7 +203,7 @@ fn an_unborn_head_diffs_against_the_empty_tree() {
         .stage("staged.txt");
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
 
     let entries: Vec<(&str, ChangeKind, FileStage)> = snapshot
         .files
@@ -229,7 +230,7 @@ fn an_untracked_file_presents_its_content_as_one_unstaged_hunk() {
         .write("new.txt", "alpha\nbeta\n");
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
 
     let file = &snapshot.files[0];
     assert_eq!(file.path, "new.txt");
@@ -252,7 +253,7 @@ fn a_deleted_file_presents_removals_as_one_hunk() {
     std::fs::remove_file(fixture.path().join("doomed.txt")).unwrap();
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
 
     let file = &snapshot.files[0];
     assert_eq!(file.kind, ChangeKind::Deleted);
@@ -274,7 +275,7 @@ fn a_staged_new_file_removed_from_the_worktree_reads_deleted_and_stale() {
     std::fs::remove_file(fixture.path().join("new.txt")).unwrap();
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
 
     let file = &snapshot.files[0];
     assert_eq!(file.path, "new.txt");
@@ -293,7 +294,7 @@ fn a_rename_presents_as_delete_plus_untracked() {
         .rename("old.txt", "new.txt");
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
 
     let entries: Vec<(&str, ChangeKind)> = snapshot
         .files
@@ -320,7 +321,7 @@ fn a_changed_binary_file_is_one_whole_file_hunk() {
         .write_bytes("blob.bin", &[0u8, 9, 9, 9, 9]);
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
 
     let file = &snapshot.files[0];
     assert_eq!(file.path, "blob.bin");
@@ -356,21 +357,21 @@ fn binary_staging_is_derived_by_oid_compare() {
         .stage("blob.bin");
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let file = &repo.refresh().unwrap().files[0];
+    let file = &repo.refresh().unwrap().snapshot.files[0];
     assert_eq!(file.stage(), FileStage::Staged);
     assert_eq!(file.hunks[0].stage, HunkStage::Staged);
     assert_eq!((file.staged_hunks(), file.total_hunks()), (1, 1));
 
     // The edited `◑` flavour: index and worktree hold different blobs.
     fixture.write_bytes("blob.bin", &[0u8, 7, 7, 7]);
-    let file = &repo.refresh().unwrap().files[0];
+    let file = &repo.refresh().unwrap().snapshot.files[0];
     assert_eq!(file.hunks[0].stage, HunkStage::StagedStale);
     assert!(!file.hunks[0].index_only);
     assert_eq!((file.staged_hunks(), file.total_hunks()), (0, 1));
 
     // The index-only `◑` flavour: staged then worktree-reverted.
     fixture.write_bytes("blob.bin", &[0u8, 1, 2, 3]);
-    let file = &repo.refresh().unwrap().files[0];
+    let file = &repo.refresh().unwrap().snapshot.files[0];
     assert_eq!(file.hunks[0].stage, HunkStage::StagedStale);
     assert!(file.hunks[0].index_only);
 }
@@ -385,7 +386,7 @@ fn added_and_deleted_binaries_have_one_sided_anchors() {
     std::fs::remove_file(fixture.path().join("old.bin")).unwrap();
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
 
     let added = snapshot.files.iter().find(|f| f.path == "new.bin").unwrap();
     assert_eq!(added.kind, ChangeKind::Untracked);
@@ -417,7 +418,7 @@ fn a_conflicted_binary_stays_quarantined() {
         .add_index_conflict("blob.bin");
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
 
     let file = &snapshot.files[0];
     assert_eq!(file.kind, ChangeKind::Conflicted);
@@ -440,7 +441,7 @@ fn a_mode_only_change_is_one_mode_hunk() {
         .set_exec("tool.sh");
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let file = &repo.refresh().unwrap().files[0];
+    let file = &repo.refresh().unwrap().snapshot.files[0];
 
     assert_eq!(file.path, "tool.sh");
     assert_eq!(file.kind, ChangeKind::Modified);
@@ -483,7 +484,7 @@ fn a_chmod_of_a_binary_is_a_mode_hunk_too() {
         .set_exec("blob.bin");
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let file = &repo.refresh().unwrap().files[0];
+    let file = &repo.refresh().unwrap().snapshot.files[0];
 
     assert!(file.binary);
     assert_eq!((file.staged_hunks(), file.total_hunks()), (0, 1));
@@ -504,7 +505,7 @@ fn mode_only_staging_is_derived_by_mode_compare() {
         .stage("tool.sh");
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let file = &repo.refresh().unwrap().files[0];
+    let file = &repo.refresh().unwrap().snapshot.files[0];
     assert_eq!(file.hunks[0].identity, HunkIdentity::ModeChange);
     assert_eq!(file.hunks[0].stage, HunkStage::Staged);
     assert_eq!((file.staged_hunks(), file.total_hunks()), (1, 1));
@@ -518,7 +519,7 @@ fn mode_only_staging_is_derived_by_mode_compare() {
         std::fs::Permissions::from_mode(0o644),
     )
     .unwrap();
-    let file = &repo.refresh().unwrap().files[0];
+    let file = &repo.refresh().unwrap().snapshot.files[0];
     assert_eq!(file.hunks[0].stage, HunkStage::StagedStale);
     assert!(file.hunks[0].index_only);
     assert_eq!((file.staged_hunks(), file.total_hunks()), (0, 1));
@@ -541,7 +542,7 @@ fn a_mode_hunk_sits_beside_content_hunks() {
         .set_exec("tool.sh");
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let file = &repo.refresh().unwrap().files[0];
+    let file = &repo.refresh().unwrap().snapshot.files[0];
 
     assert_eq!((file.staged_hunks(), file.total_hunks()), (0, 3));
     assert_eq!(file.hunks[0].identity, HunkIdentity::ModeChange);
@@ -579,7 +580,7 @@ fn a_worktree_mode_flip_survives_index_only_content_hunks() {
         .set_exec("tool.sh");
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let file = &repo.refresh().unwrap().files[0];
+    let file = &repo.refresh().unwrap().snapshot.files[0];
 
     assert_eq!((file.staged_hunks(), file.total_hunks()), (0, 2));
     assert_eq!(file.hunks[0].identity, HunkIdentity::ModeChange);
@@ -620,7 +621,7 @@ fn a_staged_mode_flip_survives_a_worktree_edit() {
         .write("tool.sh", "two\n");
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let file = &repo.refresh().unwrap().files[0];
+    let file = &repo.refresh().unwrap().snapshot.files[0];
 
     assert_eq!((file.staged_hunks(), file.total_hunks()), (1, 2));
     assert_eq!(file.hunks[0].identity, HunkIdentity::ModeChange);
@@ -645,7 +646,7 @@ fn a_staged_mode_flip_reverted_in_the_worktree_is_index_only_beside_an_edit() {
         .write("tool.sh", "two\n");
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let file = &repo.refresh().unwrap().files[0];
+    let file = &repo.refresh().unwrap().snapshot.files[0];
 
     assert_eq!((file.staged_hunks(), file.total_hunks()), (0, 2));
     assert_eq!(file.hunks[0].identity, HunkIdentity::ModeChange);
@@ -668,7 +669,7 @@ fn a_chmodded_binary_edit_presents_both_hunks() {
         .set_exec("blob.bin");
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let file = &repo.refresh().unwrap().files[0];
+    let file = &repo.refresh().unwrap().snapshot.files[0];
 
     assert!(file.binary);
     assert_eq!((file.staged_hunks(), file.total_hunks()), (0, 2));
@@ -701,7 +702,7 @@ fn a_staged_binary_over_a_worktree_edit_keeps_both_deltas() {
         .write("notes.txt", "edited\n");
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let file = &repo.refresh().unwrap().files[0];
+    let file = &repo.refresh().unwrap().snapshot.files[0];
 
     assert_eq!(file.total_hunks(), 2);
     let HunkIdentity::WholeFile { oids: anchor } = &file.hunks[0].identity else {
@@ -725,7 +726,7 @@ fn empty_file_adds_and_deletes_are_whole_file_hunks() {
     std::fs::remove_file(fixture.path().join("gone.txt")).unwrap();
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
 
     let added = snapshot
         .files
@@ -782,7 +783,7 @@ fn an_added_or_deleted_executable_carries_no_mode_hunk() {
     fixture.set_exec("new.sh").set_exec("empty.sh");
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
 
     for path in ["empty.sh", "gone.sh", "new.sh", "old.sh"] {
         let file = snapshot
@@ -820,7 +821,7 @@ fn an_embedded_repository_stays_out_of_the_universe() {
     fixture.add_worktree("side");
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
 
     assert!(snapshot.files.is_empty(), "{:?}", snapshot.files);
 }
@@ -845,6 +846,7 @@ fn a_type_change_is_a_zero_hunk_change_too() {
     let file = repo
         .refresh()
         .unwrap()
+        .snapshot
         .files
         .into_iter()
         .find(|file| file.path == "thing")
@@ -885,6 +887,7 @@ fn a_symlink_to_file_swap_is_the_same_zero_hunk_shape() {
     let file = repo
         .refresh()
         .unwrap()
+        .snapshot
         .files
         .into_iter()
         .find(|file| file.path == "thing")

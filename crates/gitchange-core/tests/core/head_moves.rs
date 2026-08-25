@@ -95,7 +95,7 @@ fn an_untouched_neighbour_survives_an_external_partial_commit() {
     repo.switch(Some("one")).unwrap();
     worktree[32] = "forty-one-owned".into();
     fixture.write("a.txt", &text(&worktree));
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(
         owners(&snapshot, "a.txt"),
         vec![Some("two".into()), Some("one".into())]
@@ -111,13 +111,14 @@ fn an_untouched_neighbour_survives_an_external_partial_commit() {
         .write("a.txt", &text(&worktree))
         .commit_index("two: twenty");
 
-    let snapshot = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
     assert_eq!(
-        owners(&snapshot, "a.txt"),
+        owners(snapshot, "a.txt"),
         vec![Some("one".into())],
         "an exact anchor match keeps membership regardless of position"
     );
-    assert!(snapshot.advisories.is_empty());
+    assert!(refreshed.advisories.is_empty());
     // The committed hunk's record is not consumed — an external commit
     // leaves it dormant (gitchange's own commit would remove it, ADR 0004).
     assert_eq!(dormant_owners(&fixture), vec!["two"]);
@@ -151,7 +152,7 @@ fn a_shifted_neighbour_goes_dormant_loudly_instead_of_misfiling() {
     repo.switch(Some("one")).unwrap();
     worktree[28] = "forty-v1".into();
     fixture.write("a.txt", &text(&worktree));
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(
         owners(&snapshot, "a.txt"),
         vec![Some("two".into()), Some("one".into())]
@@ -177,14 +178,15 @@ fn a_shifted_neighbour_goes_dormant_loudly_instead_of_misfiling() {
     // Fresh hunk old range vs new HEAD: [26, 33) — inside "two"'s stale
     // [17, 35), clear of its own record's [37, 44). Without the guard
     // that overlap would silently misfile the hunk into "two".
-    let snapshot = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
     assert_eq!(
-        owners(&snapshot, "a.txt"),
+        owners(snapshot, "a.txt"),
         vec![Some("three".into())],
         "the guarded tier captures to active, never a stranded record's list"
     );
     assert_eq!(
-        snapshot.advisories,
+        refreshed.advisories,
         vec![
             Advisory::AutoCaptured {
                 path: "a.txt".into(),
@@ -241,14 +243,15 @@ fn a_shifted_neighbour_clear_of_stranded_records_captures_to_active() {
     fixture.write("a.txt", &text(&worktree));
 
     // Fresh hunk old range vs new HEAD: [46, 53) — overlaps nothing.
-    let snapshot = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
     assert_eq!(
-        owners(&snapshot, "a.txt"),
+        owners(snapshot, "a.txt"),
         vec![Some("three".into())],
         "clear of every stranded record the hunk still reads as brand new"
     );
     assert_eq!(
-        snapshot.advisories,
+        refreshed.advisories,
         vec![
             Advisory::AutoCaptured {
                 path: "a.txt".into(),
@@ -297,14 +300,15 @@ fn a_residual_staged_stale_hunk_goes_dormant_across_an_external_commit() {
     // Residual hunk: committed "ten-staged" ↔ worktree "ten-final", at
     // unchanged coordinates — but coordinates an external move can't
     // vouch for.
-    let snapshot = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
     assert_eq!(
-        owners(&snapshot, "a.txt"),
+        owners(snapshot, "a.txt"),
         vec![Some("two".into())],
         "the guard never trusts stale coordinates, however plausible"
     );
     assert_eq!(
-        snapshot.advisories,
+        refreshed.advisories,
         vec![
             Advisory::AutoCaptured {
                 path: "a.txt".into(),
@@ -356,14 +360,15 @@ fn a_residual_staged_stale_hunk_sheds_membership_when_the_commit_shifts_it() {
 
     // Residual hunk old range vs new HEAD: [26, 33) — clear of the
     // retained record's stale [37, 44).
-    let snapshot = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
     assert_eq!(
-        owners(&snapshot, "a.txt"),
+        owners(snapshot, "a.txt"),
         vec![Some("two".into())],
         "an external move sheds the shifted residual to active"
     );
     assert_eq!(
-        snapshot.advisories,
+        refreshed.advisories,
         vec![
             Advisory::AutoCaptured {
                 path: "a.txt".into(),
@@ -411,13 +416,14 @@ fn a_head_move_touching_only_other_paths_leaves_tier_two_intact() {
     worktree[9] = "ten-v2".into();
     fixture.write("a.txt", &text(&worktree));
 
-    let snapshot = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
     assert_eq!(
-        owners(&snapshot, "a.txt"),
+        owners(snapshot, "a.txt"),
         vec![Some("one".into())],
         "a.txt's coordinates still address the moved-to HEAD"
     );
-    assert!(snapshot.advisories.is_empty());
+    assert!(refreshed.advisories.is_empty());
     assert!(dormant_owners(&fixture).is_empty());
     assert_eq!(state_json(&fixture)["baseline_head"], fixture.head_oid());
 }
@@ -480,20 +486,21 @@ fn a_non_utf8_path_in_the_baseline_diff_is_skipped_not_a_loud_failure() {
     b[9] = "ten-v2".into();
     fixture.write("a.txt", &text(&a)).write("b.txt", &text(&b));
 
-    let snapshot = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
     assert_eq!(
-        owners(&snapshot, "a.txt"),
+        owners(snapshot, "a.txt"),
         vec![Some("one".into())],
         "the skipped path left a usable diff: a.txt is provably unmoved, \
          so overlap inheritance still runs there"
     );
     assert_eq!(
-        owners(&snapshot, "b.txt"),
+        owners(snapshot, "b.txt"),
         vec![Some("two".into())],
         "and the diff was not empty either: b.txt's record is stranded"
     );
     assert_eq!(
-        snapshot.advisories,
+        refreshed.advisories,
         vec![
             Advisory::AutoCaptured {
                 path: "b.txt".into(),
@@ -544,13 +551,14 @@ fn a_pre_baseline_state_file_adopts_the_head_move_silently() {
         state.remove("baseline_head");
     });
 
-    let snapshot = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
     assert_eq!(
-        owners(&snapshot, "a.txt"),
+        owners(snapshot, "a.txt"),
         vec![Some("one".into())],
         "with no baseline to distrust, overlap inheritance runs as before"
     );
-    assert!(snapshot.advisories.is_empty());
+    assert!(refreshed.advisories.is_empty());
     assert!(dormant_owners(&fixture).is_empty());
     assert_eq!(state_json(&fixture)["baseline_head"], fixture.head_oid());
 }
@@ -586,10 +594,11 @@ fn an_unresolvable_baseline_degrades_to_all_paths_affected() {
     worktree[9] = "ten-v2".into();
     fixture.write("a.txt", &text(&worktree));
 
-    let snapshot = repo.refresh().unwrap();
-    assert_eq!(owners(&snapshot, "a.txt"), vec![Some("two".into())]);
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
+    assert_eq!(owners(snapshot, "a.txt"), vec![Some("two".into())]);
     assert_eq!(
-        snapshot.advisories,
+        refreshed.advisories,
         vec![
             Advisory::AutoCaptured {
                 path: "a.txt".into(),

@@ -42,7 +42,7 @@ fn two_hunk_fixture() -> RepoFixture {
 fn staging_one_hunk_of_a_multi_hunk_file_leaves_the_other_unstaged() {
     let fixture = two_hunk_fixture();
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let hunk = snapshot.files[0].hunks[0].clone();
 
     let advisories = repo.stage_hunk("a.txt", &hunk).unwrap().advisories;
@@ -53,7 +53,7 @@ fn staging_one_hunk_of_a_multi_hunk_file_leaves_the_other_unstaged() {
         fixture.index_content("a.txt").as_deref(),
         Some(numbered(&[(2, "edit near top")]).as_str())
     );
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let file = &snapshot.files[0];
     assert_eq!(file.stage(), FileStage::PartiallyStaged);
     assert_eq!((file.staged_hunks(), file.total_hunks()), (1, 2));
@@ -66,7 +66,7 @@ fn unstaging_one_hunk_leaves_the_sibling_staged() {
     let fixture = two_hunk_fixture();
     fixture.stage("a.txt");
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let hunk = snapshot.files[0].hunks[0].clone();
 
     let advisories = repo.unstage_hunk("a.txt", &hunk).unwrap().advisories;
@@ -76,7 +76,7 @@ fn unstaging_one_hunk_leaves_the_sibling_staged() {
         fixture.index_content("a.txt").as_deref(),
         Some(numbered(&[(18, "edit near bottom")]).as_str())
     );
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let stages: Vec<HunkStage> = snapshot.files[0]
         .hunks
         .iter()
@@ -89,7 +89,7 @@ fn unstaging_one_hunk_leaves_the_sibling_staged() {
 fn a_stale_hunk_fails_soft_with_a_notice_and_no_index_write() {
     let fixture = two_hunk_fixture();
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let hunk = snapshot.files[0].hunks[0].clone();
 
     // The worktree moves on after the snapshot: the hunk's content no
@@ -113,7 +113,7 @@ fn a_stale_hunk_fails_soft_with_a_notice_and_no_index_write() {
         fixture.index_content("a.txt").as_deref(),
         Some(numbered(&[]).as_str())
     );
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(snapshot.files[0].stage(), FileStage::Unstaged);
 }
 
@@ -122,7 +122,7 @@ fn a_stale_hunk_fails_soft_on_unstage_too() {
     let fixture = two_hunk_fixture();
     fixture.stage("a.txt");
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let hunk = snapshot.files[0].hunks[0].clone();
 
     // External `git reset` between snapshot and keypress: the staged
@@ -164,7 +164,7 @@ fn space_on_a_staged_stale_hunk_sets_index_to_worktree() {
         .stage("a.txt")
         .write("a.txt", &numbered(&[(2, "second version")]));
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let hunk = snapshot.files[0].hunks[0].clone();
     assert_eq!(hunk.stage, HunkStage::StagedStale);
 
@@ -174,7 +174,7 @@ fn space_on_a_staged_stale_hunk_sets_index_to_worktree() {
         fixture.index_content("a.txt").as_deref(),
         Some(numbered(&[(2, "second version")]).as_str())
     );
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(snapshot.files[0].hunks[0].stage, HunkStage::Staged);
 }
 
@@ -190,7 +190,7 @@ fn space_on_an_index_only_hunk_discards_it_from_the_index() {
         .stage("a.txt")
         .write("a.txt", &numbered(&[]));
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let hunk = snapshot.files[0].hunks[0].clone();
     assert_eq!(hunk.stage, HunkStage::StagedStale);
 
@@ -200,7 +200,7 @@ fn space_on_an_index_only_hunk_discards_it_from_the_index() {
         fixture.index_content("a.txt").as_deref(),
         Some(numbered(&[]).as_str())
     );
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert!(snapshot.files.is_empty());
 }
 
@@ -214,7 +214,7 @@ fn unstaging_a_staged_stale_hunk_restores_head_content() {
         .stage("a.txt")
         .write("a.txt", &numbered(&[(2, "second version")]));
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let hunk = snapshot.files[0].hunks[0].clone();
 
     repo.unstage_hunk("a.txt", &hunk).unwrap();
@@ -223,7 +223,7 @@ fn unstaging_a_staged_stale_hunk_restores_head_content() {
         fixture.index_content("a.txt").as_deref(),
         Some(numbered(&[]).as_str())
     );
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(snapshot.files[0].hunks[0].stage, HunkStage::Unstaged);
 }
 
@@ -237,7 +237,7 @@ fn a_moved_hunk_still_stages_at_its_fresh_position() {
         .commit_all("init")
         .write("a.txt", &numbered(&[(18, "edit near bottom")]));
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let hunk = snapshot.files[0].hunks[0].clone();
 
     let shifted = format!("inserted line\n{}", numbered(&[(18, "edit near bottom")]));
@@ -257,7 +257,7 @@ fn staging_a_staged_hunk_is_a_no_op() {
     let fixture = two_hunk_fixture();
     fixture.stage("a.txt");
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let hunk = snapshot.files[0].hunks[0].clone();
 
     let advisories = repo.stage_hunk("a.txt", &hunk).unwrap().advisories;
@@ -273,7 +273,7 @@ fn staging_a_staged_hunk_is_a_no_op() {
 fn unstaging_an_unstaged_hunk_is_a_no_op() {
     let fixture = two_hunk_fixture();
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let hunk = snapshot.files[0].hunks[0].clone();
 
     let advisories = repo.unstage_hunk("a.txt", &hunk).unwrap().advisories;
@@ -303,7 +303,7 @@ fn stage_owned_hunks_stages_every_hunk_of_a_single_owner_file() {
         fixture.index_content("a.txt").as_deref(),
         Some(numbered(&[(2, "edit near top"), (18, "edit near bottom")]).as_str())
     );
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let file = &snapshot.files[0];
     assert_eq!(file.stage(), FileStage::Staged);
     assert_eq!((file.staged_hunks(), file.total_hunks()), (2, 2));
@@ -326,7 +326,7 @@ fn unstage_owned_hunks_resets_every_hunk_of_a_single_owner_file() {
         fixture.index_content("a.txt").as_deref(),
         Some(numbered(&[]).as_str())
     );
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(snapshot.files[0].stage(), FileStage::Unstaged);
 }
 
@@ -337,7 +337,7 @@ fn stage_owned_hunks_leaves_another_changelists_hunks_out_of_the_index() {
     let fixture = two_hunk_fixture();
     let repo = Repo::discover(fixture.path()).unwrap();
     repo.create_changelist("fixes").unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let first = snapshot.files[0].hunks[0].clone();
     repo.assign_hunks("a.txt", &[first], Some("fixes")).unwrap();
 
@@ -358,7 +358,7 @@ fn the_unassigned_row_of_a_split_file_stages_only_the_unowned_hunk() {
     let fixture = two_hunk_fixture();
     let repo = Repo::discover(fixture.path()).unwrap();
     repo.create_changelist("fixes").unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let first = snapshot.files[0].hunks[0].clone();
     repo.assign_hunks("a.txt", &[first], Some("fixes")).unwrap();
 
@@ -419,7 +419,7 @@ fn stage_owned_hunks_stages_an_untracked_file() {
         fixture.index_content("new.txt").as_deref(),
         Some("alpha\nbeta\n")
     );
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(snapshot.files[0].stage(), FileStage::Staged);
 }
 
@@ -433,7 +433,7 @@ fn stage_hunk_stages_an_untracked_file_whole() {
         .commit_all("init")
         .write("new.txt", "alpha\nbeta\n");
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let hunk = snapshot.files[0].hunks[0].clone();
 
     let advisories = repo.stage_hunk("new.txt", &hunk).unwrap().advisories;
@@ -454,14 +454,14 @@ fn unstage_hunk_removes_a_staged_new_file_from_the_index() {
         .write("new.txt", "alpha\nbeta\n")
         .stage("new.txt");
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let hunk = snapshot.files[0].hunks[0].clone();
 
     let advisories = repo.unstage_hunk("new.txt", &hunk).unwrap().advisories;
 
     assert_eq!(advisories, vec![]);
     assert_eq!(fixture.index_content("new.txt"), None);
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(snapshot.files[0].stage(), FileStage::Unstaged);
 }
 
@@ -475,7 +475,7 @@ fn stage_owned_hunks_stages_a_deletion() {
     repo.stage_owned_hunks("doomed.txt", None).unwrap();
 
     assert_eq!(fixture.index_content("doomed.txt"), None);
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(snapshot.files[0].stage(), FileStage::Staged);
 }
 
@@ -493,7 +493,7 @@ fn unstage_owned_hunks_restores_a_staged_deletion() {
         fixture.index_content("doomed.txt").as_deref(),
         Some("gone\n")
     );
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(snapshot.files[0].stage(), FileStage::Unstaged);
 }
 
@@ -505,7 +505,7 @@ fn stage_hunk_stages_a_deletion_whole() {
     fixture.write("doomed.txt", "gone\n").commit_all("init");
     std::fs::remove_file(fixture.path().join("doomed.txt")).unwrap();
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let hunk = snapshot.files[0].hunks[0].clone();
 
     let advisories = repo.stage_hunk("doomed.txt", &hunk).unwrap().advisories;
@@ -536,7 +536,7 @@ fn staging_a_hunk_of_a_non_utf8_text_file_keeps_the_bytes_verbatim() {
         .commit_all("init")
         .write_bytes("latin1.txt", &content("edited"));
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let hunk = snapshot.files[0].hunks[0].clone();
 
     let advisories = repo.stage_hunk("latin1.txt", &hunk).unwrap().advisories;
@@ -565,7 +565,7 @@ fn identical_hunks_stage_the_one_at_the_requested_position() {
         .commit_all("init")
         .write("a.txt", &file("EDIT", "EDIT"));
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let hunks = snapshot.files[0].hunks.clone();
     assert_eq!(hunks.len(), 2);
     assert_eq!(hunks[0].identity, hunks[1].identity);
@@ -590,19 +590,19 @@ fn staging_a_binary_whole_file_hunk_is_a_whole_file_index_write() {
         .write_bytes("blob.bin", &[0u8, 9, 9]);
     let repo = Repo::discover(fixture.path()).unwrap();
 
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let hunk = snapshot.files[0].hunks[0].clone();
     let advisories = repo.stage_hunk("blob.bin", &hunk).unwrap().advisories;
     assert!(advisories.is_empty());
     assert_eq!(fixture.index_bytes("blob.bin").unwrap(), vec![0u8, 9, 9]);
     assert_eq!(
-        repo.refresh().unwrap().files[0].stage(),
+        repo.refresh().unwrap().snapshot.files[0].stage(),
         FileStage::Staged,
         "a staged binary derives ● — the pre-ticket-35 0/0 gap is closed"
     );
 
     // Unstage: index entry back to HEAD's blob.
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let hunk = snapshot.files[0].hunks[0].clone();
     repo.unstage_hunk("blob.bin", &hunk).unwrap();
     assert_eq!(fixture.index_bytes("blob.bin").unwrap(), vec![0u8, 1, 2, 3]);
@@ -627,7 +627,10 @@ fn a_binary_row_toggle_is_the_whole_file_index_write() {
         Some("staged 1 hunk — blob.bin in 'unassigned'")
     );
     assert_eq!(fixture.index_bytes("blob.bin").unwrap(), vec![0u8, 9, 9]);
-    assert_eq!(repo.refresh().unwrap().files[0].stage(), FileStage::Staged);
+    assert_eq!(
+        repo.refresh().unwrap().snapshot.files[0].stage(),
+        FileStage::Staged
+    );
 
     repo.unstage_owned_hunks("blob.bin", None).unwrap();
 
@@ -643,7 +646,7 @@ fn staging_an_untracked_binary_and_unstaging_drops_the_entry() {
         .write_bytes("new.bin", &[0u8, 4, 4]);
     let repo = Repo::discover(fixture.path()).unwrap();
 
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let file = snapshot
         .files
         .iter()
@@ -654,7 +657,7 @@ fn staging_an_untracked_binary_and_unstaging_drops_the_entry() {
     assert_eq!(fixture.index_bytes("new.bin").unwrap(), vec![0u8, 4, 4]);
 
     // Unstage a newly added file: the entry is dropped, not reset.
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let file = snapshot
         .files
         .iter()
@@ -677,7 +680,7 @@ fn space_on_a_stale_binary_restages_the_worktree_blob() {
         .write_bytes("blob.bin", &[0u8, 3, 3, 3]);
     let repo = Repo::discover(fixture.path()).unwrap();
 
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let hunk = snapshot.files[0].hunks[0].clone();
     assert_eq!(hunk.stage, HunkStage::StagedStale);
     repo.stage_hunk("blob.bin", &hunk).unwrap();
@@ -687,7 +690,7 @@ fn space_on_a_stale_binary_restages_the_worktree_blob() {
     // the staged blob (index := worktree = HEAD).
     fixture.write_bytes("blob.bin", &[0u8, 5]).stage("blob.bin");
     fixture.write_bytes("blob.bin", &[0u8, 1]);
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let hunk = snapshot.files[0].hunks[0].clone();
     assert!(hunk.index_only);
     repo.stage_hunk("blob.bin", &hunk).unwrap();
@@ -720,7 +723,7 @@ fn space_on_a_stale_binary_restages_the_worktree_blob() {
 fn a_refused_apply_reports_apply_failed_and_stages_nothing() {
     let fixture = two_hunk_fixture();
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let hunk = snapshot.files[0].hunks[0].clone();
     let index_before = fixture.index_content("a.txt");
 
@@ -781,7 +784,7 @@ fn bulk_fixture() -> (RepoFixture, Repo) {
     // Everything auto-captures into `one` (the active changelist);
     // a.txt's bottom hunk then moves to `two` and c.txt's is released
     // to unassigned under capture-off, where it stays recordless.
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let bottom = hunks(&snapshot, "a.txt")[1].clone();
     repo.assign_hunks("a.txt", &[bottom], Some("two")).unwrap();
     repo.switch(None).unwrap();
@@ -805,11 +808,11 @@ fn staging_a_changelist_takes_its_unstaged_and_staged_stale_hunks() {
     let (fixture, repo) = bulk_fixture();
     // b.txt's hunk is staged and then edited again — `◑`, which the
     // stage direction re-stages alongside a plain `○`.
-    let b = hunks(&repo.refresh().unwrap(), "b.txt")[0].clone();
+    let b = hunks(&repo.refresh().unwrap().snapshot, "b.txt")[0].clone();
     repo.stage_hunk("b.txt", &b).unwrap();
     fixture.write("b.txt", &numbered(&[(2, "b edit, again")]));
     assert_eq!(
-        stages(&repo.refresh().unwrap(), "b.txt"),
+        stages(&repo.refresh().unwrap().snapshot, "b.txt"),
         vec![HunkStage::StagedStale]
     );
 
@@ -833,7 +836,7 @@ fn staging_a_changelist_takes_its_unstaged_and_staged_stale_hunks() {
         Some(numbered(&[]).as_str()),
         "the unassigned hunk is untouched"
     );
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(
         stages(&snapshot, "a.txt"),
         vec![HunkStage::Staged, HunkStage::Unstaged]
@@ -860,7 +863,7 @@ fn unstaging_a_changelist_leaves_every_other_changelists_hunk_staged() {
         fixture.index_content("b.txt").as_deref(),
         Some(numbered(&[]).as_str())
     );
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(
         stages(&snapshot, "a.txt"),
         vec![HunkStage::Unstaged, HunkStage::Staged]
@@ -933,7 +936,7 @@ fn a_bulk_op_that_moves_nothing_still_says_so() {
 #[test]
 fn the_commit_flows_stage_all_still_leaves_staged_stale_hunks_alone() {
     let (fixture, repo) = bulk_fixture();
-    let b = hunks(&repo.refresh().unwrap(), "b.txt")[0].clone();
+    let b = hunks(&repo.refresh().unwrap().snapshot, "b.txt")[0].clone();
     repo.stage_hunk("b.txt", &b).unwrap();
     fixture.write("b.txt", &numbered(&[(2, "b edit, again")]));
 
@@ -950,7 +953,7 @@ fn the_commit_flows_stage_all_still_leaves_staged_stale_hunks_alone() {
         "the ◑ hunk keeps its earlier index content"
     );
     assert_eq!(
-        stages(&repo.refresh().unwrap(), "b.txt"),
+        stages(&repo.refresh().unwrap().snapshot, "b.txt"),
         vec![HunkStage::StagedStale]
     );
 }
@@ -971,7 +974,7 @@ fn staging_a_mode_hunk_writes_the_mode_and_no_object() {
     let head_blob = fixture.index_bytes("tool.sh");
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let hunk = repo.refresh().unwrap().files[0].hunks[0].clone();
+    let hunk = repo.refresh().unwrap().snapshot.files[0].hunks[0].clone();
     let objects = fixture.odb_object_count();
 
     repo.stage_hunk("tool.sh", &hunk).unwrap();
@@ -983,7 +986,7 @@ fn staging_a_mode_hunk_writes_the_mode_and_no_object() {
         "a mode flip writes no git object"
     );
 
-    let hunk = repo.refresh().unwrap().files[0].hunks[0].clone();
+    let hunk = repo.refresh().unwrap().snapshot.files[0].hunks[0].clone();
     repo.unstage_hunk("tool.sh", &hunk).unwrap();
     assert_eq!(
         fixture.index_mode("tool.sh"),
@@ -1070,7 +1073,7 @@ fn align_takes_an_index_only_mode_hunk_and_leaves_staged_content_alone() {
         .clear_exec("tool.sh");
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let stages: Vec<HunkStage> = repo.refresh().unwrap().files[0]
+    let stages: Vec<HunkStage> = repo.refresh().unwrap().snapshot.files[0]
         .hunks
         .iter()
         .map(|hunk| hunk.stage)
@@ -1090,7 +1093,7 @@ fn align_takes_an_index_only_mode_hunk_and_leaves_staged_content_alone() {
         Some("two\n"),
         "the staged edit is not what align was aligning"
     );
-    let file = &repo.refresh().unwrap().files[0];
+    let file = &repo.refresh().unwrap().snapshot.files[0];
     assert_eq!(file.total_hunks(), 1, "only the staged edit is left");
     assert_eq!(file.stage(), FileStage::Staged);
 }
@@ -1112,7 +1115,7 @@ fn staging_a_mode_hunk_beside_an_index_only_hunk_leaves_the_staged_content() {
         .set_exec("tool.sh");
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let hunk = repo.refresh().unwrap().files[0].hunks[0].clone();
+    let hunk = repo.refresh().unwrap().snapshot.files[0].hunks[0].clone();
     assert!(hunk.is_mode_change());
 
     repo.stage_hunk("tool.sh", &hunk).unwrap();
@@ -1123,7 +1126,7 @@ fn staging_a_mode_hunk_beside_an_index_only_hunk_leaves_the_staged_content() {
         "the staged edit survives the mode write"
     );
 
-    let file = &repo.refresh().unwrap().files[0];
+    let file = &repo.refresh().unwrap().snapshot.files[0];
     assert_eq!(file.stage(), FileStage::PartiallyStaged);
     assert_eq!(file.hunks[0].stage, HunkStage::Staged);
     assert_eq!(file.hunks[1].stage, HunkStage::StagedStale);

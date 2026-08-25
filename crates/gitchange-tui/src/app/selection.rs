@@ -1,7 +1,7 @@
 //! Snapshot application and selection survival (ADR 0005): swapping in
 //! a fresh snapshot identity-first, and moving the per-panel cursors.
 
-use gitchange_core::{ChangedFile, Snapshot, count_noun};
+use gitchange_core::{ChangedFile, RefreshOutcome, Snapshot, count_noun};
 
 use super::status::COMMIT_DISABLED;
 use super::{App, Panel, Severity};
@@ -20,6 +20,14 @@ pub(super) enum Motion {
 }
 
 impl App {
+    /// Apply one persisting refresh: its snapshot swaps in, then the
+    /// automatic membership decisions it committed reach the Log exactly
+    /// once (a decision becomes a record; there is no replay).
+    pub fn apply_refresh(&mut self, refreshed: RefreshOutcome) {
+        self.apply_snapshot(refreshed.snapshot);
+        self.push_advisories(&refreshed.advisories);
+    }
+
     /// Swap in a whole snapshot (ADR 0005), preserving selections
     /// identity-first: changelist by name, file by (group, path) then by
     /// path alone, else the nearest sibling by visual position.
@@ -65,10 +73,6 @@ impl App {
             }
             self.push_log(Severity::Info, echo);
         }
-
-        // This refresh's automatic membership decisions, each exactly
-        // once (a decision becomes a record; there is no replay).
-        self.push_advisories(&snapshot.advisories);
 
         let old_scope = self.scope();
         let old_entries = self.file_entries();

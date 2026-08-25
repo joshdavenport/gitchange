@@ -5,22 +5,23 @@
 //! One test binary, split by concern so a change to one area reads one
 //! file. Start from the module whose concern you are changing:
 //!
-//! | Module          | Concern                                              |
-//! |-----------------|------------------------------------------------------|
-//! | `support`       | the `RepoFixture` shim — shared by all                |
-//! | `refresh`       | `discover`/`refresh()`, `Snapshot`'s head and log     |
-//! | `hunk_universe` | the HEAD↔worktree ∪ HEAD↔index union, ○●◑ derivation  |
-//! | `matcher`       | membership records, assignment rules, dormancy        |
-//! | `assign`        | explicit `Repo::assign_hunks` re-anchoring            |
-//! | `changelists`   | changelist sync ops and state-file persistence        |
-//! | `persistence`   | ADR 0002's file-level properties, not per-operation   |
-//! | `staging`       | write-through stage/unstage against the live index    |
-//! | `commit`        | commit from a temporary index, plus record aftermath  |
-//! | `head_moves`    | tier-2 staleness under an external HEAD move          |
-//! | `conflicts`     | unmerged-path quarantine and the commit guard         |
-//! | `operations`    | the guard's remaining arms — rebase, cherry-pick, am  |
-//! | `apply_corpus`  | the data-driven apply-correctness corpus              |
-//! | `engine`        | real-fs notify wiring: the worktree half and `.git`   |
+//! | Module              | Concern                                              |
+//! |---------------------|------------------------------------------------------|
+//! | `support`           | the `RepoFixture` shim — shared by all                |
+//! | `refresh`           | `discover`/`refresh()`, `Snapshot`'s head and log     |
+//! | `read_only_refresh` | the read form: writes nothing, decides nothing        |
+//! | `hunk_universe`     | the HEAD↔worktree ∪ HEAD↔index union, ○●◑ derivation  |
+//! | `matcher`           | membership records, assignment rules, dormancy        |
+//! | `assign`            | explicit `Repo::assign_hunks` re-anchoring            |
+//! | `changelists`       | changelist sync ops and state-file persistence        |
+//! | `persistence`       | ADR 0002's file-level properties, not per-operation   |
+//! | `staging`           | write-through stage/unstage against the live index    |
+//! | `commit`            | commit from a temporary index, plus record aftermath  |
+//! | `head_moves`        | tier-2 staleness under an external HEAD move          |
+//! | `conflicts`         | unmerged-path quarantine and the commit guard         |
+//! | `operations`        | the guard's remaining arms — rebase, cherry-pick, am  |
+//! | `apply_corpus`      | the data-driven apply-correctness corpus              |
+//! | `engine`            | real-fs notify wiring: the worktree half and `.git`   |
 //!
 //! `matcher` and `commit` are directories, split again by mechanism —
 //! start from the table in their `mod.rs`. Cargo only scans the top level
@@ -39,5 +40,6 @@ mod hunk_universe;
 mod matcher;
 mod operations;
 mod persistence;
+mod read_only_refresh;
 mod refresh;
 mod staging;

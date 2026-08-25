@@ -105,8 +105,8 @@ fn wait_for_snapshot(engine: &Engine, accept: impl Fn(&Snapshot) -> bool) {
             .checked_duration_since(Instant::now())
             .expect("expected snapshot within the generous timeout");
         match engine.events().recv_timeout(remaining) {
-            Ok(EngineEvent::RefreshComplete(snapshot)) => {
-                if accept(&snapshot) {
+            Ok(EngineEvent::RefreshComplete(refreshed)) => {
+                if accept(&refreshed.snapshot) {
                     return;
                 }
             }

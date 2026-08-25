@@ -13,7 +13,7 @@ fn refresh_lists_worktree_changes_sorted_by_path() {
     std::fs::remove_file(fixture.path().join("doomed.txt")).unwrap();
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
 
     let entries: Vec<(&str, ChangeKind)> = snapshot
         .files
@@ -42,7 +42,7 @@ fn the_all_views_groups_mark_whichever_target_is_active() {
     repo.create_changelist("feature").unwrap();
     repo.switch(Some("feature")).unwrap();
 
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(
         snapshot
             .groups()
@@ -57,7 +57,7 @@ fn the_all_views_groups_mark_whichever_target_is_active() {
     );
 
     repo.switch(None).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(
         snapshot
             .groups()
@@ -82,7 +82,7 @@ fn refresh_in_a_clean_repo_is_empty() {
     fixture.write("a.txt", "content\n").commit_all("init");
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
 
     assert!(snapshot.files.is_empty());
 }
@@ -182,7 +182,7 @@ fn snapshot_carries_branch_head_and_recent_commits_newest_first() {
         .commit_all("second");
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
 
     match &snapshot.head {
         Head::Branch { name } => assert!(!name.is_empty()),
@@ -211,7 +211,7 @@ fn snapshot_head_is_unborn_with_no_commits() {
     fixture.write("a.txt", "content\n");
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
 
     match &snapshot.head {
         Head::Unborn { name } => assert!(!name.is_empty()),
@@ -227,7 +227,7 @@ fn snapshot_head_reports_detached_by_short_id() {
     fixture.detach_head();
 
     let repo = Repo::discover(fixture.path()).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
 
     match &snapshot.head {
         Head::Detached { short_id } => {

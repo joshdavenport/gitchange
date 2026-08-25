@@ -142,7 +142,9 @@ impl Sandbox {
 
 /// Refresh through core, surfacing core errors as anyhow.
 pub fn refresh(repo: &Repo) -> Result<Snapshot> {
-    repo.refresh().map_err(|err| anyhow!("core refresh: {err}"))
+    repo.refresh()
+        .map(|refreshed| refreshed.snapshot)
+        .map_err(|err| anyhow!("core refresh: {err}"))
 }
 
 fn file_hunks<'a>(snapshot: &'a Snapshot, path: &str) -> Result<&'a [Hunk]> {

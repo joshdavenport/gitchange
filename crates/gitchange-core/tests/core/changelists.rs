@@ -11,7 +11,7 @@ fn repo(fixture: &RepoFixture) -> Repo {
 }
 
 fn names_and_active(repo: &Repo) -> (Vec<String>, Option<String>) {
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let names = snapshot
         .changelists
         .iter()

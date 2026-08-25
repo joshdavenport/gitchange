@@ -35,6 +35,29 @@ impl OpOutcome {
     }
 }
 
+/// What a persisting refresh produced: the snapshot, plus the automatic
+/// membership decisions that refresh committed to records (ADR 0005) —
+/// delivered once, to the actor who triggered it.
+///
+/// The advisories live here rather than on [`Snapshot`] because that is
+/// the ADR 0005 filter, made structural: [`Repo::read_only_refresh`]
+/// returns the snapshot alone, so no frontend has a field to leak
+/// previews of decisions it never committed.
+#[derive(Debug)]
+pub struct RefreshOutcome {
+    pub snapshot: Snapshot,
+    pub advisories: Vec<Advisory>,
+}
+
+/// Which of ADR 0005's two refresh forms a recompute pass is running.
+/// The pipeline is one function: the mode decides whether capture is on
+/// and whether anything is written, and nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RefreshMode {
+    Persisting,
+    ReadOnly,
+}
+
 /// A handle on one git repository, holding the backend behind the
 /// `GitBackend` seam. Frontends reach git only through this type.
 pub struct Repo {
@@ -79,15 +102,43 @@ impl Repo {
 
     /// One blocking recompute pass producing a fresh snapshot: both
     /// diffs → hunk universe → matcher → persist records (ADR 0005).
-    pub fn refresh(&self) -> Result<Snapshot, Error> {
+    /// The persisting form — capture is on, and the decisions it makes
+    /// come back as advisories for its caller to deliver once.
+    pub fn refresh(&self) -> Result<RefreshOutcome, Error> {
         Ok(self.refresh_capturing_index()?.0)
+    }
+
+    /// The read-only refresh (ADR 0005): the same full recompute against
+    /// the records as they stand, writing nothing — no capture, no record
+    /// updates, no baseline stamp — and so taking no lock. Every
+    /// read-only frontend invocation runs this: a glance never moves
+    /// membership.
+    ///
+    /// Advising nothing is a filter, not a vacancy. The recompute still
+    /// produces advisories; they are discarded here as previews of
+    /// decisions only a persisting refresh commits and delivers, and the
+    /// return type carries no field to leak them through.
+    ///
+    /// Ownership is what the records say, because capture-off *is* the
+    /// no-active-changelist matcher run (ADR 0015): record-derived
+    /// ownership — overlap inheritance, dormant revival — shows, while
+    /// context-derived ownership — capture, the ADR 0009 entry-unit join
+    /// — never previews, so a recordless hunk reports as unassigned.
+    pub fn read_only_refresh(&self) -> Result<Snapshot, Error> {
+        Ok(self.recompute(RefreshMode::ReadOnly)?.0.snapshot)
     }
 
     /// [`Repo::refresh`], also handing back the diff(HEAD↔index) the
     /// universe was built from — the commit payload's raw material
     /// (ADR 0004), captured here so payload and snapshot describe the
     /// same instant.
-    fn refresh_capturing_index(&self) -> Result<(Snapshot, Vec<FileDiff>), Error> {
+    fn refresh_capturing_index(&self) -> Result<(RefreshOutcome, Vec<FileDiff>), Error> {
+        self.recompute(RefreshMode::Persisting)
+    }
+
+    /// The recompute both refresh forms run; `mode` is the only thing
+    /// that differs between them (see [`RefreshMode`]).
+    fn recompute(&self, mode: RefreshMode) -> Result<(RefreshOutcome, Vec<FileDiff>), Error> {
         // HEAD is read before the diffs: should a commit land in between,
         // the stale stamp trips the guard on the next refresh — loud,
         // where the opposite order would stamp coordinates as newer than
@@ -113,42 +164,50 @@ impl Repo {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let outcome = matcher::run(
-            &mut files,
-            state.records.clone(),
-            state.active.as_deref(),
-            now,
-            &affected,
-        );
-        // Belt-and-braces for the self-loop filter (ADR 0005): the state
-        // file is not rewritten when records are unchanged — except to
-        // move the baseline stamp with HEAD (ADR 0012). The default-state
-        // guard keeps a changelist-less repo from growing a state file
-        // just to hold a stamp.
-        let stamp_due = state.baseline_head != head && state != State::default();
-        if outcome.records != state.records || stamp_due {
-            let _lock = state_file::lock(&dir)?;
-            // Reload under the lock so a write that landed since our read
-            // (changelist ops) keeps its changelists; only records and
-            // the baseline are ours to replace.
-            let mut current = state_file::load(&dir)?;
-            current.records = outcome.records;
-            current.baseline_head = head;
-            // A delete that landed since our read must keep its
-            // pruning: matched owners re-validate against the
-            // reloaded roster before they persist.
-            current.prune_records_of_unknown_changelists();
-            state_file::save(&dir, &current)?;
+        // Capture is the read-only form's one behavioural difference
+        // (ADR 0005): running the matcher with no active changelist *is*
+        // capture-off (ADR 0015), so context-derived ownership never
+        // reaches a read's snapshot while record-derived ownership does.
+        let active = match mode {
+            RefreshMode::Persisting => state.active.as_deref(),
+            RefreshMode::ReadOnly => None,
+        };
+        let outcome = matcher::run(&mut files, state.records.clone(), active, now, &affected);
+        if mode == RefreshMode::Persisting {
+            // Belt-and-braces for the self-loop filter (ADR 0005): the
+            // state file is not rewritten when records are unchanged —
+            // except to move the baseline stamp with HEAD (ADR 0012). The
+            // default-state guard keeps a changelist-less repo from
+            // growing a state file just to hold a stamp.
+            let stamp_due = state.baseline_head != head && state != State::default();
+            if outcome.records != state.records || stamp_due {
+                let _lock = state_file::lock(&dir)?;
+                // Reload under the lock so a write that landed since our
+                // read (changelist ops) keeps its changelists; only
+                // records and the baseline are ours to replace.
+                let mut current = state_file::load(&dir)?;
+                current.records = outcome.records;
+                current.baseline_head = head;
+                // A delete that landed since our read must keep its
+                // pruning: matched owners re-validate against the
+                // reloaded roster before they persist.
+                current.prune_records_of_unknown_changelists();
+                state_file::save(&dir, &current)?;
+            }
         }
         Ok((
-            Snapshot {
-                files,
-                changelists: state.changelists,
-                active: state.active,
+            RefreshOutcome {
+                snapshot: Snapshot {
+                    files,
+                    changelists: state.changelists,
+                    active: state.active,
+                    head: head_info,
+                    recent_commits,
+                    operation,
+                },
+                // Always carried this far; it is the read-only entry
+                // point that drops them, having nowhere to put them.
                 advisories: outcome.advisories,
-                head: head_info,
-                recent_commits,
-                operation,
             },
             index_diff,
         ))
@@ -248,7 +307,8 @@ impl Repo {
     /// flow shows and what [`Repo::commit`] later compares against for
     /// drift (ADR 0004's freshness guard).
     pub fn commit_payload(&self, changelist: Option<&str>) -> Result<CommitPayload, Error> {
-        let (snapshot, index_diff) = self.refresh_capturing_index()?;
+        let (refreshed, index_diff) = self.refresh_capturing_index()?;
+        let snapshot = refreshed.snapshot;
         validate_changelist(&snapshot, changelist)?;
         Ok(commit::plan(&snapshot.files, &index_diff, changelist)?.payload)
     }
@@ -283,7 +343,8 @@ impl Repo {
         if let Some(operation) = self.backend.operation()? {
             return Err(Error::OperationInProgress { operation });
         }
-        let (snapshot, index_diff) = self.refresh_capturing_index()?;
+        let (refreshed, index_diff) = self.refresh_capturing_index()?;
+        let snapshot = refreshed.snapshot;
         validate_changelist(&snapshot, changelist)?;
         let plan = commit::plan(&snapshot.files, &index_diff, changelist)?;
         if plan.payload.is_empty() {
@@ -462,7 +523,7 @@ impl Repo {
         include: impl Fn(HunkStage) -> bool,
         apply: impl Fn(&Self, &str, &Hunk) -> Result<OpOutcome, Error>,
     ) -> Result<(usize, Vec<Advisory>), Error> {
-        let snapshot = self.refresh()?;
+        let snapshot = self.refresh()?.snapshot;
         validate_changelist(&snapshot, scope.changelist)?;
         let mut moved = 0;
         let mut advisories = Vec::new();

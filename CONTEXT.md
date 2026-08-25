@@ -335,7 +335,9 @@ Core's record of an automatic decision or fail-soft outcome worth
 spot-checking (`Advisory` in `matcher.rs`): auto-capture, entry-unit
 capture, ambiguous overlap, dormant revival, stale hunk, HEAD-move
 dormancy. Carried as data
-on snapshots and op results with one canonical message
+beside a persisting refresh's snapshot and on op results — never on the
+snapshot itself, which is how the read-only form's filter is structural
+(ADR 0005) — with one canonical message
 (`Advisory::message`, ADR 0006); frontends add channel dressing and
 assign the severity — today every advisory logs at `!` notice, but the
 severity is the presentation layer's, which is why the type is not named

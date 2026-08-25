@@ -28,19 +28,20 @@ fn a_text_rename_leaves_membership_at_the_old_path_and_captures_the_new_one() {
     repo.switch(Some("two")).unwrap();
     fixture.rename("old.txt", "new.txt");
 
-    let snapshot = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
     assert_eq!(
-        owners(&snapshot, "old.txt"),
+        owners(snapshot, "old.txt"),
         vec![Some("one".into())],
         "the deletion half inherits the record by overlap: membership stays put"
     );
     assert_eq!(
-        owners(&snapshot, "new.txt"),
+        owners(snapshot, "new.txt"),
         vec![Some("two".into())],
         "the new path's content is a fresh change, not the old record's"
     );
     assert_eq!(
-        snapshot.advisories,
+        refreshed.advisories,
         vec![Advisory::AutoCaptured {
             path: "new.txt".into(),
             new_start: 1,
@@ -57,8 +58,8 @@ fn a_text_rename_leaves_membership_at_the_old_path_and_captures_the_new_one() {
     assert_eq!(record_at(&json, "new.txt")["changelist"], "two");
 
     // The decision became a record: the next refresh is quiet.
-    let snapshot = repo.refresh().unwrap();
-    assert!(snapshot.advisories.is_empty());
+    let refreshed = repo.refresh().unwrap();
+    assert!(refreshed.advisories.is_empty());
 }
 
 #[test]
@@ -84,19 +85,20 @@ fn a_binary_rename_leaves_membership_at_the_old_path_and_captures_the_new_one() 
     repo.switch(Some("other")).unwrap();
     fixture.rename("logo.png", "brand.png");
 
-    let snapshot = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
     assert_eq!(
-        owners(&snapshot, "logo.png"),
+        owners(snapshot, "logo.png"),
         vec![Some("art".into())],
         "the deletion half keeps the whole-file record by path continuity"
     );
     assert_eq!(
-        owners(&snapshot, "brand.png"),
+        owners(snapshot, "brand.png"),
         vec![Some("other".into())],
         "the same bytes at a new path are a fresh change: active captures them"
     );
     assert_eq!(
-        snapshot.advisories,
+        refreshed.advisories,
         vec![Advisory::AutoCaptured {
             path: "brand.png".into(),
             new_start: 0,
@@ -123,8 +125,8 @@ fn a_binary_rename_leaves_membership_at_the_old_path_and_captures_the_new_one() 
         "the record follows the deletion: no changed side any more"
     );
 
-    let snapshot = repo.refresh().unwrap();
-    assert!(snapshot.advisories.is_empty());
+    let refreshed = repo.refresh().unwrap();
+    assert!(refreshed.advisories.is_empty());
 }
 
 #[test]
@@ -144,14 +146,15 @@ fn renaming_an_untracked_file_leaves_its_record_dormant() {
     repo.switch(Some("two")).unwrap();
     fixture.rename("draft.txt", "final.txt");
 
-    let snapshot = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
     assert!(
         !snapshot.files.iter().any(|file| file.path == "draft.txt"),
         "the old path has no diff left at all"
     );
-    assert_eq!(owners(&snapshot, "final.txt"), vec![Some("two".into())]);
+    assert_eq!(owners(snapshot, "final.txt"), vec![Some("two".into())]);
     assert_eq!(
-        snapshot.advisories,
+        refreshed.advisories,
         vec![Advisory::AutoCaptured {
             path: "final.txt".into(),
             new_start: 1,
@@ -168,8 +171,8 @@ fn renaming_an_untracked_file_leaves_its_record_dormant() {
     assert_eq!(left_behind["changelist"], "one");
     assert_eq!(record_at(&json, "final.txt")["changelist"], "two");
 
-    let snapshot = repo.refresh().unwrap();
-    assert!(snapshot.advisories.is_empty());
+    let refreshed = repo.refresh().unwrap();
+    assert!(refreshed.advisories.is_empty());
 }
 
 #[test]
@@ -188,11 +191,12 @@ fn renaming_an_untracked_binary_leaves_its_whole_file_record_dormant() {
     repo.switch(Some("other")).unwrap();
     fixture.rename("draft.png", "final.png");
 
-    let snapshot = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
     assert!(!snapshot.files.iter().any(|file| file.path == "draft.png"));
-    assert_eq!(owners(&snapshot, "final.png"), vec![Some("other".into())]);
+    assert_eq!(owners(snapshot, "final.png"), vec![Some("other".into())]);
     assert_eq!(
-        snapshot.advisories,
+        refreshed.advisories,
         vec![Advisory::AutoCaptured {
             path: "final.png".into(),
             new_start: 0,
@@ -210,6 +214,6 @@ fn renaming_an_untracked_binary_leaves_its_whole_file_record_dormant() {
         "same blob, different path: revival is path-scoped too"
     );
 
-    let snapshot = repo.refresh().unwrap();
-    assert!(snapshot.advisories.is_empty());
+    let refreshed = repo.refresh().unwrap();
+    assert!(refreshed.advisories.is_empty());
 }

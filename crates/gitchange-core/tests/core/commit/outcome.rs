@@ -35,7 +35,7 @@ fn committed_short_id_is_gits_own_abbreviation() {
         "{short_id} must abbreviate {oid}"
     );
     assert_eq!(
-        repo.refresh().unwrap().recent_commits[0].short_id,
+        repo.refresh().unwrap().snapshot.recent_commits[0].short_id,
         short_id,
         "the echo and the Commits panel must name the commit identically"
     );
@@ -98,10 +98,11 @@ fn amend_reuses_the_temp_index_path() {
         Some(text(&amended).into_bytes())
     );
 
-    let snapshot = repo.refresh().unwrap();
-    assert!(snapshot.advisories.is_empty());
-    assert_eq!(owners(&snapshot, "a.txt"), vec![Some("three".into())]);
-    assert_eq!(stages(&snapshot, "a.txt"), vec![HunkStage::Staged]);
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
+    assert!(refreshed.advisories.is_empty());
+    assert_eq!(owners(snapshot, "a.txt"), vec![Some("three".into())]);
+    assert_eq!(stages(snapshot, "a.txt"), vec![HunkStage::Staged]);
 }
 
 #[test]
@@ -144,6 +145,6 @@ fn unborn_branch_initial_commit_works() {
     assert_eq!(fixture.commit_count(), 1);
     assert_eq!(fixture.head_bytes("a.txt"), Some(b"alpha\nbeta\n".to_vec()));
     assert_eq!(state_json(&fixture)["baseline_head"], fixture.head_oid());
-    let snapshot = repo.refresh().unwrap();
-    assert!(snapshot.advisories.is_empty());
+    let refreshed = repo.refresh().unwrap();
+    assert!(refreshed.advisories.is_empty());
 }

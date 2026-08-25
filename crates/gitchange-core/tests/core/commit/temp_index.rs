@@ -57,18 +57,19 @@ fn commit_writes_only_the_changelists_staged_hunks() {
     // The live index was never touched: it still holds both hunks.
     assert_eq!(fixture.index_content("a.txt"), Some(text(&worktree)));
 
-    let snapshot = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
     assert_eq!(
-        owners(&snapshot, "a.txt"),
+        owners(snapshot, "a.txt"),
         vec![Some("two".into())],
         "changelist B's hunk stays in B"
     );
     assert_eq!(
-        stages(&snapshot, "a.txt"),
+        stages(snapshot, "a.txt"),
         vec![HunkStage::Staged],
         "changelist B's staged hunk stays staged post-commit"
     );
-    assert!(snapshot.advisories.is_empty());
+    assert!(refreshed.advisories.is_empty());
     // "one"'s record was fully consumed and removed, not left dormant.
     assert!(dormant_owners(&fixture).is_empty());
     // The emptied changelist is kept until explicitly deleted.
@@ -206,12 +207,13 @@ fn no_verify_commits_past_a_rejecting_hook() {
     );
     assert_eq!(fixture.head_message(), "one: ten\n");
 
-    let snapshot = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
     assert!(
         !snapshot.files.iter().any(|file| file.path == "a.txt"),
         "the payload was fully consumed, so nothing is left changed"
     );
-    assert!(snapshot.advisories.is_empty());
+    assert!(refreshed.advisories.is_empty());
     // Fully consumed: the record is removed outright, not left dormant.
     assert!(
         state_json(&fixture)["records"]
@@ -336,7 +338,7 @@ fn a_changelist_containing_a_binary_commits_it_whole() {
     );
 
     // The consumed record is removed; the path drops out of the diff.
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert!(!snapshot.files.iter().any(|file| file.path == "logo.png"));
 }
 
@@ -385,7 +387,7 @@ fn a_whole_file_commit_leaves_another_changelists_mode_flip_behind() {
     repo.create_changelist("chores").unwrap();
     repo.switch(Some("chores")).unwrap();
     fixture.set_exec("logo.png").stage("logo.png");
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(
         owners(&snapshot, "logo.png"),
         vec![Some("chores".to_string()), Some("art".to_string())],
@@ -491,7 +493,7 @@ fn split_entry(second: Option<&str>) -> (RepoFixture, Repo, Vec<String>) {
     lines[4] = "five!".into();
     lines[24] = "twentyfive!".into();
     fixture.write("notes.txt", &text(&lines)).stage("notes.txt");
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let far = snapshot.files[0].hunks[1].clone();
     // Capture-off before a release, or the uniform rule captures the
     // released hunk straight back (ADR 0016).
@@ -499,7 +501,7 @@ fn split_entry(second: Option<&str>) -> (RepoFixture, Repo, Vec<String>) {
         repo.switch(None).unwrap();
     }
     repo.assign_hunks("notes.txt", &[far], second).unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(
         owners(&snapshot, "notes.txt"),
         vec![Some("art".to_owned()), second.map(str::to_owned)],
@@ -509,7 +511,7 @@ fn split_entry(second: Option<&str>) -> (RepoFixture, Repo, Vec<String>) {
     // The worktree turns binary: one entry, a whole-file hunk over content
     // two holders own.
     fixture.write_bytes("notes.txt", &[0u8, 1, 2, 3]);
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert!(
         snapshot.files[0].hunks[0].is_whole_file(),
         "the rewrite presents a whole-file hunk"
@@ -578,7 +580,7 @@ fn unassigned_counts_as_a_holder_of_a_shared_index_entry() {
     // both unassigned, 'art' holds the other content hunk, and each side
     // refuses on the other's content.
     let (fixture, repo, _lines) = split_entry(None);
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(
         owners(&snapshot, "notes.txt"),
         vec![None, Some("art".to_owned()), None],
@@ -615,7 +617,7 @@ fn a_mode_only_payload_commits_past_a_split_entry() {
     repo.create_changelist("chores").unwrap();
     repo.switch(Some("chores")).unwrap();
     fixture.set_exec("notes.txt");
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let mode = snapshot.files[0].hunks[0].clone();
     assert!(mode.is_mode_change(), "the mode hunk sits first");
     assert_eq!(
@@ -647,7 +649,7 @@ fn assigning_the_unit_clears_a_refusal() {
     // (ADR 0009), and the entry then has one holder and commits. Without
     // this the refusal would be a dead end.
     let (fixture, repo, lines) = split_entry(Some("other"));
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let whole_file = snapshot.files[0].hunks[0].clone();
     let outcome = repo
         .assign_hunks("notes.txt", &[whole_file], Some("art"))
@@ -658,7 +660,7 @@ fn assigning_the_unit_clears_a_refusal() {
         "one op moves the whole entry, the other holder's hunk included"
     );
 
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(
         owners(&snapshot, "notes.txt"),
         vec![Some("art".to_owned()); 3],
@@ -695,7 +697,7 @@ fn an_unstaged_hunk_of_a_shared_entry_refuses_nothing() {
         .write_bytes("notes.txt", &[0u8, 1, 2, 3])
         .stage("notes.txt");
     fixture.write("notes.txt", "edited text\n");
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(
         owners(&snapshot, "notes.txt"),
         vec![None, Some("text".to_owned())],

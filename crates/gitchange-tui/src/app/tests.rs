@@ -74,7 +74,6 @@ fn snapshot() -> Snapshot {
             },
         ],
         active: Some("fixes".into()),
-        advisories: Vec::new(),
         head: Head::Branch {
             name: "main".into(),
         },
@@ -559,13 +558,14 @@ fn conditions_pin_and_self_clear() {
 #[test]
 fn advisories_land_in_the_log_at_notice_severity() {
     let mut app = app();
-    let mut next = snapshot();
-    next.advisories = vec![gitchange_core::Advisory::AutoCaptured {
-        path: "src/print.css".into(),
-        new_start: 41,
-        changelist: "fixes".into(),
-    }];
-    app.apply_snapshot(next);
+    app.apply_refresh(gitchange_core::RefreshOutcome {
+        snapshot: snapshot(),
+        advisories: vec![gitchange_core::Advisory::AutoCaptured {
+            path: "src/print.css".into(),
+            new_start: 41,
+            changelist: "fixes".into(),
+        }],
+    });
     assert!(app.log.iter().any(|entry| {
         entry.severity == Severity::Notice
             && entry
@@ -2693,7 +2693,6 @@ fn many_files(count: usize) -> Snapshot {
             .collect(),
         changelists: Vec::new(),
         active: None,
-        advisories: Vec::new(),
         head: Head::Branch {
             name: "main".into(),
         },

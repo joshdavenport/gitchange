@@ -71,7 +71,7 @@ fn an_index_only_hunks_stored_anchor_carries_three_context_lines() {
         .stage("a.txt")
         .write("a.txt", &numbered(20, &[]));
 
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert!(
         snapshot.files[0].hunks[0].index_only,
         "the index-only path is the one under test"
@@ -101,14 +101,15 @@ fn a_moved_hunk_keeps_membership_via_exact_anchor_match() {
     let moved = format!("alpha\nbeta\ngamma\n{}", numbered(30, &[(20, "twenty!")]));
     fixture.write("a.txt", &moved);
 
-    let snapshot = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
     assert_eq!(
-        owners(&snapshot, "a.txt"),
+        owners(snapshot, "a.txt"),
         vec![Some("two".into()), Some("one".into())],
         "top insertion captures to active; the moved hunk keeps its owner"
     );
     assert_eq!(
-        snapshot.advisories,
+        refreshed.advisories,
         vec![Advisory::AutoCaptured {
             path: "a.txt".into(),
             new_start: 1,
@@ -146,14 +147,15 @@ fn a_reworked_hunk_below_a_fresh_insertion_keeps_membership_via_overlap() {
     );
     fixture.write("a.txt", &reworked);
 
-    let snapshot = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
     assert_eq!(
-        owners(&snapshot, "a.txt"),
+        owners(snapshot, "a.txt"),
         vec![Some("two".into()), Some("one".into())],
         "top insertion captures to active; the reworked hunk keeps its owner"
     );
     assert_eq!(
-        snapshot.advisories,
+        refreshed.advisories,
         vec![Advisory::AutoCaptured {
             path: "a.txt".into(),
             new_start: 1,
@@ -182,9 +184,10 @@ fn editing_your_own_hunk_keeps_membership_via_overlap() {
     repo.switch(Some("two")).unwrap();
     fixture.write("a.txt", &numbered(20, &[(10, "ten-b"), (11, "eleven-b")]));
 
-    let snapshot = repo.refresh().unwrap();
-    assert_eq!(owners(&snapshot, "a.txt"), vec![Some("one".into())]);
-    assert!(snapshot.advisories.is_empty());
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
+    assert_eq!(owners(snapshot, "a.txt"), vec![Some("one".into())]);
+    assert!(refreshed.advisories.is_empty());
 }
 
 #[test]
@@ -213,13 +216,14 @@ fn a_split_hunk_inherits_the_parents_changelist() {
         .collect();
     fixture.write("a.txt", &numbered(40, &split));
 
-    let snapshot = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
     assert_eq!(
-        owners(&snapshot, "a.txt"),
+        owners(snapshot, "a.txt"),
         vec![Some("one".into()), Some("one".into())],
         "both fragments inherit the parent record's changelist"
     );
-    assert!(snapshot.advisories.is_empty());
+    assert!(refreshed.advisories.is_empty());
 }
 
 #[test]
@@ -245,10 +249,11 @@ fn a_hunk_overlapping_two_changelists_captures_to_active_with_a_notice() {
     let edits: Vec<(usize, &str)> = edits.iter().map(|(n, s)| (*n, s.as_str())).collect();
     fixture.write("a.txt", &numbered(40, &edits));
 
-    let snapshot = repo.refresh().unwrap();
-    assert_eq!(owners(&snapshot, "a.txt"), vec![Some("two".into())]);
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
+    assert_eq!(owners(snapshot, "a.txt"), vec![Some("two".into())]);
     assert_eq!(
-        snapshot.advisories,
+        refreshed.advisories,
         vec![Advisory::AmbiguousOverlap {
             path: "a.txt".into(),
             new_start: 7,
@@ -258,8 +263,8 @@ fn a_hunk_overlapping_two_changelists_captures_to_active_with_a_notice() {
     );
 
     // The decision became a record: the next refresh is quiet.
-    let snapshot = repo.refresh().unwrap();
-    assert!(snapshot.advisories.is_empty());
+    let refreshed = repo.refresh().unwrap();
+    assert!(refreshed.advisories.is_empty());
 }
 
 #[test]
@@ -276,9 +281,9 @@ fn a_reexported_binary_keeps_its_changelist_via_path_continuity() {
     repo.switch(Some("art")).unwrap();
 
     fixture.write_bytes("logo.png", &[0u8, 9, 9]);
-    let snapshot = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
     assert_eq!(
-        snapshot.advisories,
+        refreshed.advisories,
         vec![Advisory::AutoCaptured {
             path: "logo.png".into(),
             new_start: 0,
@@ -293,7 +298,7 @@ fn a_reexported_binary_keeps_its_changelist_via_path_continuity() {
     repo.switch(Some("other")).unwrap();
     fixture.write_bytes("logo.png", &[0u8, 5, 5, 5, 5]);
 
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(owners(&snapshot, "logo.png"), vec![Some("art".into())]);
     let json = state_json(&fixture);
     assert_eq!(json["records"][0]["path"], "logo.png");
@@ -324,10 +329,11 @@ fn an_unchanged_binary_matches_exactly_after_a_move() {
     repo.create_changelist("other").unwrap();
     repo.switch(Some("other")).unwrap();
 
-    let snapshot = repo.refresh().unwrap();
-    assert_eq!(owners(&snapshot, "logo.png"), vec![Some("art".into())]);
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
+    assert_eq!(owners(snapshot, "logo.png"), vec![Some("art".into())]);
     assert!(
-        snapshot.advisories.is_empty(),
+        refreshed.advisories.is_empty(),
         "an exact match is not a capture"
     );
 }
@@ -346,7 +352,7 @@ fn a_mode_hunks_record_carries_no_content_and_no_mode_bits() {
     repo.switch(Some("scripts")).unwrap();
 
     fixture.set_exec("tool.sh");
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(owners(&snapshot, "tool.sh"), vec![Some("scripts".into())]);
 
     let record = record_at(&state_json(&fixture), "tool.sh");

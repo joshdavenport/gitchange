@@ -23,7 +23,7 @@ pub use diff::{
 pub use engine::{Condition, Engine, EngineEvent};
 pub use error::{ApplySite, Error};
 pub use matcher::Advisory;
-pub use repo::{OpOutcome, Repo};
+pub use repo::{OpOutcome, RefreshOutcome, Repo};
 pub use snapshot::{CommitInfo, FileGroup, GitOperation, GroupKind, Head, Snapshot};
 pub use state::{Changelist, MembershipRecord, OidAnchor, RESERVED_NAMES};
 pub use universe::{ChangedFile, FileStage, Hunk, HunkIdentity, HunkStage, file_stage};

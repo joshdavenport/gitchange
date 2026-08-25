@@ -23,7 +23,7 @@ fn stash_then_pop_round_trips_membership_through_dormancy() {
     repo.refresh().unwrap();
 
     fixture.stash();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert!(snapshot.files.is_empty());
     let json = state_json(&fixture);
     assert_eq!(json["records"][0]["changelist"], "one");
@@ -33,7 +33,7 @@ fn stash_then_pop_round_trips_membership_through_dormancy() {
     );
 
     fixture.stash_pop();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(owners(&snapshot, "a.txt"), vec![Some("one".into())]);
     let json = state_json(&fixture);
     assert!(
@@ -63,7 +63,7 @@ fn dormant_records_never_revive_via_overlap() {
     repo.switch(Some("two")).unwrap();
     fixture.write("a.txt", &numbered(20, &[(10, "ten-different")]));
 
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(
         owners(&snapshot, "a.txt"),
         vec![Some("two".into())],
@@ -201,12 +201,12 @@ fn binary_dormant_revival_is_exact_only() {
     repo.create_changelist("other").unwrap();
     repo.switch(Some("other")).unwrap();
     fixture.write_bytes("logo.png", &[0u8, 5, 5, 5]);
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(owners(&snapshot, "logo.png"), vec![Some("other".into())]);
 
     // The exact bytes back: tier-1 revival to the dormant owner.
     fixture.write_bytes("logo.png", &[0u8, 9, 9]);
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(owners(&snapshot, "logo.png"), vec![Some("art".into())]);
 }
 
@@ -226,7 +226,7 @@ fn a_mode_only_record_goes_dormant_and_revives_on_a_re_flip() {
     repo.switch(Some("scripts")).unwrap();
 
     fixture.set_exec("tool.sh");
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(owners(&snapshot, "tool.sh"), vec![Some("scripts".into())]);
 
     // Flip back: the change vanishes from the universe, the record goes
@@ -236,7 +236,7 @@ fn a_mode_only_record_goes_dormant_and_revives_on_a_re_flip() {
         fs::Permissions::from_mode(0o644),
     )
     .unwrap();
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert!(snapshot.files.is_empty(), "no change left to show");
     assert!(
         state_json(&fixture)["records"][0]["dormant_since"].is_u64(),
@@ -248,6 +248,6 @@ fn a_mode_only_record_goes_dormant_and_revives_on_a_re_flip() {
     repo.create_changelist("other").unwrap();
     repo.switch(Some("other")).unwrap();
     fixture.set_exec("tool.sh");
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(owners(&snapshot, "tool.sh"), vec![Some("scripts".into())]);
 }

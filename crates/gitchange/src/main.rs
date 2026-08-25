@@ -297,11 +297,11 @@ fn main() -> ExitCode {
 /// rendered line by line.
 fn status() -> anyhow::Result<()> {
     let repo = open_repo()?;
-    let snapshot = repo.refresh()?;
-    for advisory in &snapshot.advisories {
+    let refreshed = repo.refresh()?;
+    for advisory in &refreshed.advisories {
         eprintln!("{DIAG} notice: {}", advisory.message());
     }
-    for group in snapshot.groups() {
+    for group in refreshed.snapshot.groups() {
         match &group.kind {
             // Quarantined unmerged paths (ADR 0007) — outside gitchange's
             // remit until resolved, so no stage mark or hunk counts.

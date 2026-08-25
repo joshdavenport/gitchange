@@ -1,5 +1,4 @@
 use crate::diff::ChangeKind;
-use crate::matcher::Advisory;
 use crate::state::Changelist;
 use crate::universe::ChangedFile;
 use crate::vocabulary::{CONFLICTS, UNASSIGNED};
@@ -65,8 +64,11 @@ pub struct CommitInfo {
 }
 
 /// The immutable result of one refresh — the only data structure frontends
-/// read. Hunks carry their owning changelist (written by the matcher);
-/// advisories record this refresh's automatic membership decisions.
+/// read. Hunks carry their owning changelist (written by the matcher).
+///
+/// Deliberately advisory-free: advisories are what a refresh *decided*,
+/// not what the tree *is*, so they ride [`crate::RefreshOutcome`] beside
+/// this — which the read-only form never returns (ADR 0005).
 #[derive(Debug, Clone)]
 pub struct Snapshot {
     /// The hunk universe (ADR 0003), sorted by path.
@@ -77,10 +79,6 @@ pub struct Snapshot {
     /// off (ADR 0015). Exactly one of {the changelists, unassigned} is
     /// active, so every reader of this field has a `*` to place.
     pub active: Option<String>,
-    /// Automatic membership decisions worth spot-checking, in file
-    /// order. Not persisted: a decision becomes a record, so it surfaces
-    /// exactly once.
-    pub advisories: Vec<Advisory>,
     /// Where HEAD points, for the Status panel.
     pub head: Head,
     /// Recent commits reachable from HEAD, newest first, for the Commits

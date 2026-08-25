@@ -31,7 +31,7 @@ fn committing_one_changelist_commutes_same_file_records() {
     repo.switch(Some("one")).unwrap();
     worktree[28] = "forty-v1".into();
     fixture.write("a.txt", &text(&worktree));
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(
         owners(&snapshot, "a.txt"),
         vec![Some("two".into()), Some("one".into())]
@@ -51,14 +51,15 @@ fn committing_one_changelist_commutes_same_file_records() {
     worktree[28] = "forty-v2".into();
     fixture.write("a.txt", &text(&worktree));
 
-    let snapshot = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
     assert_eq!(
-        owners(&snapshot, "a.txt"),
+        owners(snapshot, "a.txt"),
         vec![Some("one".into())],
         "the commuted record keeps the shifted hunk in its changelist"
     );
     assert!(
-        snapshot.advisories.is_empty(),
+        refreshed.advisories.is_empty(),
         "no dormancy notice on an own commit"
     );
     assert!(dormant_owners(&fixture).is_empty());
@@ -97,13 +98,14 @@ fn a_residual_stale_hunk_reattaches_after_an_own_commit() {
     );
 
     // Residual hunk: committed "ten-staged" ↔ worktree "ten-final".
-    let snapshot = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
     assert_eq!(
-        owners(&snapshot, "a.txt"),
+        owners(snapshot, "a.txt"),
         vec![Some("one".into())],
         "the rewritten record re-attaches the residual to its changelist"
     );
-    assert!(snapshot.advisories.is_empty());
+    assert!(refreshed.advisories.is_empty());
     assert!(dormant_owners(&fixture).is_empty());
 }
 
@@ -143,13 +145,14 @@ fn a_residual_stale_hunk_reattaches_when_the_payload_shifts_it() {
         Some(text(&committed).into_bytes())
     );
 
-    let snapshot = repo.refresh().unwrap();
+    let refreshed = repo.refresh().unwrap();
+    let snapshot = &refreshed.snapshot;
     assert_eq!(
-        owners(&snapshot, "a.txt"),
+        owners(snapshot, "a.txt"),
         vec![Some("one".into())],
         "the shifted residual still re-attaches to its changelist"
     );
-    assert!(snapshot.advisories.is_empty());
+    assert!(refreshed.advisories.is_empty());
     // The consumed record is removed; the retained one stays live.
     assert!(dormant_owners(&fixture).is_empty());
 }

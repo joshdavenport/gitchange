@@ -140,7 +140,7 @@ fn run(case: Case) {
     if let Some(first) = case.changelists.first() {
         repo.switch(Some(first)).unwrap();
     }
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     for (path, bytes) in &case.after_snapshot_writes {
         fixture.write_bytes(path, bytes);
     }

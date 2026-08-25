@@ -79,7 +79,7 @@ fn stacked_edits() -> RepoFixture {
 fn assert_guard_holds(fixture: &RepoFixture, expected: GitOperation) {
     let repo = Repo::discover(fixture.path()).unwrap();
 
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(snapshot.operation, Some(expected));
 
     // Nothing staged, no changelist: the guard fires ahead of both, so
@@ -97,7 +97,7 @@ fn assert_guard_holds(fixture: &RepoFixture, expected: GitOperation) {
     // The bystander is clean and unconflicted, and stages by hunk
     // exactly as it would with no operation running.
     fixture.write(BYSTANDER, "bystander edited\n");
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     let hunk = snapshot
         .files
         .iter()
@@ -248,7 +248,7 @@ fn a_detached_head_is_not_an_operation_and_leaves_commit_unguarded() {
     repo.create_changelist("one").unwrap();
     repo.switch(Some("one")).unwrap();
     fixture.write("a.txt", "detached edit\n").stage("a.txt");
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     assert_eq!(
         snapshot.operation, None,
         "a detached HEAD is a location, not an operation in progress"
@@ -280,7 +280,7 @@ fn a_detached_head_is_not_an_operation_and_leaves_commit_unguarded() {
 
     // Still detached afterwards, now pinned at the commit just made: the
     // commit moved HEAD itself, not the branch it was detached from.
-    let snapshot = repo.refresh().unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
     match &snapshot.head {
         Head::Detached { short_id } => {
             assert!(fixture.head_oid().starts_with(short_id.as_str()));

@@ -28,7 +28,6 @@ fn changelists_snapshot(count: usize) -> Snapshot {
             })
             .collect(),
         active: None,
-        advisories: Vec::new(),
         head: Head::Branch {
             name: "main".into(),
         },
