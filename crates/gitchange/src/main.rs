@@ -40,6 +40,13 @@ const REFUSAL: u8 = 1;
 /// Transient lock contention: retry the same command unchanged.
 const TRANSIENT: u8 = 3;
 
+/// A malformed command line, clap's own code for one. Reached from a
+/// handler only for the checks clap cannot declare — a value's newlines,
+/// an option's positional arity, which of two addressing modes was typed
+/// (#145) — so one class of mistake keeps one exit code however it was
+/// caught.
+const USAGE: u8 = 2;
+
 /// The capture-pending hint (#143): what `status` says under the
 /// unassigned group when a real changelist is active and unassigned holds
 /// hunks — the one state where the read's ownership and the next
@@ -436,6 +443,12 @@ fn lock_holder(err: &anyhow::Error) -> Option<LockHolder> {
 /// message already spells out.
 fn report_failure(err: &anyhow::Error) -> u8 {
     eprintln!("{DIAG} {err:#}");
+    // A malformed command line first: it is never a repo answer, and the
+    // code is clap's own, so a handler-raised usage error and a
+    // parser-raised one are indistinguishable to a caller.
+    if err.downcast_ref::<UsageError>().is_some() {
+        return USAGE;
+    }
     match lock_holder(err) {
         Some(LockHolder::Alive { .. } | LockHolder::Unreadable) => {
             eprintln!("{DIAG} {RETRY_UNCHANGED}");
@@ -631,12 +644,12 @@ impl Staging {
         self,
         repo: &Repo,
         snapshot: &Snapshot,
-        sweep: &staging::Sweep,
+        sweep: &staging::Sweep<'_>,
     ) -> Result<SweepOutcome, gitchange_core::Error> {
         let changelist = sweep.changelist.as_deref();
         match self {
-            Staging::Add => repo.stage_sweep(snapshot, changelist, &sweep.rows()),
-            Staging::Unstage => repo.unstage_sweep(snapshot, changelist, &sweep.rows()),
+            Staging::Add => repo.stage_sweep(snapshot, changelist, &sweep.targets),
+            Staging::Unstage => repo.unstage_sweep(snapshot, changelist, &sweep.targets),
         }
     }
 }
@@ -650,7 +663,12 @@ impl Staging {
 /// one state of the repo, and the sweep, so deferred capture feeds the op's
 /// own scope — switch → edit → `add <active>` stages the hunks that
 /// refresh just captured.
+///
+/// The grammar checks come first, ahead of the repository: they answer
+/// from the argument list alone, and a malformed command line has no
+/// business running a refresh on its way to being refused.
 fn staging(verb: Staging, scope: &StagingScope) -> anyhow::Result<()> {
+    staging::check_grammar(verb.verb(), scope)?;
     let repo = open_repo()?;
     let workdir = workdir(&repo)?;
     let refreshed = repo.refresh()?;
@@ -707,6 +725,26 @@ fn switch(name: &str) -> anyhow::Result<()> {
     let repo = open_repo()?;
     receipt(repo.switch(target_named(name))?);
     Ok(())
+}
+
+/// A usage error a handler raised: the grammar violations clap cannot
+/// declare, which are still grammar violations and so still exit
+/// [`USAGE`]. A distinct type rather than a message convention, so the
+/// exit-code mapping reads the class rather than sniffing text.
+#[derive(Debug)]
+struct UsageError(String);
+
+impl std::fmt::Display for UsageError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for UsageError {}
+
+/// Refuse `message` as a usage error (exit [`USAGE`], stdout untouched).
+fn usage(message: String) -> anyhow::Error {
+    anyhow::Error::new(UsageError(message))
 }
 
 /// The stub contract (#140): a designed-but-unbuilt command parses fully

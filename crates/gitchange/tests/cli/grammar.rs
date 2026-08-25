@@ -304,6 +304,26 @@ fn staging_verbs_containing_is_single_occurrence_and_non_empty() {
     assert_usage_error(&["unstage", "feature", "src/a.rs", "--containing", ""]);
 }
 
+/// The three checks the skeleton could not declare (#145, built in #162):
+/// clap sees neither a value's newlines, nor how many positionals an option
+/// needs beside it, nor whether one of them is ID-shaped. They are grammar
+/// all the same, so they are exit `2` — and they belong in this module
+/// because the empty directory is the assertion: a malformed command line
+/// is answered before any repository is looked for.
+#[test]
+fn staging_verbs_containing_has_three_non_declarative_usage_errors() {
+    for verb in ["add", "unstage"] {
+        // A value spanning lines cannot match within one changed line.
+        assert_usage_error(&[verb, "feature", "src/a.rs", "--containing", "a\nb"]);
+        // Exactly one path: this pair's grammar allows none, so both
+        // arities either side of one are errors.
+        assert_usage_error(&[verb, "feature", "--containing", "a"]);
+        assert_usage_error(&[verb, "feature", "src/a.rs", "src/b.rs", "--containing", "a"]);
+        // One addressing mode per command.
+        assert_usage_error(&[verb, "feature", "src/a.rs:h1a2b3c4", "--containing", "a"]);
+    }
+}
+
 // --- commit ----------------------------------------------------------------
 
 #[test]

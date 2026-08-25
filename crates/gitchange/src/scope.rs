@@ -35,20 +35,21 @@ struct Selector {
 }
 
 impl PathArg {
-    /// Whether the argument carried a `<hunk-id>` suffix at all — the
-    /// question a verb asks before deciding whether it is addressing one
-    /// hunk or sweeping a file row (#145).
-    pub fn addresses_a_hunk(&self) -> bool {
-        self.selector.is_some()
-    }
-
-    /// The hunk this argument addresses, `None` when it named a path
-    /// alone. A not-found, stale, or ambiguous ID refuses — an aged
-    /// address fails loud rather than resolving to whatever now sits at
-    /// that position (#122), and the ID's own path prefix is a
-    /// consistency guard, so an ID that lives in another file refuses
-    /// naming it.
-    pub fn resolve_hunk<'a>(&self, snapshot: &'a Snapshot) -> anyhow::Result<Option<&'a Hunk>> {
+    /// The hunk this argument addresses and the composed address it
+    /// resolved to, `None` when it named a path alone. A not-found, stale,
+    /// or ambiguous ID refuses — an aged address fails loud rather than
+    /// resolving to whatever now sits at that position (#122), and the ID's
+    /// own path prefix is a consistency guard, so an ID that lives in
+    /// another file refuses naming it.
+    ///
+    /// The address comes back beside the hunk because the caller typed an
+    /// abbreviation, or a prefix of one: what a receipt echoes and a
+    /// refusal names is the composed form, minted here, so no caller has
+    /// to re-derive it.
+    pub fn resolve_hunk<'a>(
+        &self,
+        snapshot: &'a Snapshot,
+    ) -> anyhow::Result<Option<(&'a Hunk, String)>> {
         let Some(selector) = &self.selector else {
             return Ok(None);
         };
@@ -56,7 +57,7 @@ impl PathArg {
             .map(|file| selector.matches_in(file))
             .unwrap_or_default();
         match matches.as_slice() {
-            [(hunk, _)] => Ok(Some(hunk)),
+            [(hunk, address)] => Ok(Some((hunk, address.clone()))),
             [] => anyhow::bail!(selector.nothing_found(snapshot, &self.path)),
             candidates => anyhow::bail!(
                 "hunk '{}' in '{}' is ambiguous — name one of: {}",
@@ -115,9 +116,73 @@ impl Selector {
     }
 }
 
-/// The file `path` names in the snapshot, if it changed at all.
-fn file_in<'a>(snapshot: &'a Snapshot, path: &str) -> Option<&'a ChangedFile> {
+/// The file `path` names in the snapshot, if it changed at all. Public
+/// because the verbs ask it too: the change universe is where a path's
+/// hunks live, and one lookup spelling keeps "not in the universe" one
+/// answer.
+pub fn file_in<'a>(snapshot: &'a Snapshot, path: &str) -> Option<&'a ChangedFile> {
     snapshot.files.iter().find(|file| file.path == path)
+}
+
+/// The hunk `value` addresses in `file`, with its composed address — the
+/// other half of the shared addressing grammar (#122). The match rule is
+/// core's ([`Hunk::contains_changed_text`]); what lives here is what the
+/// counts mean.
+///
+/// Resolved over the file's whole universe, every owner included: the
+/// caller checks its own scope on the unique match afterwards. A
+/// scope-filtered search would make one value quietly mean different hunks
+/// under different verbs, where this way it means one hunk or none (#145).
+///
+/// Zero or several matches refuse with candidate addresses listed: every
+/// hunk of the file where nothing matched — a degenerate hunk has no
+/// changed lines, so it can only ever be a candidate — and the matches
+/// themselves where too many did.
+pub fn resolve_containing<'a>(
+    file: &'a ChangedFile,
+    value: &str,
+) -> Result<(&'a Hunk, String), String> {
+    let addressed: Vec<(&Hunk, String)> = file
+        .hunks
+        .iter()
+        .zip(file.hunk_addresses())
+        .map(|(hunk, address)| (hunk, address.abbreviated_at(&file.path)))
+        .collect();
+    let matched: Vec<&(&Hunk, String)> = addressed
+        .iter()
+        .filter(|(hunk, _)| hunk.contains_changed_text(value))
+        .collect();
+    match matched.as_slice() {
+        [(hunk, address)] => Ok((hunk, address.clone())),
+        [] => Err(format!(
+            "no changed line of '{}' contains '{value}' — its hunks are: {}",
+            file.path,
+            candidates(addressed.iter().map(|(_, address)| address.as_str()))
+        )),
+        several => Err(format!(
+            "'{value}' is in {} hunks of '{}' — name one of: {}",
+            several.len(),
+            file.path,
+            candidates(several.iter().map(|(_, address)| address.as_str()))
+        )),
+    }
+}
+
+/// Composed addresses as a refusal lists them, in file order.
+fn candidates<'a>(addresses: impl Iterator<Item = &'a str>) -> String {
+    addresses.collect::<Vec<&str>>().join(", ")
+}
+
+/// Whether `token` carries a `<hunk-id>` suffix — asked of the raw
+/// argument, before any snapshot is read, because the question a grammar
+/// check asks is which *addressing mode* was typed, not whether the
+/// address resolves (#145). A shaped-but-too-short suffix counts: it was
+/// meant as an address, which is the fact the check turns on.
+pub fn carries_an_address(token: &str) -> bool {
+    match split_address(token) {
+        Ok((_, selector)) => selector.is_some(),
+        Err(_) => true,
+    }
 }
 
 /// Resolve every path argument against the repository, or refuse naming

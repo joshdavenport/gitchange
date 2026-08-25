@@ -246,7 +246,10 @@ already in the target state is satisfied rather than refused, and a
 **stale action** discovered at apply fails soft per hunk with the skips
 counted on the receipt. Both frontends sweep — the **stage toggle** at
 Files-panel and Changelists-panel scope, `add`/`unstage` at the same two
-plus a multi-row argument list.
+plus a multi-row argument list. An addressed hunk is the other thing, and
+the contrast is load-bearing: an address has already decided which hunk
+moves, so it moves ungated by the direction's filter — which is how an
+addressed `◑` unstages where a sweep keeps it.
 _Avoid_: batch, stage-all (that is the commit flow's own offer — it takes
 `○` only, so it is a narrower op, not a sweep); and "sweep" for record
 pruning — ADR 0016's unknown-name prune is not one

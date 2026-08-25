@@ -5,7 +5,7 @@
 //! (ADR 0005's validate-at-apply).
 
 use crate::support::RepoFixture;
-use gitchange_core::{Advisory, Error, FileStage, Hunk, HunkStage, Repo, Snapshot};
+use gitchange_core::{Advisory, Error, FileStage, Hunk, HunkStage, Repo, Snapshot, StagingTarget};
 
 // Gated with its only user below, so Windows builds this file clean.
 #[cfg(unix)]
@@ -1211,13 +1211,37 @@ fn staging_a_symlink_to_file_swap_writes_the_file_to_the_index() {
 // split, which needs a worktree edit *between* the snapshot and the apply —
 // a mid-command race the binary seam cannot inject (ADR 0008).
 
+/// File-row targets, as the CLI's path narrowing builds them.
+fn rows<'a>(paths: &[&str]) -> Vec<StagingTarget<'a>> {
+    paths
+        .iter()
+        .map(|path| StagingTarget::Row((*path).to_owned()))
+        .collect()
+}
+
+/// The addressed target for one of a file's hunks, as the CLI's address
+/// resolution builds it: the hunk borrowed from the snapshot, beside the
+/// composed address the caller named it by.
+fn addressed<'a>(snapshot: &'a Snapshot, path: &str, index: usize) -> StagingTarget<'a> {
+    let file = snapshot
+        .files
+        .iter()
+        .find(|file| file.path == path)
+        .unwrap_or_else(|| panic!("{path} not in snapshot"));
+    StagingTarget::Hunk {
+        path: path.to_owned(),
+        hunk: &file.hunks[index],
+        address: file.hunk_addresses()[index].abbreviated_at(path),
+    }
+}
+
 #[test]
 fn a_sweep_narrows_to_the_named_rows_and_is_satisfied_when_repeated() {
     let (fixture, repo) = bulk_fixture();
     let snapshot = repo.refresh().unwrap().snapshot;
 
     let swept = repo
-        .stage_sweep(&snapshot, Some("one"), &["b.txt"])
+        .stage_sweep(&snapshot, Some("one"), &rows(&["b.txt"]))
         .unwrap();
 
     assert_eq!((swept.moved, swept.skipped), (1, 0));
@@ -1234,7 +1258,7 @@ fn a_sweep_narrows_to_the_named_rows_and_is_satisfied_when_repeated() {
     // Satisfied, not refused: an idempotent retry is always safe (#145).
     let snapshot = repo.refresh().unwrap().snapshot;
     let swept = repo
-        .stage_sweep(&snapshot, Some("one"), &["b.txt"])
+        .stage_sweep(&snapshot, Some("one"), &rows(&["b.txt"]))
         .unwrap();
 
     assert_eq!((swept.moved, swept.skipped), (0, 0));
@@ -1255,7 +1279,7 @@ fn a_sweep_over_several_rows_names_every_one_of_them() {
     let snapshot = repo.refresh().unwrap().snapshot;
 
     let swept = repo
-        .stage_sweep(&snapshot, Some("one"), &["a.txt", "b.txt"])
+        .stage_sweep(&snapshot, Some("one"), &rows(&["a.txt", "b.txt"]))
         .unwrap();
 
     assert_eq!(
@@ -1365,7 +1389,7 @@ fn repeating_an_unstage_over_a_kept_hunk_is_satisfied_and_repeats_the_notice() {
     assert_eq!(stages(&snapshot, "b.txt"), vec![HunkStage::StagedStale]);
 
     let swept = repo
-        .unstage_sweep(&snapshot, Some("one"), &["b.txt"])
+        .unstage_sweep(&snapshot, Some("one"), &rows(&["b.txt"]))
         .unwrap();
 
     assert_eq!((swept.moved, swept.skipped), (0, 0));
@@ -1423,13 +1447,94 @@ fn a_wholly_stale_unstage_sweep_moves_nothing_and_says_so() {
         .stage("a.txt");
 
     let swept = repo
-        .unstage_sweep(&snapshot, Some("one"), &["a.txt"])
+        .unstage_sweep(&snapshot, Some("one"), &rows(&["a.txt"]))
         .unwrap();
 
     assert_eq!((swept.moved, swept.skipped), (0, 1));
     assert!(
         swept.moved_nothing(),
         "nothing the caller asked for moved: the refusing half of the split"
+    );
+}
+
+// --- addressed targets (#162) ----------------------------------------------
+// An address narrows a sweep to one hunk and moves it *ungated*: the
+// direction's `○`/`◑`/`●` filter is what a sweep decides by, and an
+// explicit address has already decided.
+
+#[test]
+fn an_addressed_hunk_unstages_though_a_sweep_would_have_kept_it() {
+    let (fixture, repo) = bulk_fixture();
+    // b.txt staged and then edited again: `◑`, which an unstage sweep keeps
+    // and names. Addressed, it goes — the staged version discarded (#145).
+    repo.stage_changelist(Some("one")).unwrap();
+    fixture.write("b.txt", &numbered(&[(2, "b edit, again")]));
+    let snapshot = repo.refresh().unwrap().snapshot;
+    assert_eq!(stages(&snapshot, "b.txt"), vec![HunkStage::StagedStale]);
+    let target = addressed(&snapshot, "b.txt", 0);
+    let StagingTarget::Hunk { address, .. } = &target else {
+        panic!("an addressed target")
+    };
+    let address = address.clone();
+
+    let swept = repo
+        .unstage_sweep(&snapshot, Some("one"), &[target])
+        .unwrap();
+
+    assert_eq!((swept.moved, swept.skipped), (1, 0));
+    assert_eq!(
+        swept.receipt.echo.as_deref(),
+        Some(format!("unstaged 1 hunk — {address} in 'one'").as_str()),
+        "the echo names the target as the caller addressed it"
+    );
+    assert_eq!(
+        swept.receipt.advisories,
+        vec![],
+        "no kept-`◑` notice: the hunk the notice would name is the one that moved"
+    );
+    assert_eq!(
+        fixture.index_content("b.txt").as_deref(),
+        Some(numbered(&[]).as_str()),
+        "index := HEAD, the staged version gone"
+    );
+}
+
+#[test]
+fn a_hunk_that_is_both_swept_and_addressed_moves_once() {
+    let (fixture, repo) = bulk_fixture();
+    let snapshot = repo.refresh().unwrap().snapshot;
+    // `one` owns a.txt's top hunk alone, so the row and the address name
+    // the same single hunk: the count is what shows a double apply.
+    let targets = [
+        StagingTarget::Row("a.txt".to_owned()),
+        addressed(&snapshot, "a.txt", 0),
+    ];
+
+    let swept = repo.stage_sweep(&snapshot, Some("one"), &targets).unwrap();
+
+    assert_eq!((swept.moved, swept.skipped), (1, 0));
+    assert_eq!(
+        fixture.index_content("a.txt").as_deref(),
+        Some(numbered(&[(2, "edit near top")]).as_str())
+    );
+}
+
+#[test]
+fn an_addressed_hunk_leaves_the_rest_of_its_row_alone() {
+    let (fixture, repo) = bulk_fixture();
+    let snapshot = repo.refresh().unwrap().snapshot;
+    // Unassigned owns c.txt's hunk and nothing of a.txt; `two` owns
+    // a.txt's bottom hunk. Addressing it moves that hunk and no other,
+    // even though the file has two.
+    let targets = [addressed(&snapshot, "a.txt", 1)];
+
+    let swept = repo.stage_sweep(&snapshot, Some("two"), &targets).unwrap();
+
+    assert_eq!((swept.moved, swept.skipped), (1, 0));
+    assert_eq!(
+        fixture.index_content("a.txt").as_deref(),
+        Some(numbered(&[(18, "edit near bottom")]).as_str()),
+        "the co-owner's hunk in the same file stayed out of the index"
     );
 }
 

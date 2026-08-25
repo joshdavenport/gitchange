@@ -1,7 +1,8 @@
-//! End-to-end tests of `unstage`'s mirror of the add sweep (#161): the
-//! `●`-only filter, the notices that name each kept `◑`, and the shared
-//! scope model asserted in the other direction. Ground truth is git's own
-//! view of the index (`git diff --cached`, `git show :<path>`).
+//! End-to-end tests of `unstage`'s mirror of the add sweep (#161) and the
+//! addressed forms in this direction (#162): the `●`-only filter, the
+//! notices that name each kept `◑`, the ungated addressed `◑`, and the
+//! shared scope model asserted in the other direction. Ground truth is
+//! git's own view of the index (`git diff --cached`, `git show :<path>`).
 //!
 //! What is *not* re-asserted here is the offender machinery `add` already
 //! pins test-by-test (`add.rs`): both verbs run the same
@@ -14,7 +15,7 @@
 
 use std::path::Path;
 
-use crate::support::{git, gitchange, owned_repo, staged, staged_paths, write};
+use crate::support::{address, git, gitchange, owned_repo, staged, staged_paths, write};
 
 /// `add`'s fixture with its whole worktree staged by raw `git add` — the
 /// op ADR 0003 says refresh absorbs, and the only way to reach a staged
@@ -314,23 +315,124 @@ fn a_path_whose_hunks_are_owned_elsewhere_names_the_actual_owners() {
     assert!(refusal.contains("'feature', unassigned"), "{refusal}");
 }
 
-// --- the addressed forms, still to build (#162) ----------------------------
+// --- the addressed forms (#162) ---------------------------------------------
+// The classes `add.rs` pins test-by-test — the ID's own refusals, the
+// candidate lists, universe-first resolution — reach both verbs through the
+// same `staging::resolve`. What is here is what only this direction can
+// show: the ungated `◑`, and the guard speaking this verb's words.
 
 #[test]
-fn the_addressed_forms_refuse_as_unbuilt() {
+fn an_explicit_id_unstages_exactly_the_hunk_it_names() {
     let dir = staged_repo();
     let repo = dir.path();
-    let before = git(repo, &["diff", "--cached"]);
+    let address = address(repo, "a.txt", 0);
 
-    for args in [
-        &["feature", "a.txt:h1a2b3c4"][..],
-        &["feature", "a.txt", "--containing", "first edited"],
-    ] {
-        let refusal = refusal(repo, args);
-        assert!(
-            refusal.contains("is not implemented yet"),
-            "{args:?}: {refusal}"
-        );
-    }
-    assert_eq!(git(repo, &["diff", "--cached"]), before);
+    let (echo, _) = unstage(repo, &["feature", &address]);
+
+    assert!(
+        echo.contains(&format!("unstaged 1 hunk — {address}")),
+        "{echo}"
+    );
+    let staged = staged(repo, "a.txt");
+    assert!(!staged.contains("first edited"), "{staged}");
+    assert!(staged.contains("last edited"), "{staged}");
+}
+
+#[test]
+fn an_addressed_staged_stale_hunk_unstages_ungated() {
+    // The gate is deliberately absent (#145): `space` and `add` make this
+    // identical index write unguarded, so guarding one direction of it
+    // would teach a false asymmetry. The staged version is discarded.
+    let dir = staged_repo();
+    let repo = dir.path();
+    write(repo, "b.txt", "three\n");
+    let address = address(repo, "b.txt", 0);
+
+    let (echo, notices) = unstage(repo, &["docs", &address]);
+
+    assert!(echo.contains("unstaged 1 hunk"), "{echo}");
+    assert_eq!(
+        staged_paths(repo),
+        vec!["a.txt", "sub/c.txt"],
+        "b.txt's staged version left the index"
+    );
+    assert!(
+        !notices.contains("kept staged-stale hunk"),
+        "the hunk the notice would name is the one that moved: {notices}"
+    );
+}
+
+#[test]
+fn an_addressed_index_only_hunk_discards_content_no_other_copy_holds() {
+    // sub/c.txt staged and then reverted in the worktree: the hunk lives in
+    // the index alone, so unstaging it by address is an irrecoverable
+    // discard — ungated by the same rule, with the skill's staleness
+    // family as the mitigation (#145).
+    let dir = staged_repo();
+    let repo = dir.path();
+    write(repo, "sub/c.txt", "one\n");
+    let address = address(repo, "sub/c.txt", 0);
+
+    let (echo, _) = unstage(repo, &["unassigned", &address]);
+
+    assert!(echo.contains("unstaged 1 hunk"), "{echo}");
+    assert_eq!(
+        staged_paths(repo),
+        vec!["a.txt", "b.txt"],
+        "the index-only content is gone"
+    );
+}
+
+#[test]
+fn a_hunk_the_address_moved_is_not_also_named_as_kept() {
+    // The mixed command: the file row and one of its `◑` hunks, addressed.
+    // The address unstaged it, so the notice — which exists to say what
+    // stayed — must not name it.
+    let dir = staged_repo();
+    let repo = dir.path();
+    write(repo, "b.txt", "three\n");
+    let address = address(repo, "b.txt", 0);
+
+    let (echo, notices) = unstage(repo, &["docs", "b.txt", &address]);
+
+    assert!(echo.contains("unstaged 1 hunk"), "{echo}");
+    assert!(
+        !notices.contains("kept staged-stale hunk"),
+        "nothing stayed: {notices}"
+    );
+    assert_eq!(staged_paths(repo), vec!["a.txt", "sub/c.txt"]);
+}
+
+#[test]
+fn containing_unstages_the_hunk_holding_the_line() {
+    let dir = staged_repo();
+    let repo = dir.path();
+
+    let (echo, _) = unstage(
+        repo,
+        &["unassigned", "a.txt", "--containing", "last edited"],
+    );
+
+    assert!(echo.contains("unstaged 1 hunk"), "{echo}");
+    let staged = staged(repo, "a.txt");
+    assert!(staged.contains("first edited"), "{staged}");
+    assert!(!staged.contains("last edited"), "{staged}");
+}
+
+#[test]
+fn the_consistency_guard_teaches_this_verbs_retry() {
+    let dir = staged_repo();
+    let repo = dir.path();
+    let address = address(repo, "a.txt", 1);
+
+    let refusal = refusal(repo, &["feature", &address]);
+
+    assert!(
+        refusal.contains("belongs to unassigned, not 'feature'"),
+        "{refusal}"
+    );
+    assert!(
+        refusal.contains(&format!("gitchange unstage unassigned {address}")),
+        "the retry names the verb the caller typed: {refusal}"
+    );
 }

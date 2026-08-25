@@ -315,6 +315,27 @@ impl Hunk {
         matches!(self.identity, HunkIdentity::ModeChange)
     }
 
+    /// Whether one of this hunk's **changed** lines contains `text` — the
+    /// content-addressing rule the `--containing <line>` verbs resolve
+    /// through (#122): a fixed-string substring over `+` and `-` origins,
+    /// verbatim bytes. No regex, no whitespace folding, and context lines
+    /// never match, so nothing the caller did not write can answer for a
+    /// hunk. A degenerate hunk has no changed lines and so never matches
+    /// (ADR 0017) — it stays a candidate an address can name, and nothing
+    /// a value can find.
+    ///
+    /// Lives here rather than in the frontend asking the question because
+    /// it is a fact about a hunk (ADR 0006): three verbs address by
+    /// content, and one rule is what keeps them meaning the same thing.
+    pub fn contains_changed_text(&self, text: &str) -> bool {
+        self.identity.text_lines().is_some_and(|lines| {
+            lines
+                .iter()
+                .filter(|line| matches!(line.origin, '+' | '-'))
+                .any(|line| line.content.contains(text))
+        })
+    }
+
     /// Whether this hunk addresses no lines — either degenerate flavour,
     /// whole-file or mode. The question a renderer asks: a degenerate hunk
     /// has no coordinates to frame and no lines to draw, so its

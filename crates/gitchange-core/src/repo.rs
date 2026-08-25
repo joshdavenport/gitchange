@@ -445,7 +445,7 @@ impl Repo {
     /// [`Repo::stage_hunk`]; the echo names the whole bulk op, with any
     /// stale-hunk advisories alongside.
     pub fn align(&self, changelist: Option<&str>) -> Result<OpOutcome, Error> {
-        let (_, _, advisories) = self.bulk_apply(
+        let tally = self.bulk_apply(
             SweepScope::changelist(changelist),
             |stage| stage == HunkStage::StagedStale,
             Self::stage_hunk,
@@ -455,7 +455,7 @@ impl Repo {
                 "aligned index to worktree — '{}'",
                 changelist.unwrap_or(UNASSIGNED)
             )),
-            advisories,
+            advisories: tally.advisories,
         })
     }
 
@@ -468,15 +468,19 @@ impl Repo {
     /// when nothing was), with any stale-hunk advisories alongside.
     pub fn stage_all(&self, changelist: Option<&str>) -> Result<OpOutcome, Error> {
         let scope = SweepScope::changelist(changelist);
-        let (staged, skipped, advisories) = self.bulk_apply(
+        let tally = self.bulk_apply(
             scope,
             |stage| stage == HunkStage::Unstaged,
             Self::stage_hunk,
         )?;
         // Silent when nothing staged: the offer's caller is mid-flow
         // towards a dialog, and has no use for a nothing-to-do line.
-        let echo = (staged > 0).then(|| sweep_echo("stage", staged, skipped, scope));
-        Ok(OpOutcome { echo, advisories })
+        let echo =
+            (tally.moved > 0).then(|| sweep_echo("stage", tally.moved, tally.skipped, scope));
+        Ok(OpOutcome {
+            echo,
+            advisories: tally.advisories,
+        })
     }
 
     /// The stage direction of `space` on a changelist: set index :=
@@ -510,7 +514,8 @@ impl Repo {
         path: &str,
         changelist: Option<&str>,
     ) -> Result<OpOutcome, Error> {
-        self.refreshed_sweep(SweepScope::rows(&[path], changelist), Direction::Stage)
+        let row = [StagingTarget::Row(path.to_owned())];
+        self.refreshed_sweep(SweepScope::narrowed(&row, changelist), Direction::Stage)
     }
 
     /// The unstage direction of `space` on a Files row: set index :=
@@ -521,29 +526,30 @@ impl Repo {
         path: &str,
         changelist: Option<&str>,
     ) -> Result<OpOutcome, Error> {
-        self.refreshed_sweep(SweepScope::rows(&[path], changelist), Direction::Unstage)
+        let row = [StagingTarget::Row(path.to_owned())];
+        self.refreshed_sweep(SweepScope::narrowed(&row, changelist), Direction::Unstage)
     }
 
     /// The CLI's stage sweep (#145): `space`'s stage direction over a
     /// scope the caller has already validated against `snapshot` — every
-    /// hunk `changelist` owns, narrowed to `paths`' file rows when any are
-    /// named (an empty slice is the whole changelist). `None` is
-    /// unassigned, as everywhere.
+    /// hunk `changelist` owns, narrowed to `targets` when any are named
+    /// (an empty slice is the whole changelist). `None` is unassigned, as
+    /// everywhere.
     ///
     /// Takes the snapshot rather than refreshing behind the caller's back,
     /// so one invocation runs exactly one persisting refresh: the
     /// caller's, whose advisories are the caller's to deliver. That is
     /// what separates this from [`Repo::stage_changelist`], which serves a
     /// TUI keypress and owns its own refresh.
-    pub fn stage_sweep(
+    pub fn stage_sweep<'a>(
         &self,
-        snapshot: &Snapshot,
+        snapshot: &'a Snapshot,
         changelist: Option<&str>,
-        paths: &[&str],
+        targets: &[StagingTarget<'a>],
     ) -> Result<SweepOutcome, Error> {
         self.sweep(
             snapshot,
-            SweepScope::rows(paths, changelist),
+            SweepScope::narrowed(targets, changelist),
             Direction::Stage,
         )
     }
@@ -559,13 +565,17 @@ impl Repo {
     /// sweep because they answer for a CLI command's whole scope: the
     /// TUI's `space` is one keypress on a row the user is looking at,
     /// where the same lines would be noise in the Log panel.
-    pub fn unstage_sweep(
+    ///
+    /// An addressed target is never kept and so never named: it unstages
+    /// ungated (#145), which is the discard the notice exists to prevent
+    /// happening *silently*.
+    pub fn unstage_sweep<'a>(
         &self,
-        snapshot: &Snapshot,
+        snapshot: &'a Snapshot,
         changelist: Option<&str>,
-        paths: &[&str],
+        targets: &[StagingTarget<'a>],
     ) -> Result<SweepOutcome, Error> {
-        let scope = SweepScope::rows(paths, changelist);
+        let scope = SweepScope::narrowed(targets, changelist);
         let mut swept = self.sweep(snapshot, scope, Direction::Unstage)?;
         swept
             .receipt
@@ -597,7 +607,7 @@ impl Repo {
         scope: SweepScope<'_>,
         direction: Direction,
     ) -> Result<SweepOutcome, Error> {
-        let (moved, skipped, advisories) = self.apply_over(
+        let tally = self.apply_over(
             snapshot,
             scope,
             |stage| direction.takes(stage),
@@ -605,11 +615,16 @@ impl Repo {
         )?;
         Ok(SweepOutcome {
             receipt: OpOutcome {
-                echo: Some(sweep_echo(direction.verb(), moved, skipped, scope)),
-                advisories,
+                echo: Some(sweep_echo(
+                    direction.verb(),
+                    tally.moved,
+                    tally.skipped,
+                    scope,
+                )),
+                advisories: tally.advisories,
             },
-            moved,
-            skipped,
+            moved: tally.moved,
+            skipped: tally.skipped,
         })
     }
 
@@ -621,45 +636,48 @@ impl Repo {
         scope: SweepScope<'_>,
         include: impl Fn(HunkStage) -> bool,
         apply: impl Fn(&Self, &str, &Hunk) -> Result<OpOutcome, Error>,
-    ) -> Result<(usize, usize, Vec<Advisory>), Error> {
+    ) -> Result<Tally, Error> {
         let snapshot = self.refresh()?.snapshot;
         validate_changelist(&snapshot, scope.changelist)?;
         self.apply_over(&snapshot, scope, include, apply)
     }
 
     /// The body every multi-hunk staging op shares: over one snapshot, run
-    /// `apply` on each hunk in `scope` whose staging state `include`
-    /// accepts — hunks another changelist owns are never touched, and
-    /// conflicted files carry none at all (ADR 0007). Returns how many
-    /// hunks moved and how many failed soft as stale, plus the latter's
-    /// advisories.
+    /// `apply` on each swept hunk whose staging state `include` accepts —
+    /// hunks another changelist owns are never swept, and conflicted files
+    /// carry none at all (ADR 0007). The [`Tally`] counts what moved and
+    /// what failed soft as stale, and carries the latter's advisories.
+    ///
+    /// Both of those clauses are the swept rows' and nothing else: an
+    /// addressed target names one hunk, so `include` does not gate it —
+    /// which is what makes an addressed `◑` unstage where a sweep keeps it
+    /// — and neither does ownership, the caller having named the hunk
+    /// itself ([`StagingTarget::Hunk`], #145). A hunk that is both swept
+    /// and addressed moves once, by its address: an address narrows its
+    /// file row to the named hunk, and the narrowing is what the ungated
+    /// apply is for.
     fn apply_over(
         &self,
         snapshot: &Snapshot,
         scope: SweepScope<'_>,
         include: impl Fn(HunkStage) -> bool,
         apply: impl Fn(&Self, &str, &Hunk) -> Result<OpOutcome, Error>,
-    ) -> Result<(usize, usize, Vec<Advisory>), Error> {
-        let mut moved = 0;
-        let mut skipped = 0;
-        let mut advisories = Vec::new();
+    ) -> Result<Tally, Error> {
+        let mut tally = Tally::default();
         for file in &snapshot.files {
-            if !scope.covers(&file.path) {
+            if !scope.sweeps(&file.path) {
                 continue;
             }
             for hunk in file.owned_hunks(scope.changelist) {
-                if include(hunk.stage) {
-                    let outcome = apply(self, &file.path, hunk)?;
-                    if outcome.advisories.is_empty() {
-                        moved += 1;
-                    } else {
-                        skipped += 1;
-                    }
-                    advisories.extend(outcome.advisories);
+                if include(hunk.stage) && !scope.addresses(&file.path, hunk) {
+                    tally.record(apply(self, &file.path, hunk)?);
                 }
             }
         }
-        Ok((moved, skipped, advisories))
+        for (path, hunk) in scope.addressed() {
+            tally.record(apply(self, path, hunk)?);
+        }
+        Ok(tally)
     }
 
     /// Assign snapshot hunks of `path` to `target`: an explicit
@@ -798,12 +816,16 @@ impl Repo {
 /// as the notice that names it (#145). Read off the snapshot the sweep
 /// ran against, which is where the staging states it decided by live:
 /// unstaging a `●` hunk cannot make one of its neighbours stale.
+///
+/// A `◑` hunk the scope also addresses is not kept — the address unstaged
+/// it — so it is not named either, even where its file row is swept beside
+/// it: the notice exists to say what stayed.
 fn kept_staged_stale(snapshot: &Snapshot, scope: SweepScope<'_>) -> Vec<Advisory> {
     let mut kept = Vec::new();
     for file in snapshot
         .files
         .iter()
-        .filter(|file| scope.covers(&file.path))
+        .filter(|file| scope.sweeps(&file.path))
     {
         // Addresses are minted per file because the ordinal that tells
         // identical hunks apart is a file-level fact, and only where a
@@ -811,7 +833,10 @@ fn kept_staged_stale(snapshot: &Snapshot, scope: SweepScope<'_>) -> Vec<Advisory
         // that keeps nothing.
         let addresses = file.hunk_addresses();
         for (hunk, address) in file.hunks.iter().zip(addresses) {
-            if hunk.owned_by(scope.changelist) && hunk.stage == HunkStage::StagedStale {
+            if hunk.owned_by(scope.changelist)
+                && hunk.stage == HunkStage::StagedStale
+                && !scope.addresses(&file.path, hunk)
+            {
                 kept.push(Advisory::KeptStagedStale {
                     address: address.abbreviated_at(&file.path),
                     changelist: scope.changelist.map(str::to_owned),
@@ -879,45 +904,160 @@ fn sweep_echo(verb: &str, moved: usize, skipped: usize, scope: SweepScope<'_>) -
     }
 }
 
+/// One thing a staging op moves, inside its changelist scope. The two
+/// variants are the two kinds of narrowing the staging verbs have, and the
+/// distinction is CONTEXT.md's §Sweep boundary: a **row** is swept, an
+/// **address** is not. They mix freely in one argument list (#145), so one
+/// call carries both.
+#[derive(Debug, Clone)]
+pub enum StagingTarget<'a> {
+    /// A **file row**: every hunk the scope's changelist owns in this
+    /// file, filtered by the direction. Repo-relative, as core reports
+    /// paths.
+    Row(String),
+    /// The one hunk an address named. Not a sweep: an address has already
+    /// decided which hunk moves, so the direction's filter is deliberately
+    /// not applied and neither is the row's ownership scoping — the caller
+    /// owns both questions, exactly as it does for [`Repo::stage_hunk`],
+    /// which the TUI's per-hunk `space` calls without either. The CLI's
+    /// consistency guard (#145) is its own stricter rule, and it lives
+    /// there because it is a refusal with an exit code, not an index
+    /// decision.
+    Hunk {
+        path: String,
+        /// The hunk, borrowed from the snapshot the op runs against.
+        /// Comparisons are by place within that snapshot, so a hunk from
+        /// any other snapshot reads as a different place — at worst
+        /// applying an idempotent index write twice and counting it twice
+        /// in the echo.
+        hunk: &'a Hunk,
+        /// The composed address the caller named this hunk by, which the
+        /// echo prints back — the caller's own string, like the path a
+        /// row-scoped echo names.
+        address: String,
+    },
+}
+
+impl<'a> StagingTarget<'a> {
+    /// How the echo names this target: the path for a row, the composed
+    /// address for a hunk — in both cases the string the caller typed the
+    /// narrowing as.
+    fn label(&self) -> &str {
+        match self {
+            StagingTarget::Row(path) => path,
+            StagingTarget::Hunk { address, .. } => address,
+        }
+    }
+
+    /// Whether this target is the hunk at `path` — the same *place*,
+    /// matched by identity within the snapshot the op runs against rather
+    /// than by content, so two identical hunks in one file stay two
+    /// targets (their addresses differ by ordinal, and so must they).
+    ///
+    /// Private: it is only ever asked of hunks from the traversed
+    /// snapshot, which is what makes the identity match sound.
+    fn same_place(&self, path: &str, hunk: &Hunk) -> bool {
+        match self {
+            StagingTarget::Row(_) => false,
+            StagingTarget::Hunk {
+                path: mine,
+                hunk: addressed,
+                ..
+            } => mine == path && std::ptr::eq(*addressed, hunk),
+        }
+    }
+}
+
 /// What a staging op ranges over: one changelist's hunks, optionally
-/// narrowed to some of its file rows. Every scope `space` and the staging
-/// verbs have above the hunk (ADR 0003, #145) differs only in that
-/// narrowing, so they share one traversal and one echo shape.
+/// narrowed to some of its file rows and single hunks. Every scope `space`
+/// and the staging verbs have above the hunk (ADR 0003, #145) differs only
+/// in that narrowing, so they share one traversal and one echo shape.
 #[derive(Debug, Clone, Copy)]
 struct SweepScope<'a> {
     /// `None` is unassigned, as everywhere.
     changelist: Option<&'a str>,
-    /// The Files rows — the (changelist, file) cells — this scope is
-    /// narrowed to. Empty is the whole changelist.
-    paths: &'a [&'a str],
+    /// What this scope is narrowed to. Empty is the whole changelist.
+    targets: &'a [StagingTarget<'a>],
 }
 
 impl<'a> SweepScope<'a> {
     fn changelist(changelist: Option<&'a str>) -> Self {
         Self {
             changelist,
-            paths: &[],
+            targets: &[],
         }
     }
 
-    fn rows(paths: &'a [&'a str], changelist: Option<&'a str>) -> Self {
-        Self { changelist, paths }
+    fn narrowed(targets: &'a [StagingTarget<'a>], changelist: Option<&'a str>) -> Self {
+        Self {
+            changelist,
+            targets,
+        }
     }
 
-    /// Whether this scope reaches `path` at all.
-    fn covers(&self, path: &str) -> bool {
-        self.paths.is_empty() || self.paths.contains(&path)
+    /// Whether this scope sweeps `path`'s whole file row. A path reached
+    /// by an address alone is not swept: the address is the narrowing.
+    fn sweeps(&self, path: &str) -> bool {
+        self.targets.is_empty()
+            || self
+                .targets
+                .iter()
+                .any(|target| matches!(target, StagingTarget::Row(row) if row == path))
+    }
+
+    /// Whether one of this scope's addresses names exactly this hunk.
+    fn addresses(&self, path: &str, hunk: &Hunk) -> bool {
+        self.targets
+            .iter()
+            .any(|target| target.same_place(path, hunk))
+    }
+
+    /// The addressed hunks, each with its path.
+    fn addressed(&self) -> impl Iterator<Item = (&str, &'a Hunk)> {
+        self.targets.iter().filter_map(|target| match target {
+            StagingTarget::Row(_) => None,
+            StagingTarget::Hunk { path, hunk, .. } => Some((path.as_str(), *hunk)),
+        })
     }
 
     /// The scope as the echo names it: `'feature'`, or `a.txt in
-    /// 'feature'` — a row-scoped echo says which changelist it stayed
+    /// 'feature'` — a narrowed echo says which changelist it stayed
     /// inside, since that is exactly what it did not sweep past.
     fn target(&self) -> String {
         let name = self.changelist.unwrap_or(UNASSIGNED);
-        match self.paths {
+        match self.targets {
             [] => format!("'{name}'"),
-            paths => format!("{} in '{name}'", paths.join(", ")),
+            targets => format!(
+                "{} in '{name}'",
+                targets
+                    .iter()
+                    .map(StagingTarget::label)
+                    .collect::<Vec<&str>>()
+                    .join(", ")
+            ),
         }
+    }
+}
+
+/// A multi-hunk apply's running count: what moved, what failed soft as
+/// stale, and the advisories the latter raised. One place, so every
+/// traversal in [`Repo::apply_over`] classifies an outcome the same way —
+/// an op that raised no advisory is an op that wrote.
+#[derive(Default)]
+struct Tally {
+    moved: usize,
+    skipped: usize,
+    advisories: Vec<Advisory>,
+}
+
+impl Tally {
+    fn record(&mut self, outcome: OpOutcome) {
+        if outcome.advisories.is_empty() {
+            self.moved += 1;
+        } else {
+            self.skipped += 1;
+        }
+        self.advisories.extend(outcome.advisories);
     }
 }
 

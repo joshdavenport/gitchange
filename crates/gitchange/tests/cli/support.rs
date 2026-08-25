@@ -202,6 +202,29 @@ pub fn owned_repo() -> tempfile::TempDir {
     dir
 }
 
+/// One hunk's composed address, read off the read surface — `diff`'s
+/// annotation, which is where a caller gets one (#155). `index` counts the
+/// file's hunks in patch order from `0`.
+///
+/// Minted through the binary rather than computed here on purpose: an
+/// address is only useful if the string a read prints is the string a verb
+/// takes, so every addressed test pastes `diff`'s own output back.
+pub fn address(dir: &Path, path: &str, index: usize) -> String {
+    let output = gitchange(dir, &["diff", path]);
+    let diff = String::from_utf8(output.stdout).unwrap();
+    let marker = format!("{path}:h");
+    diff.match_indices(&marker)
+        .map(|(at, _)| {
+            diff[at..]
+                .split(|character: char| character.is_whitespace() || character == ']')
+                .next()
+                .expect("an address is one word")
+                .to_owned()
+        })
+        .nth(index)
+        .unwrap_or_else(|| panic!("no hunk {index} of '{path}' in:\n{diff}"))
+}
+
 /// The paths the index holds a change for, in git's order — the ground
 /// truth for what a sweep reached.
 pub fn staged_paths(dir: &Path) -> Vec<String> {
