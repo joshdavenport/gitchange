@@ -81,10 +81,11 @@ is exactly the other changelists' staged hunks, so derived staged state
 - **An emptied changelist is kept** until explicitly deleted — deletion
   stays a deliberate act; no post-commit dialog.
 - **Every commit records itself as the last gitchange commit** —
-  `{ oid, changelist }` in the state file (core work, still to build).
-  This is the reference the CLI amend guard checks (§Amend); an amend
-  re-records it, and renaming the changelist rewrites its name in the
-  record.
+  `{ oid, changelist }` in the state file, written in the same locked
+  update as the records, with `unassigned` as the name where that was the
+  scope. This is the reference the CLI amend guard checks (§Amend); an
+  amend re-records it, and renaming the changelist rewrites its name in
+  the record.
 
 ## Amend
 

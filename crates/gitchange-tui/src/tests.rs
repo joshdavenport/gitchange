@@ -515,7 +515,12 @@ fn a_confirmed_commit_echoes_the_command_and_the_new_commit_then_closes_the_flow
         CommitStep::Commit(draft(None, payload.clone(), "edit line 2")),
     );
 
-    let expected = commit_echo(&CommitOptions::default(), None, &payload);
+    let expected = commit_echo(
+        &CommitOptions::default(),
+        CommitMessage::Given("edit line 2"),
+        None,
+        &payload,
+    );
     assert_eq!(entries(&app, Severity::Info).first(), Some(&&*expected));
     assert!(app.error_modal.is_none());
     assert!(app.overlay.is_none(), "success closes the flow");
@@ -546,7 +551,12 @@ fn a_hook_rejection_echoes_the_command_and_carries_stderr_verbatim() {
 
     run_commit_step(&repo, &mut app, CommitStep::Commit(confirmed.clone()));
 
-    let expected = commit_echo(&CommitOptions::default(), None, &payload);
+    let expected = commit_echo(
+        &CommitOptions::default(),
+        CommitMessage::Given("edit line 2"),
+        None,
+        &payload,
+    );
     assert!(
         entries(&app, Severity::Info).contains(&&*expected),
         "git ran, so the command is echoed: {:?}",

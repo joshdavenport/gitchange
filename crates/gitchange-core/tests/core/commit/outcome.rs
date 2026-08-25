@@ -2,7 +2,7 @@
 //! git's own short id, `--amend`, the unassigned tree, an unborn branch.
 
 use crate::support::RepoFixture;
-use gitchange_core::{CommitOptions, CommitOutcome, HunkStage};
+use gitchange_core::{CommitMessage, CommitOptions, CommitOutcome, HunkStage, commit_echo};
 
 use super::helpers::{commit, numbered_lines, owners, repo, stages, state_json, text};
 
@@ -76,7 +76,7 @@ fn amend_reuses_the_temp_index_path() {
     let outcome = repo
         .commit(
             Some("two"),
-            "first and second",
+            CommitMessage::Given("first and second"),
             &CommitOptions {
                 amend: true,
                 ..CommitOptions::default()
@@ -107,8 +107,11 @@ fn amend_reuses_the_temp_index_path() {
 
 #[test]
 fn unassigned_commits_like_any_changelist() {
-    // No changelists exist: the whole dirty tree is unassigned, and a
-    // changelist-less repo must not grow a state file just to commit.
+    // No changelists exist: the whole dirty tree is unassigned. The
+    // commit still writes the last-commit record (ADR 0004 §Aftermath),
+    // so a state file does grow here — the amend that follows needs the
+    // record to tell its own commit from another actor's, and the file
+    // carries nothing else it was not asked to hold.
     let fixture = RepoFixture::new();
     let head = numbered_lines(10);
     fixture.write("a.txt", &text(&head)).commit_all("init");
@@ -124,9 +127,71 @@ fn unassigned_commits_like_any_changelist() {
         fixture.head_bytes("a.txt"),
         Some(text(&worktree).into_bytes())
     );
+    let state = state_json(&fixture);
+    assert_eq!(state["last_commit"]["changelist"], "unassigned");
+    assert_eq!(
+        (state["changelists"].as_array(), state["records"].as_array()),
+        (Some(&Vec::new()), Some(&Vec::new())),
+        "committing an unmanaged tree invents no changelist and claims no hunk"
+    );
+}
+
+/// The no-message mode (#151): with `--no-edit` core omits `-F` entirely
+/// and forwards the flag, so HEAD's message survives the amend
+/// byte-identical. Passing both would deliver the file's message instead,
+/// which is what makes the surviving message proof of the omission.
+#[test]
+fn amend_with_no_edit_keeps_heads_message() {
+    let fixture = RepoFixture::new();
+    let head = numbered_lines(20);
+    fixture.write("a.txt", &text(&head)).commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
+
+    let mut worktree = head.clone();
+    worktree[4] = "five-one".into();
+    fixture.write("a.txt", &text(&worktree)).stage("a.txt");
+    repo.refresh().unwrap();
+    commit(&repo, Some("one"), "the message to keep");
+
+    worktree[14] = "fifteen-one".into();
+    fixture.write("a.txt", &text(&worktree)).stage("a.txt");
+    repo.refresh().unwrap();
+    let outcome = repo
+        .commit(
+            Some("one"),
+            CommitMessage::Kept,
+            &CommitOptions {
+                amend: true,
+                ..CommitOptions::default()
+            },
+            None,
+        )
+        .unwrap();
+
+    assert!(matches!(outcome, CommitOutcome::Committed { .. }));
+    assert_eq!(fixture.head_message(), "the message to keep\n");
+    assert_eq!(fixture.commit_count(), 2, "the tip was replaced, not added");
+    // And the transparency echo names the flag, since git was given it
+    // (ADR 0007): a mode that changes the command must be visible in the
+    // line that claims to be the command.
     assert!(
-        !fixture.path().join(".git/gitchange/state.json").exists(),
-        "no state file grows from committing an unmanaged tree"
+        commit_echo(
+            &CommitOptions {
+                amend: true,
+                ..CommitOptions::default()
+            },
+            CommitMessage::Kept,
+            Some("one"),
+            &repo.commit_payload(Some("one")).unwrap(),
+        )
+        .contains("--no-edit")
+    );
+    assert_eq!(
+        fixture.head_bytes("a.txt"),
+        Some(text(&worktree).into_bytes()),
+        "the amended tip carries the second hunk too"
     );
 }
 

@@ -4,7 +4,9 @@
 use std::fs;
 
 use crate::support::{RepoFixture, delete, done, offenders};
-use gitchange_core::{Error, RESERVED_NAMES, Release, Repo, Undeletable};
+use gitchange_core::{
+    CommitMessage, CommitOptions, Error, RESERVED_NAMES, Release, Repo, Undeletable,
+};
 
 fn repo(fixture: &RepoFixture) -> Repo {
     Repo::discover(fixture.path()).unwrap()
@@ -200,6 +202,37 @@ fn rename_rewrites_every_record_live_and_dormant() {
         Some("feature-x"),
         "a dormant record revives under the name the rename gave it"
     );
+}
+
+#[test]
+fn rename_rewrites_the_last_commit_record() {
+    // ADR 0004 §Aftermath: the last-commit record stores its changelist's
+    // name too, so the rename's rewrite has to reach it — otherwise the
+    // amend guard would stop recognising HEAD as this changelist's own
+    // commit the moment the changelist was renamed, and the unguarded
+    // commit-then-amend loop would refuse.
+    let fixture = RepoFixture::new();
+    fixture.write("a.txt", "one\n").commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("feature").unwrap();
+    repo.switch(Some("feature")).unwrap();
+    fixture.write("a.txt", "two\n").stage("a.txt");
+    repo.refresh().unwrap();
+    repo.commit(
+        Some("feature"),
+        CommitMessage::Given("feature: two"),
+        &CommitOptions::default(),
+        None,
+    )
+    .unwrap();
+
+    repo.rename_changelist("feature", "feature-x").unwrap();
+
+    assert!(
+        repo.head_is_own_last_commit(Some("feature-x")).unwrap(),
+        "the record followed the name"
+    );
+    assert!(!repo.head_is_own_last_commit(Some("feature")).unwrap());
 }
 
 /// Every stored record as (path, owner, dormant), in file order — read off

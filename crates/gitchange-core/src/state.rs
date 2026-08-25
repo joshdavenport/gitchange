@@ -144,9 +144,27 @@ impl MembershipRecord {
     }
 }
 
-/// Everything the state file holds (ADR 0002): the changelists, in user
-/// order, and the active marker. Exactly one of {the changelists,
-/// unassigned} is active.
+/// The last commit gitchange made, whatever the frontend
+/// (ADR 0004 §Aftermath): one record for the repo, not one per
+/// changelist, replaced by every commit and every amend. Commits carry no
+/// provenance, so this is the only thing that tells an own commit from
+/// another actor's — the reference the CLI's foreign-head guard reads
+/// before an amend (#151).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct LastCommit {
+    /// The commit the aftermath found at HEAD.
+    pub oid: String,
+    /// The scope committed. Unassigned is spelled with its label rather
+    /// than left out: this names what a commit took, not who owns a hunk,
+    /// so ADR 0016's no-record-is-unassigned rule has nothing to say here
+    /// — and a reader comparing names must not have to read an absent
+    /// field as either "unassigned" or "never committed".
+    pub changelist: String,
+}
+
+/// Everything the state file holds (ADR 0002), field by field below —
+/// enumerated once, here, so a field added cannot be missing from its own
+/// description. Exactly one of {the changelists, unassigned} is active.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct State {
     pub version: u32,
@@ -167,6 +185,12 @@ pub(crate) struct State {
     /// on the next refresh, guard skipped once.
     #[serde(default)]
     pub baseline_head: Option<String>,
+    /// The last commit gitchange made (ADR 0004 §Aftermath). `default`
+    /// keeps files written before it readable, and `None` is
+    /// record-absent — no commit gitchange knows of, which is exactly
+    /// what an amend guard must treat as foreign.
+    #[serde(default)]
+    pub last_commit: Option<LastCommit>,
 }
 
 impl Default for State {
@@ -177,6 +201,7 @@ impl Default for State {
             changelists: Vec::new(),
             records: Vec::new(),
             baseline_head: None,
+            last_commit: None,
         }
     }
 }
@@ -235,6 +260,28 @@ impl State {
         self.changelists.iter().map(|cl| cl.name.clone()).collect()
     }
 
+    /// Record `oid` as the last commit gitchange made, for `changelist`
+    /// (`None` = unassigned) — every commit records itself, an amend
+    /// included (ADR 0004 §Aftermath), so the previous record is simply
+    /// replaced.
+    pub(crate) fn record_commit(&mut self, oid: &str, changelist: Option<&str>) {
+        self.last_commit = Some(LastCommit {
+            oid: oid.to_owned(),
+            changelist: changelist.unwrap_or(UNASSIGNED).to_owned(),
+        });
+    }
+
+    /// Whether `oid` is the commit this state last recorded for
+    /// `changelist` (`None` = unassigned) — the foreign-head fact
+    /// (ADR 0004 §Amend). No record, another scope's record, or a record
+    /// naming an older commit all answer `false`: each is a HEAD an amend
+    /// would fold this payload into blind.
+    pub(crate) fn is_last_commit(&self, oid: &str, changelist: Option<&str>) -> bool {
+        self.last_commit.as_ref().is_some_and(|last| {
+            last.oid == oid && last.changelist == changelist.unwrap_or(UNASSIGNED)
+        })
+    }
+
     /// How many records `name` holds, live and dormant.
     pub(crate) fn record_counts(&self, name: &str) -> RecordCounts {
         let mut counts = RecordCounts {
@@ -276,7 +323,14 @@ impl State {
         Ok(())
     }
 
-    /// Rename `from` to `to`, carrying the active marker with it.
+    /// Rename `from` to `to`, carrying the active marker with it. Every
+    /// field that stores the name is rewritten in this one walk — the
+    /// changelist, its records live and dormant, the marker, and the
+    /// last-commit record (ADR 0004 §Aftermath) — so a rename stays the
+    /// total, atomic bookkeeping it promises. Each field left behind
+    /// fails differently, which is why none may be missed: a stale
+    /// record is pruned as an unknown changelist's, and a stale
+    /// last-commit record stops an amend recognising its own commit.
     pub fn rename(&mut self, from: &str, to: &str) -> Result<(), Error> {
         if !self.contains(from) {
             return Err(Error::UnknownChangelist { name: from.into() });
@@ -297,6 +351,11 @@ impl State {
         }
         if self.active.as_deref() == Some(from) {
             self.active = Some(to.into());
+        }
+        if let Some(last) = &mut self.last_commit
+            && last.changelist == from
+        {
+            last.changelist = to.into();
         }
         Ok(())
     }

@@ -1,11 +1,17 @@
-//! ADR 0012's record aftermath on an own commit: consumed records
-//! removed, surviving same-file records commuted by the committed deltas,
-//! retained `◑` records rewritten against the new HEAD, and the baseline
-//! stamped in the same locked update so the #39 guard never fires.
+//! What one locked update writes after an own commit: ADR 0012's record
+//! aftermath — consumed records removed, surviving same-file records
+//! commuted by the committed deltas, retained `◑` records rewritten
+//! against the new HEAD, the baseline stamped so the #39 guard never
+//! fires — and ADR 0004's last-commit record, the reference an amend's
+//! foreign-head guard reads back.
+
+use std::fs;
 
 use crate::support::RepoFixture;
 
-use super::helpers::{commit, dormant_owners, numbered_lines, owners, repo, state_json, text};
+use super::helpers::{
+    amend, commit, dormant_owners, numbered_lines, owners, repo, state_json, text,
+};
 
 #[test]
 fn committing_one_changelist_commutes_same_file_records() {
@@ -175,4 +181,217 @@ fn commit_stamps_the_baseline_in_the_same_update() {
     // Before any follow-up refresh, the baseline already names the new
     // HEAD — the #39 guard can never arm on an own commit.
     assert_eq!(state_json(&fixture)["baseline_head"], fixture.head_oid());
+}
+
+#[test]
+fn every_commit_records_itself_as_the_last_gitchange_commit() {
+    // ADR 0004 §Aftermath: one record for the repo, written in the same
+    // locked update as the membership bookkeeping. Both the persisted
+    // shape and the reading the amend guard does (#151) are asserted —
+    // a record written under the wrong name reads back as no record at
+    // all, and only the shape says which of the two went wrong.
+    let fixture = RepoFixture::new();
+    let head = numbered_lines(20);
+    fixture.write("a.txt", &text(&head)).commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
+
+    let mut worktree = head.clone();
+    worktree[4] = "five-one".into();
+    fixture.write("a.txt", &text(&worktree)).stage("a.txt");
+    repo.refresh().unwrap();
+
+    commit(&repo, Some("one"), "one: five");
+
+    assert_eq!(
+        state_json(&fixture)["last_commit"],
+        serde_json::json!({ "oid": fixture.head_oid(), "changelist": "one" }),
+        "the oid is the new HEAD and the name is the scope committed"
+    );
+    assert!(repo.head_is_own_last_commit(Some("one")).unwrap());
+    assert!(
+        !repo.head_is_own_last_commit(None).unwrap(),
+        "the record names one scope: unassigned did not commit this"
+    );
+}
+
+#[test]
+fn an_unassigned_scope_commit_records_unassigned() {
+    // Entailed by the every-commit-records rule (ADR 0004 §Aftermath):
+    // unassigned is a scope a commit can take, so the record spells it
+    // with its label rather than leaving the name out — the amend guard
+    // compares names, and an absent one would read as no commit.
+    let fixture = RepoFixture::new();
+    let head = numbered_lines(10);
+    fixture.write("a.txt", &text(&head)).commit_all("init");
+    let repo = repo(&fixture);
+
+    let mut worktree = head.clone();
+    worktree[4] = "five-edited".into();
+    fixture.write("a.txt", &text(&worktree)).stage("a.txt");
+
+    commit(&repo, None, "unassigned edit");
+
+    assert_eq!(
+        state_json(&fixture)["last_commit"]["changelist"],
+        "unassigned"
+    );
+    assert!(repo.head_is_own_last_commit(None).unwrap());
+}
+
+#[test]
+fn amend_re_records_the_last_commit() {
+    // The loop ADR 0004 §Amend leaves unguarded: commit, notice a miss,
+    // amend — and amend again. Each amend replaces the record, so HEAD
+    // stays the changelist's own last commit however many times it moves.
+    let fixture = RepoFixture::new();
+    let head = numbered_lines(40);
+    fixture.write("a.txt", &text(&head)).commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
+
+    let mut worktree = head.clone();
+    worktree[4] = "five-one".into();
+    fixture.write("a.txt", &text(&worktree)).stage("a.txt");
+    repo.refresh().unwrap();
+    commit(&repo, Some("one"), "first");
+    let first = fixture.head_oid();
+
+    worktree[19] = "twenty-one".into();
+    fixture.write("a.txt", &text(&worktree)).stage("a.txt");
+    repo.refresh().unwrap();
+    amend(&repo, Some("one"), "first, and twenty");
+    assert_ne!(fixture.head_oid(), first, "the tip was replaced");
+    assert!(repo.head_is_own_last_commit(Some("one")).unwrap());
+
+    worktree[29] = "thirty-one".into();
+    fixture.write("a.txt", &text(&worktree)).stage("a.txt");
+    repo.refresh().unwrap();
+    amend(&repo, Some("one"), "first, twenty, and thirty");
+    assert_eq!(
+        state_json(&fixture)["last_commit"]["oid"],
+        fixture.head_oid(),
+        "amend-after-amend keeps the record current"
+    );
+    assert!(repo.head_is_own_last_commit(Some("one")).unwrap());
+}
+
+#[test]
+fn another_scopes_commit_and_an_outside_commit_are_not_the_record() {
+    // The three shapes of the hazard the CLI's amend guard fires on
+    // (ADR 0004 §Amend): no record at all, another changelist's commit,
+    // and a commit made outside gitchange. Commits carry no provenance,
+    // so this record is the only thing that tells them from an own one.
+    let fixture = RepoFixture::new();
+    let head = numbered_lines(40);
+    fixture.write("a.txt", &text(&head)).commit_all("init");
+    let repo = repo(&fixture);
+    assert!(
+        !repo.head_is_own_last_commit(None).unwrap(),
+        "a repo that never committed through gitchange reads as absent, not an error"
+    );
+
+    repo.create_changelist("one").unwrap();
+    repo.create_changelist("two").unwrap();
+    repo.switch(Some("one")).unwrap();
+    let mut worktree = head.clone();
+    worktree[4] = "five-one".into();
+    fixture.write("a.txt", &text(&worktree)).stage("a.txt");
+    repo.refresh().unwrap();
+    commit(&repo, Some("one"), "one: five");
+
+    repo.switch(Some("two")).unwrap();
+    worktree[19] = "twenty-two".into();
+    fixture.write("a.txt", &text(&worktree)).stage("a.txt");
+    repo.refresh().unwrap();
+    commit(&repo, Some("two"), "two: twenty");
+    assert!(repo.head_is_own_last_commit(Some("two")).unwrap());
+    assert!(
+        !repo.head_is_own_last_commit(Some("one")).unwrap(),
+        "one's commit is no longer HEAD, and amending it would fold two's in"
+    );
+
+    worktree[34] = "thirty-five".into();
+    fixture
+        .write("a.txt", &text(&worktree))
+        .commit_all("outside");
+    assert!(
+        !repo.head_is_own_last_commit(Some("two")).unwrap(),
+        "an external commit moved HEAD past the record"
+    );
+}
+
+#[test]
+fn the_record_survives_the_state_files_other_writers() {
+    // The record shares one document with the membership records and the
+    // active marker (ADR 0002), and every later write loads and saves the
+    // whole of it — so a field the round-trip dropped would leave the
+    // amend guard reading a repo that had never committed.
+    let fixture = RepoFixture::new();
+    let head = numbered_lines(40);
+    fixture.write("a.txt", &text(&head)).commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
+
+    let mut worktree = head.clone();
+    worktree[4] = "five-one".into();
+    fixture.write("a.txt", &text(&worktree)).stage("a.txt");
+    // A second, unstaged edit stays behind as a live record, so the
+    // record coexists with membership rather than standing alone.
+    worktree[29] = "thirty-one".into();
+    fixture.write("a.txt", &text(&worktree));
+    repo.refresh().unwrap();
+    commit(&repo, Some("one"), "one: five");
+
+    repo.refresh().unwrap();
+    repo.create_changelist("two").unwrap();
+    repo.switch(Some("two")).unwrap();
+    repo.rename_changelist("two", "three").unwrap();
+
+    assert!(
+        !state_json(&fixture)["records"]
+            .as_array()
+            .expect("records")
+            .is_empty(),
+        "the surviving edit's record is still there to coexist with"
+    );
+    assert!(repo.head_is_own_last_commit(Some("one")).unwrap());
+}
+
+#[test]
+fn a_state_file_written_before_the_record_reads_as_absent() {
+    // Schema 1 predates the record, so files written by earlier builds
+    // carry no `last_commit` key at all (ADR 0002's serde-default rule,
+    // as for `records` and `baseline_head`). Such a file must load and
+    // read as "no commit gitchange knows of" — the honest answer — rather
+    // than failing the read or claiming a commit it has never seen.
+    let fixture = RepoFixture::new();
+    let head = numbered_lines(10);
+    fixture.write("a.txt", &text(&head)).commit_all("init");
+    let dir = fixture.path().join(".git/gitchange");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("state.json"),
+        r#"{ "version": 1, "active": "one", "changelists": [{ "name": "one" }] }"#,
+    )
+    .unwrap();
+    let repo = repo(&fixture);
+
+    assert!(
+        !repo.head_is_own_last_commit(Some("one")).unwrap(),
+        "an absent key is an absent record, not an error"
+    );
+
+    let mut worktree = head.clone();
+    worktree[4] = "five-one".into();
+    fixture.write("a.txt", &text(&worktree)).stage("a.txt");
+    repo.refresh().unwrap();
+    commit(&repo, Some("one"), "one: five");
+    assert!(
+        repo.head_is_own_last_commit(Some("one")).unwrap(),
+        "and the next commit fills it in"
+    );
 }

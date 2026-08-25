@@ -23,8 +23,8 @@ use std::time::Instant;
 
 use crossbeam_channel::{Receiver, at, never, select, unbounded};
 use gitchange_core::{
-    CommitOptions, CommitOutcome, Condition, Deletion, Engine, EngineEvent, OpOutcome, Release,
-    Repo, Undeletable, commit_echo,
+    CommitMessage, CommitOptions, CommitOutcome, Condition, Deletion, Engine, EngineEvent,
+    OpOutcome, Release, Repo, Undeletable, commit_echo,
 };
 use ratatui::Terminal;
 use ratatui::backend::Backend;
@@ -447,10 +447,18 @@ fn run_commit(repo: &Repo, app: &mut App, draft: CommitDraft) {
         no_verify: draft.no_verify,
         amend: draft.amend,
     };
-    let echo = commit_echo(&options, draft.changelist.as_deref(), &draft.payload);
+    // The dialog always composes a message, amend included, so the
+    // message-keeping mode is the CLI's alone (spec #151).
+    let message = CommitMessage::Given(&message);
+    let echo = commit_echo(
+        &options,
+        message,
+        draft.changelist.as_deref(),
+        &draft.payload,
+    );
     match repo.commit(
         draft.changelist.as_deref(),
-        &message,
+        message,
         &options,
         Some(&draft.payload),
     ) {

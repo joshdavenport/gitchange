@@ -17,7 +17,9 @@
 
 use crate::support::RepoFixture;
 use git2::RepositoryState;
-use gitchange_core::{CommitOptions, CommitOutcome, Error, GitOperation, Head, Repo};
+use gitchange_core::{
+    CommitMessage, CommitOptions, CommitOutcome, Error, GitOperation, Head, Repo,
+};
 
 /// The clean, unconflicted file every fixture commits and every guard
 /// assertion stages — the "staging is never guarded" half needs a path
@@ -84,7 +86,12 @@ fn assert_guard_holds(fixture: &RepoFixture, expected: GitOperation) {
 
     // Nothing staged, no changelist: the guard fires ahead of both, so
     // this can never be mistaken for a `NothingStaged` refusal.
-    let result = repo.commit(None, "msg", &CommitOptions::default(), None);
+    let result = repo.commit(
+        None,
+        CommitMessage::Given("msg"),
+        &CommitOptions::default(),
+        None,
+    );
     assert!(
         matches!(
             &result,
@@ -262,7 +269,7 @@ fn a_detached_head_is_not_an_operation_and_leaves_commit_unguarded() {
     let outcome = repo
         .commit(
             Some("one"),
-            "detached: a.txt",
+            CommitMessage::Given("detached: a.txt"),
             &CommitOptions::default(),
             None,
         )

@@ -10,7 +10,7 @@
 use std::fs;
 
 use crate::support::{RepoFixture, delete};
-use gitchange_core::{ChangedFile, CommitOptions, Head, Repo, Snapshot};
+use gitchange_core::{ChangedFile, CommitMessage, CommitOptions, Head, Repo, Snapshot};
 
 /// `count` numbered lines, with `edits` as (1-based line, replacement).
 fn numbered(count: usize, edits: &[(usize, &str)]) -> String {
@@ -222,7 +222,7 @@ fn every_state_file_write_leaves_no_temp_sibling() {
     repo.stage_all(Some("errands")).unwrap();
     repo.commit(
         Some("errands"),
-        "errands: five",
+        CommitMessage::Given("errands: five"),
         &CommitOptions::default(),
         None,
     )

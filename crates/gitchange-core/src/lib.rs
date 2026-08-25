@@ -16,8 +16,8 @@ mod wire;
 
 pub use backend::{CommitPathSpec, CommittedId, GitBackend, HunkHeader};
 pub use commit::{
-    AMEND_FLAG, CommitOptions, CommitOutcome, CommitPayload, NO_VERIFY_FLAG, PayloadFile,
-    PayloadHunk, WholeFilePayload, commit_echo,
+    AMEND_FLAG, CommitMessage, CommitOptions, CommitOutcome, CommitPayload, NO_EDIT_FLAG,
+    NO_VERIFY_FLAG, PayloadFile, PayloadHunk, WholeFilePayload, commit_echo,
 };
 pub use diff::{
     ChangeKind, DiffHunk, FileDiff, FileModes, FileSides, HunkLine, ModeDelta, RepoDiffs, SideInfo,

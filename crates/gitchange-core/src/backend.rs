@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::commit::{CommitOptions, WholeFilePayload};
+use crate::commit::{CommitMessage, CommitOptions, WholeFilePayload};
 use crate::diff::RepoDiffs;
 use crate::error::Error;
 use crate::snapshot::{CommitInfo, GitOperation, Head};
@@ -97,16 +97,17 @@ pub trait GitBackend: Send {
     /// semantics: drops the entry when HEAD doesn't have the path.
     fn unstage_path(&self, path: &str) -> Result<(), Error>;
 
-    /// Commit `message` from a temporary index — HEAD's tree plus the
-    /// named diff(HEAD↔index) hunks per path — via a native `git commit`
+    /// Commit from a temporary index — HEAD's tree plus the named
+    /// diff(HEAD↔index) hunks per path — via a native `git commit`
     /// shell-out with `GIT_INDEX_FILE`, so hooks run and see the true
     /// content (ADR 0004). The live index and worktree are never
     /// touched; every failure discards the temp file and changes
-    /// nothing.
+    /// nothing. `message` decides how git is told what to say
+    /// ([`CommitMessage`]).
     fn commit_from_index_hunks(
         &self,
         payload: &[CommitPathSpec],
-        message: &str,
+        message: CommitMessage<'_>,
         options: &CommitOptions,
     ) -> Result<CommittedId, Error>;
 }

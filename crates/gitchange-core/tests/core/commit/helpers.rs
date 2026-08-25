@@ -6,7 +6,7 @@
 use std::fs;
 
 use crate::support::RepoFixture;
-use gitchange_core::{CommitOptions, CommitOutcome, HunkStage, Repo, Snapshot};
+use gitchange_core::{CommitMessage, CommitOptions, CommitOutcome, HunkStage, Repo, Snapshot};
 
 /// Lines `line 1`..=`line count`, as a vec for splicing edits into.
 pub(super) fn numbered_lines(count: usize) -> Vec<String> {
@@ -24,8 +24,29 @@ pub(super) fn repo(fixture: &RepoFixture) -> Repo {
 }
 
 pub(super) fn commit(repo: &Repo, changelist: Option<&str>, message: &str) -> CommitOutcome {
-    repo.commit(changelist, message, &CommitOptions::default(), None)
-        .unwrap()
+    repo.commit(
+        changelist,
+        CommitMessage::Given(message),
+        &CommitOptions::default(),
+        None,
+    )
+    .unwrap()
+}
+
+/// `commit` with `--amend` and a fresh message. The message-keeping mode
+/// (`CommitMessage::Kept`) has one test of its own, which calls
+/// [`Repo::commit`] directly rather than widen this.
+pub(super) fn amend(repo: &Repo, changelist: Option<&str>, message: &str) -> CommitOutcome {
+    repo.commit(
+        changelist,
+        CommitMessage::Given(message),
+        &CommitOptions {
+            amend: true,
+            ..CommitOptions::default()
+        },
+        None,
+    )
+    .unwrap()
 }
 
 /// Each hunk's owning changelist for `path`, in file order.

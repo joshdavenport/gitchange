@@ -5,7 +5,9 @@
 //! surface on real temp repos (ADR 0008).
 
 use crate::support::RepoFixture;
-use gitchange_core::{ChangeKind, CommitOptions, Error, GitOperation, Repo, Snapshot};
+use gitchange_core::{
+    ChangeKind, CommitMessage, CommitOptions, Error, GitOperation, Repo, Snapshot,
+};
 
 fn repo(fixture: &RepoFixture) -> Repo {
     Repo::discover(fixture.path()).unwrap()
@@ -62,7 +64,12 @@ fn a_merge_in_progress_is_reported_and_guards_commit() {
     // The guard fires before anything else — nothing staged, no
     // changelist, doesn't matter: the next commit would conclude the
     // merge with one changelist's content (ADR 0007).
-    let result = repo.commit(None, "msg", &CommitOptions::default(), None);
+    let result = repo.commit(
+        None,
+        CommitMessage::Given("msg"),
+        &CommitOptions::default(),
+        None,
+    );
     assert!(
         matches!(
             result,
@@ -135,7 +142,12 @@ fn an_unmerged_path_is_quarantined_from_the_universe() {
         "resolving files does not conclude the merge"
     );
     assert!(matches!(
-        repo.commit(None, "msg", &CommitOptions::default(), None),
+        repo.commit(
+            None,
+            CommitMessage::Given("msg"),
+            &CommitOptions::default(),
+            None
+        ),
         Err(Error::OperationInProgress { .. })
     ));
 }

@@ -14,7 +14,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::support::RepoFixture;
-use gitchange_core::{Advisory, CommitOptions, CommitOutcome, Hunk, Repo, Snapshot};
+use gitchange_core::{Advisory, CommitMessage, CommitOptions, CommitOutcome, Hunk, Repo, Snapshot};
 
 /// Repo-relative paths with file bytes — one tree state.
 type Tree = Vec<(&'static str, Vec<u8>)>;
@@ -171,7 +171,7 @@ fn run(case: Case) {
             let outcome = repo
                 .commit(
                     *changelist,
-                    "corpus commit",
+                    CommitMessage::Given("corpus commit"),
                     &CommitOptions::default(),
                     None,
                 )

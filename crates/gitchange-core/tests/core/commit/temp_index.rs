@@ -8,7 +8,7 @@
 use std::fs;
 
 use crate::support::RepoFixture;
-use gitchange_core::{CommitOptions, CommitOutcome, Error, HunkStage, Repo};
+use gitchange_core::{CommitMessage, CommitOptions, CommitOutcome, Error, HunkStage, Repo};
 
 // Gated with its only user below, so Windows builds this file clean.
 #[cfg(unix)]
@@ -145,7 +145,12 @@ fn hook_rejection_changes_nothing() {
 
     fixture.with_hook("pre-commit", "#!/bin/sh\necho nope >&2\nexit 1\n");
     let err = repo
-        .commit(Some("one"), "one: ten", &CommitOptions::default(), None)
+        .commit(
+            Some("one"),
+            CommitMessage::Given("one: ten"),
+            &CommitOptions::default(),
+            None,
+        )
         .unwrap_err();
     match err {
         Error::HookRejected { stderr } => {
@@ -189,7 +194,7 @@ fn no_verify_commits_past_a_rejecting_hook() {
     let outcome = repo
         .commit(
             Some("one"),
-            "one: ten",
+            CommitMessage::Given("one: ten"),
             &CommitOptions {
                 no_verify: true,
                 amend: false,
@@ -255,7 +260,12 @@ fn a_refused_temp_index_apply_aborts_before_any_commit_exists() {
 
     let _odb = fixture.unwritable_odb();
     let err = repo
-        .commit(Some("one"), "one: ten", &CommitOptions::default(), None)
+        .commit(
+            Some("one"),
+            CommitMessage::Given("one: ten"),
+            &CommitOptions::default(),
+            None,
+        )
         .unwrap_err();
     // The variant pins the refusal to the apply itself: everything
     // else in the commit path the same mode breaks stays `Backend`.
@@ -551,7 +561,7 @@ fn a_whole_file_payload_refuses_an_entry_a_second_changelist_holds_content_in() 
         let err = repo
             .commit(
                 committing,
-                "should not land",
+                CommitMessage::Given("should not land"),
                 &CommitOptions::default(),
                 None,
             )

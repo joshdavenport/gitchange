@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::backend::{CommitPathSpec, GitBackend};
-use crate::commit::{self, CommitOptions, CommitOutcome, CommitPayload};
+use crate::commit::{self, CommitMessage, CommitOptions, CommitOutcome, CommitPayload};
 use crate::diff::{ChangeKind, FileDiff};
 use crate::error::Error;
 use crate::git2_backend::Git2Backend;
@@ -510,10 +510,11 @@ impl Repo {
     /// are never touched, and any failure changes nothing. On success,
     /// one locked state update runs the ADR 0012 aftermath: consumed
     /// records removed, retained `◑` records rewritten against the new
-    /// HEAD, surviving same-file records commuted, and the new baseline
+    /// HEAD, surviving same-file records commuted, the new baseline
     /// HEAD stamped so the external-move guard never arms for an own
-    /// commit. A full refresh should follow; this method leaves the
-    /// state file consistent for it.
+    /// commit, and the commit recorded as the last one gitchange made
+    /// (ADR 0004 §Aftermath). A full refresh should follow; this method
+    /// leaves the state file consistent for it.
     ///
     /// `expected` is a payload from [`Repo::commit_payload`]: when the
     /// synchronous refresh finds the live payload differs, nothing is
@@ -522,7 +523,7 @@ impl Repo {
     pub fn commit(
         &self,
         changelist: Option<&str>,
-        message: &str,
+        message: CommitMessage<'_>,
         options: &CommitOptions,
         expected: Option<&CommitPayload>,
     ) -> Result<CommitOutcome, Error> {
@@ -572,14 +573,16 @@ impl Repo {
         // and the aftermath it feeds; the hold stays short (one diff).
         let residual = self.backend.diffs()?.worktree;
         let mut state = state_file::load(&dir)?;
-        // A changelist-less, record-less repo has nothing to commute and
-        // must not grow a state file just to hold a baseline stamp.
-        if state != State::default() {
-            commit::apply_aftermath(&mut state, &plan.paths, &residual);
-            state.baseline_head = Some(committed.oid.clone());
-            state.prune_records_of_unknown_changelists();
-            state_file::save(&dir, &state)?;
-        }
+        commit::apply_aftermath(&mut state, &plan.paths, &residual);
+        state.baseline_head = Some(committed.oid.clone());
+        state.prune_records_of_unknown_changelists();
+        // Every commit records itself (ADR 0004 §Aftermath), which is why
+        // this update is unconditional: a changelist-less repo has no
+        // records to commute, but the amend that may follow still needs
+        // the record to tell this commit from another actor's — so a
+        // state file grows here, holding nothing it was not asked to hold.
+        state.record_commit(&committed.oid, changelist);
+        state_file::save(&dir, &state)?;
         Ok(CommitOutcome::Committed {
             oid: committed.oid,
             short_id: committed.short_id,
@@ -964,6 +967,29 @@ impl Repo {
             changelists: state.changelists,
             active: state.active,
         })
+    }
+
+    /// Whether HEAD is the commit gitchange last made for `changelist`
+    /// (`None` = unassigned) — the fact behind the CLI's foreign-head
+    /// guard (ADR 0004 §Amend, spec #151), which is where the decision
+    /// this answers for lives: refusing, and what overrides it, is a
+    /// frontend's policy.
+    ///
+    /// Two readings taken together because the comparison is between
+    /// commit ids, and frontends never speak git (ADR 0006): the state
+    /// file's last-commit record must name this changelist *and* still be
+    /// where HEAD points. `false` covers every shape of the hazard —
+    /// another changelist's commit, a commit made outside gitchange, an
+    /// unborn HEAD, no record at all — because an amend folds its payload
+    /// into HEAD's commit regardless of which one it is.
+    ///
+    /// A state read like [`Repo::roster`]: no refresh, no lock.
+    pub fn head_is_own_last_commit(&self, changelist: Option<&str>) -> Result<bool, Error> {
+        let Some(oid) = self.backend.head_oid()? else {
+            return Ok(false);
+        };
+        let state = state_file::load(&self.backend.state_dir())?;
+        Ok(state.is_last_commit(&oid, changelist))
     }
 
     /// Create a changelist. The active marker stays where it is

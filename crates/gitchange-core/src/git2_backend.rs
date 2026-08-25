@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::backend::{CommitPathSpec, CommittedId, GitBackend, HunkHeader};
-use crate::commit::{AMEND_FLAG, CommitOptions, NO_VERIFY_FLAG};
+use crate::commit::{AMEND_FLAG, CommitMessage, CommitOptions, NO_EDIT_FLAG, NO_VERIFY_FLAG};
 use crate::diff::{
     ChangeKind, DiffHunk, FileDiff, FileModes, FileSides, HunkLine, ModeDelta, RepoDiffs, SideInfo,
 };
@@ -363,7 +363,7 @@ impl GitBackend for Git2Backend {
     fn commit_from_index_hunks(
         &self,
         payload: &[CommitPathSpec],
-        message: &str,
+        message: CommitMessage<'_>,
         options: &CommitOptions,
     ) -> Result<CommittedId, Error> {
         // Temp files live under $GIT_DIR/gitchange/ so the Engine's
@@ -452,7 +452,7 @@ impl Git2Backend {
         index_path: &Path,
         message_path: &Path,
         payload: &[CommitPathSpec],
-        message: &str,
+        message: CommitMessage<'_>,
         options: &CommitOptions,
     ) -> Result<CommittedId, Error> {
         // A stale leftover (crashed earlier run) must not seed the index.
@@ -575,7 +575,6 @@ impl Git2Backend {
         }
         temp.write().map_err(backend_error)?;
 
-        fs::write(message_path, message).map_err(io_error)?;
         let workdir = self
             .repo
             .workdir()
@@ -589,14 +588,27 @@ impl Git2Backend {
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
             .env("GIT_INDEX_FILE", index_path)
-            .arg("commit")
-            .arg("-F")
-            .arg(message_path);
+            .arg("commit");
         if options.no_verify {
             command.arg(NO_VERIFY_FLAG);
         }
         if options.amend {
             command.arg(AMEND_FLAG);
+        }
+        // Last, in the order `commit_echo` names them, so the echo reads
+        // as the command actually run (ADR 0007). A given message goes
+        // through a temp file, never argv: `-m` would put arbitrary bytes
+        // — newlines included — through the argument list. `Kept` writes
+        // no file and passes no `-F` at all, leaving git the message it
+        // already has (spec #151).
+        match message {
+            CommitMessage::Given(message) => {
+                fs::write(message_path, message).map_err(io_error)?;
+                command.arg("-F").arg(message_path);
+            }
+            CommitMessage::Kept => {
+                command.arg(NO_EDIT_FLAG);
+            }
         }
         let output = command.output().map_err(io_error)?;
         if !output.status.success() {

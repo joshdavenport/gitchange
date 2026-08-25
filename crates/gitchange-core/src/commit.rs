@@ -31,6 +31,29 @@ pub const NO_VERIFY_FLAG: &str = "--no-verify";
 /// The git flag [`CommitOptions::amend`] drives. See [`NO_VERIFY_FLAG`].
 pub const AMEND_FLAG: &str = "--amend";
 
+/// The git flag [`CommitMessage::Kept`] drives. See [`NO_VERIFY_FLAG`].
+pub const NO_EDIT_FLAG: &str = "--no-edit";
+
+/// Where one commit's message comes from — the two shapes the shelled-out
+/// `git commit` can be given, as a sum rather than an optional string so
+/// "a message and no message" cannot be spelled at a call site. The rules
+/// over the sources are spec #151's (the CLI's `-m`/`-F`/`--no-edit`
+/// group); core carries only the delivery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommitMessage<'a> {
+    /// Delivered to git via `-F` — a temp file, so any bytes a frontend
+    /// collected (multiline, repeated `-m` joined as paragraphs, stdin)
+    /// arrive verbatim without shell quoting entering into it.
+    Given(&'a str),
+    /// `--no-edit`, with no `-F`: git keeps the message it already has.
+    /// Only an amend has one to keep — that is the frontends' grammar to
+    /// enforce ([`CommitOptions::amend`]), and git needs no guard from
+    /// core: `--no-edit` is precisely "do not open an editor", so a
+    /// non-amend commit aborts on the empty message rather than hanging
+    /// on a terminal no agent is watching.
+    Kept,
+}
+
 /// The transparency echo for one commit invocation (ADR 0007): the
 /// shelled-out command's flags plus the temp-index context — one
 /// phrasing, sunk into core so frontends can't drift (ADR 0006). The
@@ -38,8 +61,14 @@ pub const AMEND_FLAG: &str = "--amend";
 /// [`CommitOutcome::Committed`], and on
 /// [`crate::Error::HookRejected`] (git executed and refused); drift and
 /// guard failures mean it never did.
+///
+/// [`CommitMessage::Given`]'s `-F <temp file>` is deliberately not shown
+/// — the path is this process's scratch file, and naming it says nothing
+/// about the commit — while `--no-edit` is, being a caller's decision
+/// about the message that a reader can act on.
 pub fn commit_echo(
     options: &CommitOptions,
+    message: CommitMessage<'_>,
     changelist: Option<&str>,
     payload: &CommitPayload,
 ) -> String {
@@ -51,6 +80,10 @@ pub fn commit_echo(
     if options.amend {
         echo.push(' ');
         echo.push_str(AMEND_FLAG);
+    }
+    if message == CommitMessage::Kept {
+        echo.push(' ');
+        echo.push_str(NO_EDIT_FLAG);
     }
     let hunks = payload.staged_hunks() + payload.stale_hunks();
     echo.push_str(&format!(

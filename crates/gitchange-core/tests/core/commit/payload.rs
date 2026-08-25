@@ -3,7 +3,7 @@
 //! confirmation back, and the `align`/`stage_all` ops that shape it.
 
 use crate::support::RepoFixture;
-use gitchange_core::{Advisory, CommitOptions, CommitOutcome, Error, HunkStage};
+use gitchange_core::{Advisory, CommitMessage, CommitOptions, CommitOutcome, Error, HunkStage};
 
 use super::helpers::{commit, numbered_lines, owners, repo, stages, text};
 
@@ -28,7 +28,7 @@ fn payload_drift_returns_to_the_confirm_step() {
     let outcome = repo
         .commit(
             Some("one"),
-            "one: ten",
+            CommitMessage::Given("one: ten"),
             &CommitOptions::default(),
             Some(&confirmed),
         )
@@ -43,7 +43,7 @@ fn payload_drift_returns_to_the_confirm_step() {
     let outcome = repo
         .commit(
             Some("one"),
-            "one: ten",
+            CommitMessage::Given("one: ten"),
             &CommitOptions::default(),
             Some(&payload),
         )
@@ -67,13 +67,23 @@ fn zero_staged_hunks_is_an_error_not_a_commit() {
     repo.refresh().unwrap();
 
     let err = repo
-        .commit(Some("one"), "one: ten", &CommitOptions::default(), None)
+        .commit(
+            Some("one"),
+            CommitMessage::Given("one: ten"),
+            &CommitOptions::default(),
+            None,
+        )
         .unwrap_err();
     assert!(matches!(err, Error::NothingStaged));
     assert_eq!(fixture.commit_count(), 1);
 
     let err = repo
-        .commit(Some("missing"), "?", &CommitOptions::default(), None)
+        .commit(
+            Some("missing"),
+            CommitMessage::Given("?"),
+            &CommitOptions::default(),
+            None,
+        )
         .unwrap_err();
     assert!(matches!(err, Error::UnknownChangelist { .. }));
 }
@@ -263,7 +273,7 @@ fn a_restaged_binary_blob_drifts_the_confirmation() {
     let outcome = repo
         .commit(
             Some("art"),
-            "drifted",
+            CommitMessage::Given("drifted"),
             &CommitOptions::default(),
             Some(&confirmed),
         )
@@ -393,7 +403,12 @@ fn a_mode_flip_reverted_since_confirmation_drifts_the_commit() {
     fixture.clear_exec("tool.sh").stage("tool.sh");
 
     let outcome = repo
-        .commit(None, "drifted", &CommitOptions::default(), Some(&confirmed))
+        .commit(
+            None,
+            CommitMessage::Given("drifted"),
+            &CommitOptions::default(),
+            Some(&confirmed),
+        )
         .unwrap();
     assert!(matches!(outcome, CommitOutcome::Drifted { .. }));
     assert_eq!(fixture.commit_count(), 1, "nothing was committed");
