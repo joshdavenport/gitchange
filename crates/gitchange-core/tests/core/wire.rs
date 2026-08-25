@@ -73,6 +73,9 @@ fn sans_hunk_ids(mut file: Value) -> Value {
 /// `envelope` with every text hunk's `lines` removed — the one difference
 /// `--no-content` is allowed to make, taken out of the full document so
 /// the rest can be compared whole (#159).
+// Gated with its only user below, whose fixture needs an exec bit, so
+// Windows builds this file clean.
+#[cfg(unix)]
 fn sans_lines(mut envelope: Value) -> Value {
     for file in envelope["files"].as_array_mut().expect("the files array") {
         for hunk in file["hunks"].as_array_mut().expect("the hunks array") {
