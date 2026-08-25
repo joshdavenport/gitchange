@@ -35,6 +35,20 @@ const REFUSAL: u8 = 1;
 /// Transient lock contention: retry the same command unchanged.
 const TRANSIENT: u8 = 3;
 
+/// The capture-pending hint (#143): what `status` says under the
+/// unassigned group when a real changelist is active and unassigned holds
+/// hunks — the one state where the read's ownership and the next
+/// persisting refresh's will differ. Derived from record facts alone (the
+/// marker, the absence of records), so a read may state it. It names the
+/// mechanism and the resolution, never a destination (#122 §Forecasts):
+/// where a hunk lands is context-derived — an intervening `switch` moves
+/// it, the entry-unit rule overrides it hunk by hunk — so a named landing
+/// spot is either wrong or the preview of context-derived ownership the
+/// refresh split forbids (ADR 0005). The claiming refresh's receipt
+/// reports where hunks actually went, once.
+const CAPTURE_PENDING_HINT: &str =
+    "capture on: run 'gitchange refresh' to claim these, or they're claimed at your next action";
+
 /// What exit `3` tells the caller to do, in words: the code is the
 /// branching surface, and this line is the same contract for a human
 /// reading the terminal. Composed here rather than in core because the
@@ -323,11 +337,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         // must never fall back to text, since exit 0 on a `--json` call
         // promises the envelope was delivered.
         Some(Command::Status { json: true }) => not_implemented("status --json"),
-        // `status` is a read, and a read is not supposed to contend at
-        // all (#122) — but the built one still runs a persisting refresh,
-        // so until #156 flips it to the read-only form it takes the lock
-        // and is retried like any mutation. #156 unwraps it.
-        Some(Command::Status { json: false }) => with_lock_retry(status),
+        // A read: no lock, so no contention to absorb (#122).
+        Some(Command::Status { json: false }) => status(),
         Some(Command::Switch { name }) => with_lock_retry(|| switch(&name)),
         Some(Command::Refresh) => not_implemented("refresh"),
         Some(Command::Changelist { .. }) => not_implemented("changelist"),
@@ -441,14 +452,15 @@ fn print_notices(advisories: &[Advisory]) {
 }
 
 /// The All view as text — core's grouping (`Snapshot::groups`, ADR 0006)
-/// rendered line by line.
+/// rendered line by line, from the read-only refresh (ADR 0005): a glance
+/// captures nothing and advises nothing. The snapshot is all core hands
+/// back — there is no advisories field to print from — and ownership is
+/// what the records say, so a recordless hunk sits under unassigned even
+/// while a changelist is active; the hint below is how the face says so.
 fn status() -> anyhow::Result<()> {
     let repo = open_repo()?;
-    let refreshed = repo.refresh()?;
-    // A read that advises at all is the built persisting refresh showing
-    // through; #156 flips it to the read-only form and this call goes.
-    print_notices(&refreshed.advisories);
-    for group in refreshed.snapshot.groups() {
+    let snapshot = repo.read_only_refresh()?;
+    for group in snapshot.groups() {
         match &group.kind {
             // Quarantined unmerged paths (ADR 0007) — outside gitchange's
             // remit until resolved, so no stage mark or hunk counts.
@@ -469,6 +481,16 @@ fn status() -> anyhow::Result<()> {
             kind => {
                 let marker = if kind.active() { ACTIVE_MARKER } else { ' ' };
                 println!("{marker} {}", kind.label());
+                // Unassigned, not active, holding hunks: exactly one target
+                // is always active (CONTEXT.md), so "not unassigned" is "a
+                // real changelist", and capture is on for these. The hint
+                // sits where git puts its own — under the header, before
+                // the rows it speaks for.
+                if matches!(kind, GroupKind::Unassigned { active: false })
+                    && !group.files.is_empty()
+                {
+                    println!("    {CAPTURE_PENDING_HINT}");
+                }
                 print_files(&group.files);
             }
         }

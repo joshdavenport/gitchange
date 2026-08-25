@@ -85,6 +85,15 @@ fn path_str(path: &Path) -> &str {
 const TUI_NEEDS_A_TERMINAL: &str = "gitchange: the TUI needs a terminal on stdin and stdout; \
                                     run 'gitchange --help' for the command-line surface\n";
 
+/// The capture-pending hint (#156), as the unassigned group carries it:
+/// the line a read prints when a real changelist is active and unassigned
+/// holds hunks, indented to the file rows it speaks for. Pinned exactly
+/// because what it omits is the point: it names the mechanism — the next
+/// persisting refresh claims — and never where (#122 §Forecasts), so a
+/// destination interpolated into it later fails every assertion below.
+const CAPTURE_PENDING_HINT: &str = "    capture on: run 'gitchange refresh' to claim these, \
+                                    or they're claimed at your next action";
+
 /// This worktree's state file, spelled once. Tests that seed it and
 /// tests that assert on it read the same path.
 fn state_path(dir: &Path) -> std::path::PathBuf {
@@ -158,8 +167,9 @@ fn switch_then_status_round_trip_the_active_marker() {
     // composed beside the write (ADR 0006/0007), never here (#138).
     assert_eq!(stdout, "switched to 'bugfix'\n");
 
-    // A separate invocation sees the persisted marker; the dirty files
-    // auto-capture to the newly active changelist.
+    // A separate invocation sees the persisted marker. The dirty files
+    // stay unassigned: a read claims nothing (#156), so the newly active
+    // changelist is where capture *will* flow, not where it has.
     let output = gitchange(repo.path(), &["status"]);
     assert_eq!(output.status.code(), Some(0));
     let stdout = String::from_utf8(output.stdout).unwrap();
@@ -169,6 +179,8 @@ fn switch_then_status_round_trip_the_active_marker() {
         vec![
             "  feature",
             "* bugfix",
+            "  unassigned",
+            CAPTURE_PENDING_HINT,
             "    ○ M tracked.txt 0/1",
             "    ○ ? untracked.txt 0/1",
         ]
@@ -311,10 +323,11 @@ fn switch_unassigned_turns_capture_off_and_marks_the_group() {
             "    ○ M tracked.txt 0/1",
             "    ○ ? untracked.txt 0/1",
         ],
-        "the dirty tree stays out of 'feature': capture is off"
+        "capture is off: the dirty tree is unassigned with nothing pending, so no hint"
     );
 
-    // And back: the changelist reclaims the marker and captures again.
+    // And back: the changelist reclaims the marker, and capture is on
+    // again — pending, since the read that shows it never performs it.
     let output = gitchange(repo.path(), &["switch", "feature"]);
     assert_eq!(output.status.code(), Some(0));
     let output = gitchange(repo.path(), &["status"]);
@@ -324,6 +337,8 @@ fn switch_unassigned_turns_capture_off_and_marks_the_group() {
         lines,
         vec![
             "* feature",
+            "  unassigned",
+            CAPTURE_PENDING_HINT,
             "    ○ M tracked.txt 0/1",
             "    ○ ? untracked.txt 0/1",
         ]
@@ -331,10 +346,95 @@ fn switch_unassigned_turns_capture_off_and_marks_the_group() {
 }
 
 #[test]
+fn status_writes_nothing_and_a_recordless_hunk_reports_unassigned() {
+    // The read-only refresh at the binary seam (#156; core's own form is
+    // tested in gitchange-core). The fixture is the shape a persisting
+    // refresh would move most — a real changelist active over a dirty
+    // tree, which it would claim both hunks of and stamp the baseline
+    // for. Read twice, so the second run proves the first wrote nothing.
+    let repo = dirty_repo();
+    seed_state(repo.path(), "feature", &["feature"]);
+    let before = std::fs::read(state_path(repo.path())).unwrap();
+
+    for _ in 0..2 {
+        let output = gitchange(repo.path(), &["status"]);
+        assert_eq!(output.status.code(), Some(0));
+        assert_eq!(output.stderr, Vec::<u8>::new(), "a read advises nothing");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert_eq!(
+            stdout.lines().collect::<Vec<&str>>(),
+            vec![
+                "* feature",
+                "  unassigned",
+                CAPTURE_PENDING_HINT,
+                "    ○ M tracked.txt 0/1",
+                "    ○ ? untracked.txt 0/1",
+            ],
+            "context-derived ownership never previews: recordless is unassigned"
+        );
+        assert_eq!(
+            std::fs::read(state_path(repo.path())).unwrap(),
+            before,
+            "no capture, no record write, no baseline stamp"
+        );
+    }
+    assert!(
+        !lock_path(repo.path()).exists(),
+        "a read takes no lock, so none is left behind"
+    );
+}
+
+#[test]
+fn status_creates_no_state_file() {
+    // The same property from the other side (#156): a repository that
+    // has never run gitchange still has no state file after being read.
+    let repo = dirty_repo();
+    let output = gitchange(repo.path(), &["status"]);
+
+    assert_eq!(output.status.code(), Some(0));
+    assert!(
+        !state_path(repo.path()).exists(),
+        "the read created a state file"
+    );
+}
+
+#[test]
+fn the_capture_pending_hint_needs_a_real_changelist_active_and_hunks_pending() {
+    // The hint's whole condition (#156): a real changelist active *and*
+    // unassigned holding hunks. Both are record facts — the marker and the
+    // absence of records — so a read may state them. The one fixture
+    // walks the two rows a switch can move between; the third row, a
+    // real changelist active over a clean tree, is
+    // `a_clean_tree_still_says_where_capture_would_go`, whose exact lines
+    // carry no hint (and no unassigned group to hang one on).
+    let repo = dirty_repo();
+    seed_state(repo.path(), "feature", &["feature"]);
+
+    // Real changelist active, unassigned dirty: the hint, exactly.
+    let output = gitchange(repo.path(), &["status"]);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let hint = stdout
+        .lines()
+        .find(|line| line.contains("capture on"))
+        .expect("the hint is present");
+    assert_eq!(hint, CAPTURE_PENDING_HINT);
+
+    // Unassigned active (capture off): nothing is pending, so no hint.
+    gitchange(repo.path(), &["switch", "unassigned"]);
+    let output = gitchange(repo.path(), &["status"]);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        !stdout.contains("capture on"),
+        "capture-off has nothing pending: {stdout}"
+    );
+}
+
+#[test]
 fn status_groups_files_by_changelist_with_unassigned_last() {
-    // A record claims tracked.txt for 'bugfix'; capture is off
-    // (unassigned active, ADR 0015), so the untracked file stays loose
-    // and the unassigned group renders last, wearing the marker.
+    // A record claims tracked.txt for 'bugfix' — record-derived ownership,
+    // which a read shows. The untracked file is recordless, so it sits in
+    // the unassigned group, rendered last and wearing the marker: capture
+    // is off (ADR 0015), so nothing is pending and no hint is shown.
     let repo = dirty_repo();
     seed_state_raw(
         repo.path(),
@@ -368,9 +468,14 @@ fn status_groups_files_by_changelist_with_unassigned_last() {
 }
 
 #[test]
-fn status_prints_ambiguous_overlap_advisories_on_stderr() {
+fn status_never_advises_even_where_the_persisting_form_would() {
     // Records from two changelists overlap the fresh hunk without an
-    // exact anchor match: active captures it, with a notice (ADR 0001).
+    // exact anchor match — the ambiguous-overlap shape (ADR 0001), which a
+    // persisting refresh resolves by capturing to active and advising.
+    // A read resolves nothing (#156): the routing is context-derived, so
+    // the hunk reports unassigned, and the advisory the recompute still
+    // produces is discarded as a preview — a read commits no decision,
+    // and delivering it would repeat on every glance (ADR 0005).
     let repo = dirty_repo();
     seed_state_raw(
         repo.path(),
@@ -391,35 +496,44 @@ fn status_prints_ambiguous_overlap_advisories_on_stderr() {
   ]
 }"#,
     );
+    let before = std::fs::read(state_path(repo.path())).unwrap();
 
     let output = gitchange(repo.path(), &["status"]);
     assert_eq!(output.status.code(), Some(0));
-    let stderr = String::from_utf8(output.stderr).unwrap();
     assert_eq!(
-        stderr,
-        // The untracked file's hunk is genuinely new, so its capture
-        // notices too (ticket #34: auto-capture is never silent).
-        // Phrasing is core's canonical `Advisory::message` (ADR 0006).
-        "gitchange: notice: auto-captured hunk at tracked.txt:1 → 'feature' \
-         (ambiguous overlap: 'bugfix', 'feature')\n\
-         gitchange: notice: auto-captured hunk at untracked.txt:1 → 'feature'\n"
+        output.stderr,
+        Vec::<u8>::new(),
+        "no notice line on a read, ever"
     );
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(
-        stdout.contains("* feature\n    ○ M tracked.txt 0/1"),
-        "the hunk lands in the active changelist: {stdout}"
+    assert_eq!(
+        stdout.lines().collect::<Vec<&str>>(),
+        vec![
+            "* feature",
+            "  bugfix",
+            "  unassigned",
+            CAPTURE_PENDING_HINT,
+            "    ○ M tracked.txt 0/1",
+            "    ○ ? untracked.txt 0/1",
+        ],
+        "the ambiguous hunk is not routed, so it stays unassigned"
+    );
+    assert_eq!(
+        std::fs::read(state_path(repo.path())).unwrap(),
+        before,
+        "the stale records stand as they were"
     );
 }
 
 #[test]
-fn status_prints_the_head_move_dormancy_advisory_on_stderr() {
-    // ADR 0012's advisory reaches stderr through the same loop as the
-    // overlap one above — same `notice:` dressing, same core phrasing.
-    // The fixture is the guard's minimal shape: a stored baseline behind
-    // HEAD, the moved path carrying a live record whose anchor can't
-    // match, and a hunk on it to capture. Grown from `committed_repo`
-    // rather than `dirty_repo` so that, without the untracked file, the
-    // two advisories on stderr are exactly the guard's own.
+fn status_leaves_a_moved_head_unstamped_and_stranded_records_unclaimed() {
+    // ADR 0012's guard, on a read (#156): the fixture is the guard's
+    // minimal shape — a stored baseline behind HEAD, the moved path
+    // carrying a live record whose anchor can't match, and a hunk on it.
+    // A persisting refresh would go dormant, capture, advise twice, and
+    // stamp the new baseline; a read does none of it, and the state file
+    // — baseline included — is byte-identical afterwards. Grown from
+    // `committed_repo` so the fixture has exactly the guard's shape.
     let dir = committed_repo();
     let repo = dir.path();
     // The baseline the state file will claim the records address.
@@ -450,22 +564,31 @@ fn status_prints_the_head_move_dormancy_advisory_on_stderr() {
         ),
     );
 
+    let before = std::fs::read(state_path(repo)).unwrap();
+
     let output = gitchange(repo, &["status"]);
     assert_eq!(output.status.code(), Some(0));
-    let stderr = String::from_utf8(output.stderr).unwrap();
     assert_eq!(
-        stderr,
-        // Phrasing is core's canonical `Advisory::message` (ADR 0006);
-        // the CLI adds only the prefix. The guarded capture notices
-        // alongside the dormancy — both are the guard's doing.
-        "gitchange: notice: auto-captured hunk at tracked.txt:1 → 'feature'\n\
-         gitchange: notice: external HEAD move changed tracked.txt — records \
-         in 'bugfix' went dormant; affected hunks captured to active\n"
+        output.stderr,
+        Vec::<u8>::new(),
+        "neither the guarded capture nor the dormancy is advised on a read"
     );
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(
-        stdout.contains("* feature\n    ○ M tracked.txt 0/1"),
-        "the stranded record's hunk lands in the active changelist: {stdout}"
+    assert_eq!(
+        stdout.lines().collect::<Vec<&str>>(),
+        vec![
+            "* feature",
+            "  bugfix",
+            "  unassigned",
+            CAPTURE_PENDING_HINT,
+            "    ○ M tracked.txt 0/1",
+        ],
+        "the stranded record's hunk is not captured, so it reports unassigned"
+    );
+    assert_eq!(
+        std::fs::read(state_path(repo)).unwrap(),
+        before,
+        "no baseline stamp, no dormancy write"
     );
 }
 
@@ -668,6 +791,8 @@ fn dash_c_runs_the_command_as_if_launched_there() {
         vec![
             "  feature",
             "* bugfix",
+            "  unassigned",
+            CAPTURE_PENDING_HINT,
             "    ○ M tracked.txt 0/1",
             "    ○ ? untracked.txt 0/1",
         ]
