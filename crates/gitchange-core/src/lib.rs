@@ -35,4 +35,4 @@ pub use vocabulary::{
     STAGED, STAGED_STALE, UNASSIGNED, UNSTAGED, conflicted_hint, count_noun, holder_label,
     target_named,
 };
-pub use wire::{diff_envelope, status_envelope};
+pub use wire::{HunkContent, diff_envelope, status_envelope};

@@ -2,8 +2,9 @@
 //! changelist-scoped patch git cannot print.
 //!
 //! Selection and rendering are separate on purpose — the JSON face (#159)
-//! renders the same [`select`] result, and ADR 0018's promise is that the
-//! two faces never disagree about which files appear or in what order.
+//! renders the same [`select`] result through core's serialiser, and
+//! ADR 0018's promise is that the two faces never disagree about which
+//! files appear or in what order.
 
 use std::collections::HashSet;
 use std::path::Path;

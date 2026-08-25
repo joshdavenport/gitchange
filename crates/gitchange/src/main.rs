@@ -7,8 +7,8 @@ use clap::builder::NonEmptyStringValueParser;
 use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand};
 
 use gitchange_core::{
-    ACTIVE_MARKER, Advisory, ChangedFile, GroupKind, LockHolder, OpOutcome, Repo, Snapshot,
-    status_envelope, target_named,
+    ACTIVE_MARKER, Advisory, ChangedFile, GroupKind, HunkContent, LockHolder, OpOutcome, Repo,
+    Snapshot, diff_envelope, status_envelope, target_named,
 };
 
 mod diff;
@@ -357,7 +357,11 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Some(Command::Unstage { .. }) => not_implemented("unstage"),
         Some(Command::Commit { .. }) => not_implemented("commit"),
         // A read, like `status`: no lock, so no contention to absorb.
-        Some(Command::Diff { scope, json, .. }) => diff(&scope, json),
+        Some(Command::Diff {
+            scope,
+            json,
+            no_content,
+        }) => diff(&scope, DiffFace::of(json, no_content)),
         Some(Command::Restore { .. }) => unreachable!("handled in main"),
         None => gitchange_tui::run().map_err(anyhow::Error::from),
     }
@@ -540,15 +544,37 @@ fn print_files(files: &[&ChangedFile]) {
     }
 }
 
-/// The hunk-level read (#158): the scope resolved against the read-only
-/// refresh's snapshot, then rendered — one refresh, and the face is an
-/// argument to it, so text and JSON can never select differently
-/// (ADR 0018). A read, so it takes no lock and writes nothing; an empty
-/// selection prints nothing and exits `0`, a wrong question refuses.
-fn diff(scope: &DiffScope, json: bool) -> anyhow::Result<()> {
-    if json {
-        return not_implemented("diff --json");
+/// Which face `diff` renders, `--no-content` folded into the machine one
+/// because that is the only place it means anything (#159).
+enum DiffFace {
+    Text,
+    Json(HunkContent),
+}
+
+impl DiffFace {
+    /// The face the flags name. `--no-content` without `--json` is a usage
+    /// error clap raises declaratively, so the combination this type
+    /// cannot hold is exactly the one that cannot parse.
+    fn of(json: bool, no_content: bool) -> Self {
+        match (json, no_content) {
+            (false, _) => DiffFace::Text,
+            (true, false) => DiffFace::Json(HunkContent::Included),
+            (true, true) => DiffFace::Json(HunkContent::Omitted),
+        }
     }
+}
+
+/// The hunk-level read (#158/#159): the scope resolved against the
+/// read-only refresh's snapshot, then rendered — one refresh, and the face
+/// is an argument to it, so text and JSON can never select differently
+/// (ADR 0018). A read, so it takes no lock and writes nothing; an empty
+/// selection prints nothing — `files: []` on the machine face — and exits
+/// `0`, a wrong question refuses.
+///
+/// `--no-content` reaches core as the switch it is: the envelope is
+/// composed in the one place the dialect lives, so this surface chooses
+/// what to ask for and never edits the document it gets back.
+fn diff(scope: &DiffScope, face: DiffFace) -> anyhow::Result<()> {
     let repo = open_repo()?;
     let snapshot = repo.read_only_refresh()?;
     // Paths resolve against the worktree, so a bare repository — which has
@@ -563,7 +589,10 @@ fn diff(scope: &DiffScope, json: bool) -> anyhow::Result<()> {
         scope.paths(),
         &workdir,
     )?;
-    diff::print_patch(&files);
+    match face {
+        DiffFace::Text => diff::print_patch(&files),
+        DiffFace::Json(content) => println!("{}", diff_envelope(&files, content)),
+    }
     Ok(())
 }
 

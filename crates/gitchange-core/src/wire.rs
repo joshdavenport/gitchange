@@ -10,9 +10,10 @@
 //! decides nothing, so it has nothing to advise (ADR 0005).
 //!
 //! The wire types are private on purpose. Only the two serialised
-//! documents leave this module, so no frontend can assemble a
-//! machine-surface field of its own, and every addition to the dialect
-//! is a change to this file.
+//! documents leave this module — plus [`HunkContent`], which is an input
+//! rather than a shape — so no frontend can assemble a machine-surface
+//! field of its own, and every addition to the dialect is a change to
+//! this file.
 
 use serde::Serialize;
 
@@ -64,11 +65,29 @@ pub fn status_envelope(snapshot: &Snapshot) -> String {
 /// what the text face printed, which is the one thing ADR 0018 forbids.
 /// Hunks keep their file order for the same reason: it is already the
 /// order `ChangedFile::hunks` carries (mode hunk first, ADR 0017).
-pub fn diff_envelope(files: &[&ChangedFile]) -> String {
+pub fn diff_envelope(files: &[&ChangedFile], content: HunkContent) -> String {
     document(&DiffEnvelope {
         schema_version: SCHEMA_VERSION,
-        files: files.iter().map(|file| DiffFileWire::from(*file)).collect(),
+        files: files
+            .iter()
+            .map(|file| DiffFileWire::of(file, content))
+            .collect(),
     })
+}
+
+/// Whether a diff envelope carries its text hunks' lines — `diff`'s
+/// `--no-content`, which switches the content off and nothing else (#159):
+/// the same envelope, the same file objects, the same IDs, so what a caller
+/// addresses by never changes with it.
+///
+/// It reaches the serialiser rather than being applied to the output
+/// afterwards because the dialect is composed in one place (ADR 0018): a
+/// frontend stripping fields out of a finished document would be a second
+/// author of the shape.
+#[derive(Debug, Clone, Copy)]
+pub enum HunkContent {
+    Included,
+    Omitted,
 }
 
 /// Render one envelope as the compact single-line document that goes to
@@ -233,8 +252,8 @@ struct DiffFileWire<'a> {
     hunks: Vec<HunkWire<'a>>,
 }
 
-impl<'a> From<&'a ChangedFile> for DiffFileWire<'a> {
-    fn from(file: &'a ChangedFile) -> Self {
+impl<'a> DiffFileWire<'a> {
+    fn of(file: &'a ChangedFile, content: HunkContent) -> Self {
         Self {
             path: &file.path,
             change_kind: file.kind.into(),
@@ -246,7 +265,7 @@ impl<'a> From<&'a ChangedFile> for DiffFileWire<'a> {
                 .hunks
                 .iter()
                 .zip(file.hunk_addresses())
-                .map(|(hunk, address)| HunkWire::of(file, hunk, address))
+                .map(|(hunk, address)| HunkWire::of(file, hunk, address, content))
                 .collect(),
         }
     }
@@ -296,7 +315,13 @@ enum HunkWire<'a> {
         old_lines: u32,
         new_start: u32,
         new_lines: u32,
-        lines: Vec<LineWire<'a>>,
+        /// The hunk's content, absent under `--no-content` (#159) —
+        /// omitted rather than `null`, since the lines were never nothing:
+        /// the caller asked not to be sent them. The dialect's one
+        /// licensed omission (ADR 0018 as amended), and the flag is what
+        /// says so.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        lines: Option<Vec<LineWire<'a>>>,
     },
     WholeFile {
         #[serde(flatten)]
@@ -322,7 +347,12 @@ impl<'a> HunkWire<'a> {
     /// data (#112), and which delta a hunk owns follows from its flavour:
     /// the permission flip is the mode hunk's, the type delta the
     /// whole-file hunk's (ADR 0017).
-    fn of(file: &'a ChangedFile, hunk: &'a Hunk, address: HunkAddress) -> Self {
+    fn of(
+        file: &'a ChangedFile,
+        hunk: &'a Hunk,
+        address: HunkAddress,
+        content: HunkContent,
+    ) -> Self {
         let common = HunkCommonWire::of(hunk, address);
         match &hunk.identity {
             HunkIdentity::Text { lines } => HunkWire::Text {
@@ -331,7 +361,12 @@ impl<'a> HunkWire<'a> {
                 old_lines: hunk.old_lines,
                 new_start: hunk.new_start,
                 new_lines: hunk.new_lines,
-                lines: lines.iter().map(LineWire::from).collect(),
+                // Only a text hunk has lines to withhold, so the switch
+                // lands here and the degenerate flavours are untouched.
+                lines: match content {
+                    HunkContent::Included => Some(lines.iter().map(LineWire::from).collect()),
+                    HunkContent::Omitted => None,
+                },
             },
             HunkIdentity::WholeFile { .. } => HunkWire::WholeFile {
                 common,

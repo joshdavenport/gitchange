@@ -1,8 +1,14 @@
-//! End-to-end tests of `diff`'s scope resolution and text face (#158):
-//! which files a scope selects, how an address is validated, and the
-//! teaching fragments the annotated patch carries. Its own module because
-//! `diff`'s fixtures are its own: ownership records, degenerate hunks, and
-//! identical hunks that need telling apart.
+//! End-to-end tests of `diff`'s scope resolution and its two faces
+//! (#158/#159): which files a scope selects, how an address is validated,
+//! the teaching fragments the annotated patch carries, and the envelope the
+//! machine face delivers. Its own module because `diff`'s fixtures are its
+//! own: ownership records, degenerate hunks, and identical hunks that need
+//! telling apart.
+//!
+//! The dialect's shapes are pinned at core's serialiser seam (core's `wire`
+//! suite, ADR 0018); what these assert about the JSON is what only the
+//! binary can answer — the flags wired, the delivery, and the two faces
+//! agreeing.
 //!
 //! The builders below start from `support::initialised_repo` rather than
 //! `support::committed_repo` — these fixtures choose their own first
@@ -611,6 +617,124 @@ fn a_staged_hunk_carries_the_staging_sets_token() {
     );
 }
 
+// --- the JSON face ---------------------------------------------------------
+
+/// `diff --json`'s document, parsed — every assertion below reads what a
+/// caller would. Delivery is asserted by the shared `diff` helper (exit 0,
+/// empty stderr); what this adds is the one-document promise (ADR 0018).
+fn diff_json(dir: &Path, args: &[&str]) -> serde_json::Value {
+    let stdout = diff(dir, &[&["--json"], args].concat());
+    serde_json::from_str(&stdout).expect("the envelope is one JSON document")
+}
+
+/// The paths a JSON envelope names, in serialised order — the selection,
+/// read off the machine face.
+fn json_files(envelope: &serde_json::Value) -> Vec<&str> {
+    envelope["files"]
+        .as_array()
+        .expect("the files array")
+        .iter()
+        .map(|file| file["path"].as_str().expect("every file has a path"))
+        .collect()
+}
+
+#[test]
+fn the_json_face_arms_a_caller_with_owners_stages_and_full_addresses() {
+    // The read that arms `assign`, `add`, and `unstage` (#159): one hunk
+    // object per hunk, its owner named, its address carried whole — the
+    // sigil and all 64 hex, never the face's abbreviation.
+    let repo = owned_repo();
+
+    let envelope = diff_json(repo.path(), &["--", "a.txt"]);
+
+    assert_eq!(envelope["schema_version"], serde_json::json!(1));
+    assert_eq!(json_files(&envelope), vec!["a.txt"]);
+    let hunks = envelope["files"][0]["hunks"].as_array().unwrap().clone();
+    assert_eq!(hunks.len(), 2, "the whole file object: {envelope}");
+    assert_eq!(hunks[0]["changelist"], serde_json::json!("feature"));
+    assert_eq!(
+        hunks[1]["changelist"],
+        serde_json::json!(null),
+        "unassigned is spelled null, and the foreign hunk stays"
+    );
+    for hunk in &hunks {
+        let id = hunk["id"].as_str().expect("id is a string");
+        assert_eq!(
+            id.strip_prefix('h').map(str::len),
+            Some(64),
+            "the sigil travels and the wire never abbreviates: {id}"
+        );
+        assert_eq!(hunk["stage"], serde_json::json!("unstaged"), "{hunk}");
+        assert_eq!(hunk["kind"], serde_json::json!("text"), "{hunk}");
+    }
+}
+
+#[test]
+fn the_two_faces_never_disagree_about_selection_or_order() {
+    // ADR 0018's ordering promise at the binary seam: one refresh, one
+    // scope resolution, the face an argument to it — so a scope that
+    // selects two files selects the same two, in the same order, whichever
+    // face is asked.
+    let repo = owned_repo();
+
+    for args in [&[][..], &["unassigned"], &["--", "sub/c.txt", "a.txt"]] {
+        let text = diff(repo.path(), args);
+        assert_eq!(
+            json_files(&diff_json(repo.path(), args)),
+            files_in(&text),
+            "gitchange diff {args:?}"
+        );
+    }
+}
+
+#[test]
+fn an_empty_scope_is_an_empty_files_array() {
+    // A valid-but-empty scope is an answer, not an error (#143) — and the
+    // envelope says so in the dialect rather than by printing nothing.
+    let repo = owned_repo();
+
+    assert_eq!(
+        diff_json(repo.path(), &["docs", "--", "a.txt"]),
+        serde_json::json!({ "schema_version": 1, "files": [] })
+    );
+}
+
+#[test]
+fn no_content_reaches_the_serialiser_and_leaves_the_addresses_untouched() {
+    // The assign-as-you-go hot loop's read (#159): the flag is wired
+    // through to the envelope, and what an agent addresses by is unchanged
+    // — so switching it on never changes which hunk a later command means.
+    // That the rest of the document is identical is pinned at core's
+    // serialiser seam, where the dialect lives.
+    let repo = owned_repo();
+
+    let full = diff_json(repo.path(), &[]);
+    let lean = diff_json(repo.path(), &["--no-content"]);
+
+    assert!(full.to_string().contains("\"lines\":"), "{full}");
+    assert!(
+        !lean.to_string().contains("\"lines\":"),
+        "the content is gone, omitted rather than nulled: {lean}"
+    );
+    assert_eq!(
+        addresses_of(&lean),
+        addresses_of(&full),
+        "same IDs, same offsets"
+    );
+}
+
+/// Every hunk's address in an envelope, in serialised order: the `id` and
+/// `offset` pair a caller pastes back into a verb.
+fn addresses_of(envelope: &serde_json::Value) -> Vec<(&str, &serde_json::Value)> {
+    envelope["files"]
+        .as_array()
+        .expect("the files array")
+        .iter()
+        .flat_map(|file| file["hunks"].as_array().expect("the hunks array"))
+        .map(|hunk| (hunk["id"].as_str().expect("an id"), &hunk["offset"]))
+        .collect()
+}
+
 // --- a read writes nothing -------------------------------------------------
 
 #[test]
@@ -634,6 +758,13 @@ fn diff_writes_nothing_and_takes_no_lock() {
         assert!(
             addresses_in(&patch).len() == 4 && !patch.contains("'feature'"),
             "context-derived ownership never previews: recordless is unassigned\n{patch}"
+        );
+        // Both faces sit on the same read-only refresh, so both have to
+        // leave the state file alone — and report the same ownership.
+        let envelope = diff_json(repo.path(), &[]);
+        assert!(
+            !envelope.to_string().contains("feature"),
+            "recordless is unassigned on the wire too: {envelope}"
         );
         assert_eq!(
             std::fs::read(state_path(repo.path())).unwrap(),

@@ -5,7 +5,7 @@
 //! the public serialisers.
 
 use crate::support::RepoFixture;
-use gitchange_core::{ChangedFile, Repo, Snapshot, diff_envelope, status_envelope};
+use gitchange_core::{ChangedFile, HunkContent, Repo, Snapshot, diff_envelope, status_envelope};
 use serde_json::{Value, json};
 
 /// The status read's envelope, parsed — every assertion below reads the
@@ -18,8 +18,14 @@ fn status_of(repo: &Repo) -> Value {
 /// resolution is the diff command's (#158); the serialiser takes the
 /// files it is handed.
 fn diff_of(snapshot: &Snapshot) -> Value {
+    parse(&diff_document(snapshot, HunkContent::Included))
+}
+
+/// The diff envelope over a whole snapshot as the serialiser writes it,
+/// content included or omitted (`--no-content`, #159).
+fn diff_document(snapshot: &Snapshot, content: HunkContent) -> String {
     let files: Vec<&ChangedFile> = snapshot.files.iter().collect();
-    parse(&diff_envelope(&files))
+    diff_envelope(&files, content)
 }
 
 fn parse(document: &str) -> Value {
@@ -62,6 +68,18 @@ fn sans_hunk_ids(mut file: Value) -> Value {
         );
     }
     file
+}
+
+/// `envelope` with every text hunk's `lines` removed — the one difference
+/// `--no-content` is allowed to make, taken out of the full document so
+/// the rest can be compared whole (#159).
+fn sans_lines(mut envelope: Value) -> Value {
+    for file in envelope["files"].as_array_mut().expect("the files array") {
+        for hunk in file["hunks"].as_array_mut().expect("the hunks array") {
+            hunk.as_object_mut().expect("a hunk object").remove("lines");
+        }
+    }
+    envelope
 }
 
 /// The group labels an envelope carries, in serialised order: a
@@ -492,6 +510,49 @@ fn the_degenerate_hunk_kinds_carry_id_and_offset_too() {
         );
         assert_eq!(hunk["offset"], json!(null), "{hunk}");
     }
+    assert_ne!(
+        hunks[0]["id"], hunks[1]["id"],
+        "one path, two hunks, two addresses to name them by: {hunks}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn a_mode_hunk_and_a_text_hunk_share_one_file_object() {
+    // The mixed file (#143's worked shape): a chmod'd text file presents
+    // both flavours, mode hunk first (git's pseudo-hunk #0, ADR 0017),
+    // each with its own address and only the fields its flavour owns.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("a.txt", "one\ntwo\nthree\n")
+        .commit_all("init")
+        .write("a.txt", "one\ntwo edited\nthree\n")
+        .set_exec("a.txt");
+    let repo = Repo::discover(fixture.path()).unwrap();
+
+    let snapshot = repo.read_only_refresh().unwrap();
+    let file = diff_file(&diff_of(&snapshot), "a.txt");
+    let hunks = file["hunks"].as_array().expect("the hunks array");
+
+    assert_eq!(file["binary"], json!(false));
+    assert_eq!(
+        file["sides"],
+        json!(null),
+        "no whole-file hunk here, so no content facts to carry: {file}"
+    );
+    assert_eq!(hunks.len(), 2, "{file}");
+    assert_eq!(hunks[0]["kind"], json!("mode"));
+    assert_eq!(
+        hunks[0]["mode_delta"],
+        json!({"before": "100644", "after": "100755"})
+    );
+    assert_eq!(hunks[1]["kind"], json!("text"));
+    assert!(
+        hunks[1]["lines"].is_array() && hunks[1].get("mode_delta").is_none(),
+        "a text hunk carries content and no mode facts: {}",
+        hunks[1]
+    );
+    assert_ne!(hunks[0]["id"], hunks[1]["id"]);
 }
 
 #[test]
@@ -598,25 +659,97 @@ fn a_chmod_serialises_as_a_mode_hunk_carrying_the_flip() {
 
 #[test]
 #[cfg(unix)]
-fn a_type_change_carries_its_delta_on_the_whole_file_hunk() {
-    let fixture = RepoFixture::new();
-    fixture
+fn a_type_change_carries_its_delta_and_both_sides_whichever_way_it_went() {
+    // #100's corpus at the serialiser seam: git reports a file↔symlink
+    // swap with mode bits and no hunks, and both sides are real blobs —
+    // the file's content and the link's target string — so `sides` names
+    // an OID and a size for each, whichever direction the swap went. The
+    // consumer derives "type change" from `mode_delta`; nothing here is
+    // labelled (ADR 0017 as amended).
+    let to_link = RepoFixture::new();
+    to_link
         .write("thing", "content\n")
         .write("target.txt", "elsewhere\n")
         .commit_all("init")
         .remove("thing")
         .symlink("thing", "target.txt");
+    let from_link = RepoFixture::new();
+    from_link
+        .write("target.txt", "elsewhere\n")
+        .commit_all("seed")
+        .symlink("thing", "target.txt")
+        .commit_all("link")
+        .remove("thing")
+        .write("thing", "line one\nline two\nline three\n");
+
+    // Each side's size is its blob's byte count: the file's content, or
+    // the link's target string ("target.txt", 10 bytes) — so the sizes
+    // below are the fixtures' own strings measured.
+    for (fixture, before, after, sizes) in [
+        (&to_link, "100644", "120000", ("content\n".len(), 10)),
+        (
+            &from_link,
+            "120000",
+            "100644",
+            (10, "line one\nline two\nline three\n".len()),
+        ),
+    ] {
+        let repo = Repo::discover(fixture.path()).unwrap();
+        let snapshot = repo.read_only_refresh().unwrap();
+        let file = diff_file(&diff_of(&snapshot), "thing");
+
+        assert_eq!(file["change_kind"], json!("type_changed"), "{file}");
+        assert_eq!(file["binary"], json!(false), "{file}");
+        // Zero hunks from git, taken in as one whole-file hunk (ADR 0017)
+        // — the multi-line replacement of the second direction included.
+        assert_eq!(file["hunks"].as_array().map(Vec::len), Some(1), "{file}");
+        assert_eq!(file["hunks"][0]["kind"], json!("whole_file"), "{file}");
+        assert_eq!(
+            file["hunks"][0]["mode_delta"],
+            json!({"before": before, "after": after}),
+            "non-null exactly for a type change: {file}"
+        );
+        let (head, changed) = sizes;
+        assert_eq!(file["sides"]["head"]["size"], json!(head), "{file}");
+        assert_eq!(file["sides"]["changed"]["size"], json!(changed), "{file}");
+        for side in ["head", "changed"] {
+            assert!(
+                file["sides"][side]["oid"]
+                    .as_str()
+                    .is_some_and(|oid| !oid.is_empty()),
+                "both sides are real blobs: {file}"
+            );
+        }
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn omitting_content_drops_lines_and_nothing_else() {
+    // The cheap inventory read (#159): same envelope, same file objects,
+    // same IDs — the only difference a consumer can see is the absent
+    // `lines` key. Asserted over a fixture carrying all three hunk
+    // flavours, since the degenerate two have no content to drop.
+    let fixture = RepoFixture::new();
+    fixture
+        .write_bytes("blob.bin", &[0u8, 1, 2, 3])
+        .write("a.txt", &long_file("first", "last"))
+        .commit_all("init")
+        .write_bytes("blob.bin", &[0u8, 9, 9, 9, 9])
+        .set_exec("blob.bin")
+        .write("a.txt", &long_file("first edited", "last edited"));
     let repo = Repo::discover(fixture.path()).unwrap();
 
     let snapshot = repo.read_only_refresh().unwrap();
-    let file = diff_file(&diff_of(&snapshot), "thing");
+    let full = parse(&diff_document(&snapshot, HunkContent::Included));
+    let lean = parse(&diff_document(&snapshot, HunkContent::Omitted));
 
-    assert_eq!(file["change_kind"], json!("type_changed"));
-    assert_eq!(file["hunks"][0]["kind"], json!("whole_file"));
+    assert!(carries_key(&full, "lines"), "the full read has content");
+    assert!(!carries_key(&lean, "lines"), "omitted, not nulled: {lean}");
     assert_eq!(
-        file["hunks"][0]["mode_delta"],
-        json!({"before": "100644", "after": "120000"}),
-        "non-null exactly for a type change: {file}"
+        sans_lines(full),
+        lean,
+        "everything but the payload is identical, IDs included"
     );
 }
 

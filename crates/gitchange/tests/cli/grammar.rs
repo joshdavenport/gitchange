@@ -356,11 +356,12 @@ fn commit_no_edit_requires_amend() {
 // --- diff ------------------------------------------------------------------
 
 #[test]
-fn diff_every_text_form_parses_and_reaches_the_repository() {
-    // The text face is built (#158), so from an empty directory each form
-    // gets as far as discovery and refuses there — which is what proves
-    // the shape parsed rather than dying as usage. What each scope selects
-    // is asserted against fixture repos in `diff.rs`.
+fn diff_every_form_parses_and_reaches_the_repository() {
+    // Both faces are built (#158/#159), so from an empty directory each
+    // form gets as far as discovery and refuses there — which is what
+    // proves the shape parsed rather than dying as usage. What each scope
+    // selects, and what either face says, is asserted against fixture
+    // repos in `diff.rs`.
     for args in [
         &["diff"][..],
         &["diff", "feature"],
@@ -368,6 +369,8 @@ fn diff_every_text_form_parses_and_reaches_the_repository() {
         &["diff", "--", "src/a.rs"],
         &["diff", "feature", "--", "src/a.rs", "src/b.rs"],
         &["diff", "feature", "src/a.rs", "--", "src/b.rs"],
+        &["diff", "--json"],
+        &["diff", "feature", "--json", "--no-content"],
     ] {
         let output = gitchange(args);
         assert_eq!(output.status.code(), Some(1), "{args:?}");
@@ -378,16 +381,6 @@ fn diff_every_text_form_parses_and_reaches_the_repository() {
             stderr(&output)
         );
     }
-}
-
-#[test]
-fn diff_json_is_a_stub() {
-    // The JSON face is #159's; the flags parse today and refuse honestly.
-    assert_stub(&["diff", "--json"], "diff --json");
-    assert_stub(
-        &["diff", "feature", "--json", "--no-content"],
-        "diff --json",
-    );
 }
 
 #[test]

@@ -16,7 +16,7 @@
 //! | `status`     | `status`'s two faces — the text rows and the envelope    |
 //! | `switch`     | `switch`'s receipt, its refusals, and the active marker  |
 //! | `locking`    | lock contention at the binary seam: live, dead, unread   |
-//! | `diff`       | `diff`'s scope resolution and annotated text face        |
+//! | `diff`       | `diff`'s scope resolution and its two faces              |
 
 mod support;
 

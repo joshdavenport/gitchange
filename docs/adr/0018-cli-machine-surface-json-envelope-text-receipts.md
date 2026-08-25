@@ -23,6 +23,14 @@ rather than grown surface by surface.
   paths fail the whole refresh (ADR 0010), and diff content is lossily
   UTF-8 before the serialiser sees it, so a union would advertise
   fidelity gitchange does not have.
+- **Absence is `null`, spelled rather than omitted** — an optional field
+  is always present, so a consumer never has to tell "no value" from "a
+  field this version does not have". *Amended (issue #159):* one field
+  is omitted rather than nulled — `diff --json`'s `lines` under
+  `--no-content`, where the caller asked not to be sent content, so its
+  absence is the answer rather than a fact about the hunk. A `null`
+  there would read as a hunk with no lines. No other field omits, and a
+  new omission is a change to this ADR.
 - **Errors stay plain text on stderr** — one schema to version.
 - **No JSON surface carries advisories.** Read envelopes have no
   advisories field — a read-only refresh writes nothing, decides
