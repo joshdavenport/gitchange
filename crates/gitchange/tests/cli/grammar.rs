@@ -144,18 +144,16 @@ fn changelist_has_no_machine_flags_and_no_alias() {
 }
 
 // --- assign ------------------------------------------------------------------
-// The whole-path sweep is built (#163), so what it does is asserted against
-// fixture repos in `assign.rs`; the grammar edges stay here, plus the proof
-// that every parsed form gets as far as looking for a repository.
+// The sweep (#163) and the addressed forms (#164) are built, so what they do is
+// asserted against fixture repos in `assign.rs`; the grammar edges stay here,
+// plus the proof that every parsed form gets as far as looking for a
+// repository.
 
 #[test]
 fn every_assign_form_parses_and_reaches_the_repository() {
     for args in [
         &["assign", "src/a.rs", "--to", "feature"][..],
         &["assign", "src/a.rs", "src/b.rs", "--to", "feature"],
-        // The addressed forms are #164's to build; they parse now and refuse
-        // as unbuilt from inside the verb, so they reach the repository like
-        // any other form.
         &["assign", "src/a.rs:h1a2b3c4", "--to", "feature"],
         &[
             "assign",
@@ -223,6 +221,45 @@ fn assign_containing_is_single_occurrence_and_non_empty() {
     ]);
     assert_usage_error(&["assign", "src/a.rs", "--containing", "", "--to", "feature"]);
     assert_usage_error(&["assign", "src/a.rs", "--containing"]);
+}
+
+/// The three checks the skeleton could not declare (#147, built in #164):
+/// clap sees neither a value's newlines, nor how many positionals an option
+/// needs beside it, nor whether one of them is ID-shaped. They are grammar all
+/// the same, so they are exit `2` — and they belong in this module because the
+/// empty directory is the assertion: a malformed command line is answered
+/// before any repository is looked for.
+#[test]
+fn assign_containing_has_three_non_declarative_usage_errors() {
+    // A value spanning lines cannot match within one changed line.
+    assert_usage_error(&[
+        "assign",
+        "src/a.rs",
+        "--containing",
+        "a\nb",
+        "--to",
+        "feature",
+    ]);
+    // Exactly one path — and only that side of one, since this verb's grammar
+    // guarantees at least one path where the staging pair's does not.
+    assert_usage_error(&[
+        "assign",
+        "src/a.rs",
+        "src/b.rs",
+        "--containing",
+        "a",
+        "--to",
+        "feature",
+    ]);
+    // One addressing mode per command.
+    assert_usage_error(&[
+        "assign",
+        "src/a.rs:h1a2b3c4",
+        "--containing",
+        "a",
+        "--to",
+        "feature",
+    ]);
 }
 
 #[test]

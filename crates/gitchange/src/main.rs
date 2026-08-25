@@ -728,7 +728,12 @@ fn swept(outcome: SweepOutcome, past_tense: &str) -> anyhow::Result<()> {
 /// Membership and staging are separate axes (ADR 0003): a sweep takes the
 /// path's whole universe, staged hunks included, and moves nothing in or out
 /// of the index.
+///
+/// The grammar checks come first, ahead of the repository: they answer from
+/// the argument list alone, and a malformed command line has no business
+/// running a refresh on its way to being refused.
 fn assign(scope: &AssignScope) -> anyhow::Result<()> {
+    assign::check_grammar(scope)?;
     let repo = open_repo()?;
     let workdir = workdir(&repo)?;
     let refreshed = repo.refresh()?;
@@ -740,7 +745,7 @@ fn assign(scope: &AssignScope) -> anyhow::Result<()> {
     swept(
         repo.assign_sweep(
             &refreshed.snapshot,
-            &assignment.paths,
+            &assignment.targets,
             assignment.target.as_deref(),
         )?,
         assignment.past_tense(),

@@ -720,10 +720,11 @@ impl Repo {
         })
     }
 
-    /// The CLI's assign sweep (#147): every hunk of each named path moved
-    /// to `target`, over a scope the caller has already validated against
+    /// The CLI's assign sweep (#147): the hunks `targets` name moved to
+    /// `target`, over a scope the caller has already validated against
     /// `snapshot` — one counted echo for the whole invocation, whatever the
-    /// path count.
+    /// argument count. A whole path takes its change universe; an address
+    /// takes the one hunk it named ([`AssignTarget`]).
     ///
     /// Takes the snapshot rather than refreshing behind the caller's back,
     /// for [`Repo::stage_sweep`]'s reason: one invocation runs exactly one
@@ -738,37 +739,18 @@ impl Repo {
     /// split between `target` and somebody else re-writes the member
     /// `target` already had, and the count says so — the echo counts the
     /// widened payload, which is what was written. Ownership is otherwise
-    /// unchecked here: a sweep takes the path's whole universe, and who may
-    /// take another changelist's hunks is the caller's guard (#147's
-    /// `--take-owned`), a refusal with an exit code rather than a
-    /// membership decision.
+    /// unchecked here: a sweep takes the path's whole universe, an address
+    /// moves ungated, and who may take another changelist's hunks is the
+    /// caller's guard (#147's `--take-owned`), a refusal with an exit code
+    /// rather than a membership decision.
     pub fn assign_sweep(
         &self,
         snapshot: &Snapshot,
-        paths: &[String],
+        targets: &[AssignTarget<'_>],
         target: Option<&str>,
     ) -> Result<SweepOutcome, Error> {
         let mut tally = Tally::default();
-        for path in paths {
-            // The caller validated these paths against this same snapshot,
-            // so a path with no file here is a caller bug rather than a
-            // clean path — an empty sweep is never the answer to one (#147).
-            let Some(file) = snapshot.files.iter().find(|file| &file.path == path) else {
-                debug_assert!(
-                    false,
-                    "'{path}' is not in the snapshot it was validated against"
-                );
-                continue;
-            };
-            let moving: Vec<Hunk> = file
-                .hunks
-                .iter()
-                .filter(|hunk| !hunk.owned_by(target))
-                .cloned()
-                .collect();
-            if moving.is_empty() {
-                continue;
-            }
+        for (path, moving) in assign_payloads(snapshot, targets, target) {
             tally.absorb(self.assign_over(path, &moving, target)?);
         }
         Ok(SweepOutcome {
@@ -1100,6 +1082,129 @@ impl<'a> StagingTarget<'a> {
             } => mine == path && std::ptr::eq(*addressed, hunk),
         }
     }
+}
+
+/// One thing an assign moves. The boundary is `StagingTarget`'s — CONTEXT.md
+/// §Sweep's, a **path** is swept and an **address** is not — and the two
+/// verbs' targets stay separate types because the verbs mean different things
+/// by a path: a staging row is scoped to one changelist's hunks in the file,
+/// where a path here takes the file's whole change universe, membership being
+/// independent of staging (ADR 0003).
+///
+/// They mix freely in one argument list (#164), so one call carries both.
+#[derive(Debug, Clone)]
+pub enum AssignTarget<'a> {
+    /// A **path**: every hunk of the changed file, staged or not.
+    /// Repo-relative, as core reports paths.
+    Path(String),
+    /// The one hunk an address named, borrowed from the snapshot the op
+    /// runs against — so places are compared by identity within it, as
+    /// [`StagingTarget::Hunk`] does.
+    Hunk { path: String, hunk: &'a Hunk },
+}
+
+impl AssignTarget<'_> {
+    /// The path this target lives in, whichever narrowing it is.
+    fn path(&self) -> &str {
+        match self {
+            AssignTarget::Path(path) => path,
+            AssignTarget::Hunk { path, .. } => path,
+        }
+    }
+
+    /// Whether this target sweeps `path` whole — [`SweepScope::sweeps`]'s
+    /// counterpart, minus the empty-scope arm: assign has no bare form, so
+    /// there is no "everything" to fall back on.
+    fn sweeps(&self, path: &str) -> bool {
+        matches!(self, AssignTarget::Path(named) if named == path)
+    }
+
+    /// Whether this target is the hunk at `path` — the same *place*,
+    /// matched by identity within the snapshot the op runs against, for
+    /// [`StagingTarget::same_place`]'s reason.
+    fn same_place(&self, path: &str, hunk: &Hunk) -> bool {
+        match self {
+            AssignTarget::Path(_) => false,
+            AssignTarget::Hunk {
+                path: mine,
+                hunk: addressed,
+            } => mine == path && std::ptr::eq(*addressed, hunk),
+        }
+    }
+}
+
+/// What each named path's membership write moves: one payload per **distinct**
+/// path, in argument order, holding the hunks that path's targets named and
+/// that `owner` does not already hold.
+///
+/// Grouping here is what makes the argument list's redundancies free: a path
+/// named twice is one payload, an address named twice is one hunk, and a path
+/// swept whole subsumes any address into it — every one of them a repeat that
+/// would otherwise be written and counted twice, since a path's write is one
+/// locked cycle over the payload it is handed.
+///
+/// Hunks `owner` already holds are dropped rather than rewritten, which is
+/// what makes a repeated assign *satisfied* (see [`Repo::assign_sweep`]).
+fn assign_payloads<'t>(
+    snapshot: &Snapshot,
+    targets: &'t [AssignTarget<'_>],
+    owner: Option<&str>,
+) -> Vec<(&'t str, Vec<Hunk>)> {
+    let mut payloads: Vec<(&str, Vec<Hunk>)> = Vec::new();
+    let mut seen: Vec<&str> = Vec::new();
+    for target in targets {
+        let path = target.path();
+        if seen.contains(&path) {
+            continue;
+        }
+        seen.push(path);
+        // The caller validated these paths against this same snapshot, so a
+        // path with no file here is a caller bug rather than a clean path —
+        // an empty sweep is never the answer to one (#147).
+        let Some(file) = snapshot.files.iter().find(|file| file.path == path) else {
+            debug_assert!(
+                false,
+                "'{path}' is not in the snapshot it was validated against"
+            );
+            continue;
+        };
+        let swept = targets.iter().any(|target| target.sweeps(path));
+        let named: Vec<&Hunk> = match swept {
+            true => file.hunks.iter().collect(),
+            false => addressed_in(targets, path),
+        };
+        let moving: Vec<Hunk> = named
+            .into_iter()
+            .filter(|hunk| !hunk.owned_by(owner))
+            .cloned()
+            .collect();
+        if !moving.is_empty() {
+            payloads.push((path, moving));
+        }
+    }
+    payloads
+}
+
+/// The hunks `targets` address in `path`, each once: two targets naming one
+/// place ([`AssignTarget::same_place`]) are one hunk.
+fn addressed_in<'a>(targets: &[AssignTarget<'a>], path: &str) -> Vec<&'a Hunk> {
+    let mut addressed: Vec<&Hunk> = Vec::new();
+    for target in targets {
+        let AssignTarget::Hunk { hunk, .. } = target else {
+            continue;
+        };
+        if target.path() != path {
+            continue;
+        }
+        // Asked of what is already collected, by the target's own identity
+        // rule: a hunk named twice is one hunk, and two identical hunks
+        // named by their ordinals stay two.
+        if addressed.iter().any(|seen| target.same_place(path, seen)) {
+            continue;
+        }
+        addressed.push(hunk);
+    }
+    addressed
 }
 
 /// What a staging op ranges over: one changelist's hunks, optionally

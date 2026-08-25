@@ -124,12 +124,16 @@ and git's own index lock serializes the final step. A human batching
 commits at sync points is a permitted style within the model, not a
 different model.
 
-## Scope boundary: same-file concurrency
+## Scope boundary: same-region concurrency
 
-Out of scope. Assignment is per-path until hunk addressing lands (#51), so
-two actors editing one file can cross-contaminate at hunk granularity. The
-operating model is coordinated, non-colliding work; where work genuinely
-collides in the same files, worktrees are the tool (ADR 0002).
+Out of scope. Assignment is per-hunk: two actors editing one file each
+address their own hunks, so the boundary is the region rather than the file.
+Edits within context distance merge into one hunk no address can split, and
+that hunk has one owner like any other — whichever record wins the match —
+so one actor's edit lands under the other's changelist. That is where
+cross-contamination remains reachable. The operating model is coordinated,
+non-colliding work; where work genuinely collides in the same regions,
+worktrees are the tool (ADR 0002).
 
 ## Considered options
 

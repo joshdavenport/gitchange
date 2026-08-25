@@ -5,7 +5,7 @@
 //! (ADR 0008); the state file is read only to prove recordlessness.
 
 use crate::support::RepoFixture;
-use gitchange_core::{Advisory, Error, HunkStage, Repo, Snapshot};
+use gitchange_core::{Advisory, AssignTarget, Error, HunkStage, Repo, Snapshot};
 
 /// `count` numbered lines, with `edits` as (1-based line, replacement).
 fn numbered(count: usize, edits: &[(usize, &str)]) -> String {
@@ -537,9 +537,27 @@ fn sweep_fixture() -> (RepoFixture, Repo, Snapshot) {
     (fixture, repo, snapshot)
 }
 
-/// The sweep's paths, as the CLI's path resolution hands them over.
-fn paths(paths: &[&str]) -> Vec<String> {
-    paths.iter().map(|path| (*path).to_owned()).collect()
+/// The sweep's whole-path targets, as the CLI's path resolution hands them
+/// over.
+fn paths<'a>(paths: &[&str]) -> Vec<AssignTarget<'a>> {
+    paths
+        .iter()
+        .map(|path| AssignTarget::Path((*path).to_owned()))
+        .collect()
+}
+
+/// One addressed target, as the CLI's address resolution hands it over:
+/// `index` counts the file's hunks in patch order from `0`.
+fn addressed<'a>(snapshot: &'a Snapshot, path: &str, index: usize) -> AssignTarget<'a> {
+    let file = snapshot
+        .files
+        .iter()
+        .find(|file| file.path == path)
+        .unwrap_or_else(|| panic!("no '{path}' in the snapshot"));
+    AssignTarget::Hunk {
+        path: path.to_owned(),
+        hunk: &file.hunks[index],
+    }
 }
 
 #[test]
@@ -562,6 +580,56 @@ fn an_assign_sweep_takes_every_hunk_of_the_named_paths() {
         vec![Some("chores".into()), Some("chores".into())]
     );
     assert_eq!(owners(&after, "b.txt"), vec![Some("chores".into())]);
+}
+
+#[test]
+fn an_addressed_target_moves_the_hunk_it_names_and_no_other() {
+    // The narrowing a whole path cannot express (#164): one hunk of a
+    // two-hunk file, ungated — who may name it is the caller's guard.
+    let (_fixture, repo, snapshot) = sweep_fixture();
+
+    let swept = repo
+        .assign_sweep(
+            &snapshot,
+            &[addressed(&snapshot, "a.txt", 1)],
+            Some("chores"),
+        )
+        .unwrap();
+
+    assert_eq!((swept.moved, swept.skipped), (1, 0));
+    let after = repo.refresh().unwrap().snapshot;
+    assert_eq!(owners(&after, "a.txt"), vec![None, Some("chores".into())]);
+}
+
+#[test]
+fn an_addressed_target_that_went_stale_fails_soft_like_a_swept_one() {
+    // An explicit ID refuses at validation, so this is the residual race:
+    // the hunk vanished between the caller's snapshot and the apply. One
+    // fail-soft path for both narrowings — the address earns no exemption.
+    let (fixture, repo, snapshot) = sweep_fixture();
+    let stale_start = snapshot.files[0].hunks[0].new_start;
+    fixture.write("a.txt", &numbered(30, &[(25, "twentyfive!")]));
+
+    let swept = repo
+        .assign_sweep(
+            &snapshot,
+            &[addressed(&snapshot, "a.txt", 0)],
+            Some("chores"),
+        )
+        .unwrap();
+
+    assert_eq!((swept.moved, swept.skipped), (0, 1));
+    assert!(
+        swept.moved_nothing(),
+        "the caller answers that with a refusal"
+    );
+    assert_eq!(
+        swept.receipt.advisories,
+        vec![Advisory::StaleHunk {
+            path: "a.txt".into(),
+            new_start: stale_start,
+        }]
+    );
 }
 
 #[test]

@@ -19,8 +19,7 @@
 use std::path::Path;
 
 use gitchange_core::{
-    ALL, ChangeKind, ChangedFile, Hunk, Snapshot, StagingTarget, UNASSIGNED, conflicted_hint,
-    holder_label, target_named,
+    ALL, ChangedFile, Hunk, Snapshot, StagingTarget, UNASSIGNED, holder_label, target_named,
 };
 
 use crate::StagingScope;
@@ -37,45 +36,20 @@ pub struct Sweep<'a> {
     pub targets: Vec<StagingTarget<'a>>,
 }
 
-/// The three non-declarative exit-`2` checks this pair owns (#145), asked
-/// of the raw arguments alone: they are grammar violations, so they answer
-/// before the repository is opened and cannot be confused with a refusal
-/// about repo state. The skeleton could not declare them — clap sees
-/// neither a value's newlines, nor how many positionals an option needs
-/// beside it, nor whether one of them is ID-shaped.
+/// This pair's `--containing` grammar checks (#145): the shared three
+/// ([`scope::check_containing`]) in this pair's own words. Its arity arm is
+/// reachable on both sides of one, `add`/`unstage`'s grammar allowing no
+/// paths at all — a bare `add <changelist> --containing <line>` is a usage
+/// error here where it cannot arise for `assign`.
 pub fn check_grammar(verb: &str, args: &StagingScope) -> anyhow::Result<()> {
-    let Some(value) = &args.containing.containing else {
-        return Ok(());
-    };
-    if value.contains('\n') {
-        return Err(crate::usage(format!(
-            "'--containing' matches within one changed line, and this value spans \
-             several — name a line, or address the hunk: 'gitchange {verb} \
-             <changelist> <path>:<hunk-id>'"
-        )));
-    }
-    // Exactly one path, this pair's own arity: `assign`'s grammar
-    // guarantees at least one path, `add`/`unstage`'s does not, so a bare
-    // `add <changelist> --containing <line>` is a usage error here where
-    // it cannot arise there.
-    if args.paths.len() != 1 {
-        return Err(crate::usage(format!(
-            "'--containing' narrows exactly one path, and {} were given — \
-             'gitchange {verb} <changelist> <path> --containing <line>'",
-            args.paths.len()
-        )));
-    }
-    if let Some(token) = args
-        .paths
-        .iter()
-        .find(|token| scope::carries_an_address(token))
-    {
-        return Err(crate::usage(format!(
-            "'--containing' and '<path>:<hunk-id>' are two ways to address one \
-             hunk — '{token}' already names one, so drop one of them"
-        )));
-    }
-    Ok(())
+    scope::check_containing(
+        args.containing.containing.as_deref(),
+        &args.paths,
+        &scope::Forms {
+            addressed: format!("gitchange {verb} <changelist> <path>:<hunk-id>"),
+            narrowed: format!("gitchange {verb} <changelist> <path> --containing <line>"),
+        },
+    )
 }
 
 /// Resolve one staging invocation against `snapshot`, or refuse naming
@@ -159,47 +133,28 @@ fn already_named(targets: &[StagingTarget<'_>], target: &StagingTarget<'_>) -> b
     })
 }
 
-/// What one path argument narrows the scope to: its file row, the single
-/// hunk an address named, or — under `--containing <line>` — the hunk
-/// holding that line. The three are one function because every one of them
-/// is "this path, narrowed", and they share the quarantine check and the
-/// consistency guard either side.
-///
-/// `--containing` resolves over the path's whole universe and only then
-/// checks the verb's scope (#145), so the same value never means one hunk
-/// under `add` and another under `unstage`.
-///
-/// An address's own refusals (not found, stale, ambiguous — #122/#158)
-/// come back as offenders like any other, so an aged address joins the
-/// all-or-nothing list rather than bailing ahead of the arguments beside
-/// it. An explicit ID refusing here is what keeps a stale address from
-/// ever acting.
+/// What one path argument narrows the scope to, in the shared grammar's
+/// dispatch ([`scope::narrow`]): this pair supplies only its two answers —
+/// the file row where the scope owns hunks in it, or one addressed hunk past
+/// the consistency guard.
 fn narrow<'a>(
     verb: &str,
     changelist: Option<&str>,
     arg: &scope::PathArg,
-    value: Option<&str>,
+    containing: Option<&str>,
     snapshot: &'a Snapshot,
 ) -> Result<StagingTarget<'a>, String> {
-    let file = scope::file_in(snapshot, &arg.path);
-    // Quarantined (ADR 0007): a conflicted path holds no hunks to own or
-    // address, so every answer below it would be a confusing "nobody".
-    if file.is_some_and(|file| file.kind == ChangeKind::Conflicted) {
-        return Err(conflicted_hint(&arg.path));
-    }
-    if let Some(value) = value {
-        let file = file.ok_or_else(|| nothing_to_do(verb, &arg.path))?;
-        let (hunk, address) = scope::resolve_containing(file, value)?;
-        return addressed(verb, changelist, &arg.path, hunk, address);
-    }
-    match arg.resolve_hunk(snapshot) {
-        Ok(None) => match unowned(verb, changelist, &arg.path, file) {
+    scope::narrow(
+        arg,
+        containing,
+        snapshot,
+        |path| nothing_to_do(verb, path),
+        |file| match unowned(verb, changelist, &arg.path, file) {
             Some(offender) => Err(offender),
             None => Ok(StagingTarget::Row(arg.path.clone())),
         },
-        Ok(Some((hunk, address))) => addressed(verb, changelist, &arg.path, hunk, address),
-        Err(refusal) => Err(format!("{refusal:#}")),
-    }
+        |hunk, address| addressed(verb, changelist, &arg.path, hunk, address),
+    )
 }
 
 /// One addressed hunk as a target, past **the scope consistency guard**:
@@ -216,7 +171,7 @@ fn addressed<'a>(
     changelist: Option<&str>,
     path: &str,
     hunk: &'a Hunk,
-    address: String,
+    address: &str,
 ) -> Result<StagingTarget<'a>, String> {
     if !hunk.owned_by(changelist) {
         let owner = hunk.changelist.as_deref();
@@ -230,7 +185,7 @@ fn addressed<'a>(
     Ok(StagingTarget::Hunk {
         path: path.to_owned(),
         hunk,
-        address,
+        address: address.to_owned(),
     })
 }
 

@@ -14,7 +14,9 @@
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
-use gitchange_core::{ChangedFile, Hunk, HunkId, Snapshot, UNASSIGNED, holder_label};
+use gitchange_core::{
+    ChangeKind, ChangedFile, Hunk, HunkId, Snapshot, UNASSIGNED, conflicted_hint, holder_label,
+};
 
 /// One resolved `<path>[:<hunk-id>]` argument: the path in the spelling
 /// every gitchange surface prints (repo-relative, `/`-separated), plus the
@@ -172,6 +174,106 @@ pub fn resolve_containing<'a>(
 /// Composed addresses as a refusal lists them, in file order.
 fn candidates<'a>(addresses: impl Iterator<Item = &'a str>) -> String {
     addresses.collect::<Vec<&str>>().join(", ")
+}
+
+/// What one path argument narrows a mutating verb's scope to: the path
+/// itself, the single hunk an address named, or — under `--containing
+/// <line>` — the hunk holding that line. The dispatch between the three is
+/// the shared addressing grammar's, so it lives here and every verb reads
+/// it the same way (#145/#147):
+///
+/// - a **conflicted** path is quarantined before any of it (ADR 0007): it
+///   holds no hunks to own or address, so every answer below would be a
+///   confusing "nobody";
+/// - `--containing` resolves over the path's **whole universe** and only
+///   then reaches `hunk`, which applies the verb's own scope — a
+///   scope-filtered search would make one value quietly mean different
+///   hunks under different verbs;
+/// - an address's own refusals (not found, stale, ambiguous — #122) come
+///   back as offenders like any other, so an aged address joins the
+///   caller's all-or-nothing list rather than bailing ahead of the
+///   arguments beside it. That is what keeps a stale address from acting.
+///
+/// The verb supplies only its two answers: `whole` for a bare path — which
+/// takes the path's entry in the change universe, `None` where it has none
+/// — and `hunk` for one addressed hunk with the composed address a refusal
+/// would name. `nothing_to_do` is the refusal a path with no changes at all
+/// earns under `--containing`, where there is no universe to search.
+pub fn narrow<'a, T>(
+    arg: &PathArg,
+    containing: Option<&str>,
+    snapshot: &'a Snapshot,
+    nothing_to_do: impl Fn(&str) -> String,
+    whole: impl Fn(Option<&'a ChangedFile>) -> Result<T, String>,
+    hunk: impl Fn(&'a Hunk, &str) -> Result<T, String>,
+) -> Result<T, String> {
+    let file = file_in(snapshot, &arg.path);
+    if file.is_some_and(|file| file.kind == ChangeKind::Conflicted) {
+        return Err(conflicted_hint(&arg.path));
+    }
+    if let Some(value) = containing {
+        let file = file.ok_or_else(|| nothing_to_do(&arg.path))?;
+        let (addressed, address) = resolve_containing(file, value)?;
+        return hunk(addressed, &address);
+    }
+    match arg.resolve_hunk(snapshot) {
+        Ok(None) => whole(file),
+        Ok(Some((addressed, address))) => hunk(addressed, &address),
+        Err(refusal) => Err(format!("{refusal:#}")),
+    }
+}
+
+/// The example invocations a `--containing` grammar refusal quotes back —
+/// the only part of [`check_containing`] that is the calling verb's own.
+pub struct Forms {
+    /// The verb's addressed form, e.g. `gitchange add <changelist>
+    /// <path>:<hunk-id>`.
+    pub addressed: String,
+    /// The verb's `--containing` form, e.g. `gitchange add <changelist>
+    /// <path> --containing <line>`.
+    pub narrowed: String,
+}
+
+/// The three non-declarative exit-`2` checks every `--containing` verb owns
+/// (#145/#147), asked of the raw arguments alone: they are grammar
+/// violations, so they answer before the repository is opened and cannot be
+/// confused with a refusal about repo state. The skeleton could not declare
+/// them — clap sees neither a value's newlines, nor how many positionals an
+/// option needs beside it, nor whether one of them is ID-shaped.
+///
+/// One body for the three verbs because the rules are one rule each: the
+/// arity is *exactly one path* everywhere, and only what a caller can
+/// mistype differs — `assign`'s grammar guarantees at least one path, so its
+/// zero-path arm is unreachable rather than absent.
+pub fn check_containing(
+    value: Option<&str>,
+    paths: &[String],
+    forms: &Forms,
+) -> anyhow::Result<()> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    if value.contains('\n') {
+        return Err(crate::usage(format!(
+            "'--containing' matches within one changed line, and this value spans \
+             several — name a line, or address the hunk: '{}'",
+            forms.addressed
+        )));
+    }
+    if paths.len() != 1 {
+        return Err(crate::usage(format!(
+            "'--containing' narrows exactly one path, and {} were given — '{}'",
+            paths.len(),
+            forms.narrowed
+        )));
+    }
+    if let Some(token) = paths.iter().find(|token| carries_an_address(token)) {
+        return Err(crate::usage(format!(
+            "'--containing' and '<path>:<hunk-id>' are two ways to address one \
+             hunk — '{token}' already names one, so drop one of them"
+        )));
+    }
+    Ok(())
 }
 
 /// Whether `token` carries a `<hunk-id>` suffix — asked of the raw

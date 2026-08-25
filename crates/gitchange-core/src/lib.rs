@@ -26,7 +26,7 @@ pub use engine::{Condition, Engine, EngineEvent};
 pub use error::{ApplySite, Error, LockHolder};
 pub use hunk_id::{HunkAddress, HunkId};
 pub use matcher::Advisory;
-pub use repo::{OpOutcome, RefreshOutcome, Repo, StagingTarget, SweepOutcome};
+pub use repo::{AssignTarget, OpOutcome, RefreshOutcome, Repo, StagingTarget, SweepOutcome};
 pub use snapshot::{CommitInfo, FileGroup, GitOperation, GroupKind, Head, Snapshot};
 pub use state::{Changelist, MembershipRecord, OidAnchor, RESERVED_NAMES};
 pub use universe::{ChangedFile, FileStage, Hunk, HunkIdentity, HunkStage, file_stage};
