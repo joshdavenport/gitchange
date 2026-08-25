@@ -239,12 +239,13 @@ fn a_hyphen_named_path_is_a_usage_error() {
 }
 
 // --- add / stage / unstage -------------------------------------------------
-// `add` and its alias are built (#160), so what they do is asserted against
-// fixture repos in `add.rs`; the grammar edges stay here, plus the proof
-// that every parsed form gets as far as looking for a repository.
+// Both verbs are built (#160, #161), so what they do is asserted against
+// fixture repos in `add.rs` and `unstage.rs`; the grammar edges stay here,
+// plus the proof that every parsed form gets as far as looking for a
+// repository.
 
 #[test]
-fn every_add_form_parses_and_reaches_the_repository() {
+fn every_staging_form_parses_and_reaches_the_repository() {
     for args in [
         &["add", "feature"][..],
         &["add", "feature", "src/a.rs"],
@@ -255,6 +256,11 @@ fn every_add_form_parses_and_reaches_the_repository() {
         // where behaviour is (`add.rs`).
         &["stage", "feature"],
         &["stage", "feature", "src/a.rs"],
+        // The mirror, which takes the same grammar and no alias.
+        &["unstage", "feature"],
+        &["unstage", "feature", "src/a.rs"],
+        &["unstage", "feature", "src/a.rs:h1a2b3c4", "src/b.rs"],
+        &["unstage", "feature", "src/a.rs", "--containing", "-x"],
     ] {
         let output = gitchange(args);
         assert_eq!(output.status.code(), Some(1), "{args:?}");
@@ -265,16 +271,6 @@ fn every_add_form_parses_and_reaches_the_repository() {
             stderr(&output)
         );
     }
-}
-
-#[test]
-fn unstage_mirrors_add_without_the_alias() {
-    assert_stub(&["unstage", "feature"], "unstage");
-    assert_stub(&["unstage", "feature", "src/a.rs"], "unstage");
-    assert_stub(
-        &["unstage", "feature", "src/a.rs", "--containing", "-x"],
-        "unstage",
-    );
 }
 
 #[test]

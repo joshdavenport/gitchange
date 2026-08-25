@@ -8,7 +8,7 @@ use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand};
 
 use gitchange_core::{
     ACTIVE_MARKER, Advisory, ChangedFile, GroupKind, HunkContent, LockHolder, OpOutcome, Repo,
-    Snapshot, diff_envelope, status_envelope, target_named,
+    Snapshot, SweepOutcome, diff_envelope, status_envelope, target_named,
 };
 
 mod diff;
@@ -354,8 +354,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Some(Command::Refresh) => not_implemented("refresh"),
         Some(Command::Changelist { .. }) => not_implemented("changelist"),
         Some(Command::Assign { .. }) => not_implemented("assign"),
-        Some(Command::Add { scope }) => with_lock_retry(|| add(&scope)),
-        Some(Command::Unstage { .. }) => not_implemented("unstage"),
+        Some(Command::Add { scope }) => with_lock_retry(|| staging(Staging::Add, &scope)),
+        Some(Command::Unstage { scope }) => with_lock_retry(|| staging(Staging::Unstage, &scope)),
         Some(Command::Commit { .. }) => not_implemented("commit"),
         // A read, like `status`: no lock, so no contention to absorb.
         Some(Command::Diff {
@@ -592,17 +592,65 @@ fn diff(scope: &DiffScope, face: DiffFace) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `add <changelist> [<path>...]` (alias `stage`): index := worktree for
-/// the scope's `○` and `◑` hunks alike — the statement that the worktree
-/// version is the one meant, which is `git add`'s own meaning on a
-/// re-modified file (#145).
+/// Which of the staging pair an invocation is: one symmetric vocabulary
+/// with the direction in the verb (#145), so the two commands differ in
+/// the sweep they call and the words the refusals use — and in nothing
+/// else, because everything else is this file's one staging body.
+#[derive(Clone, Copy)]
+enum Staging {
+    /// `add <changelist> [<path>...]` (alias `stage`): index := worktree
+    /// for the scope's `○` and `◑` hunks alike — the statement that the
+    /// worktree version is the one meant, which is `git add`'s own
+    /// meaning on a re-modified file.
+    Add,
+    /// `unstage <changelist> [<path>...]`: index := HEAD, and sweeps take
+    /// `●` only — each `◑` hunk stays, named on the receipt by core.
+    Unstage,
+}
+
+impl Staging {
+    /// The command's own name, which the refusals that teach its grammar
+    /// quote back. `add`'s is not core's direction word (`stage`): the
+    /// caller typed a command, and that is what a correction must name.
+    fn verb(self) -> &'static str {
+        match self {
+            Staging::Add => "add",
+            Staging::Unstage => "unstage",
+        }
+    }
+
+    /// What the wholly-stale refusal says nothing of happened.
+    fn past_tense(self) -> &'static str {
+        match self {
+            Staging::Add => "staged",
+            Staging::Unstage => "unstaged",
+        }
+    }
+
+    fn sweep(
+        self,
+        repo: &Repo,
+        snapshot: &Snapshot,
+        sweep: &staging::Sweep,
+    ) -> Result<SweepOutcome, gitchange_core::Error> {
+        let changelist = sweep.changelist.as_deref();
+        match self {
+            Staging::Add => repo.stage_sweep(snapshot, changelist, &sweep.rows()),
+            Staging::Unstage => repo.unstage_sweep(snapshot, changelist, &sweep.rows()),
+        }
+    }
+}
+
+/// Both staging verbs (#145), which differ only in [`Staging`]'s three
+/// answers: the scope model, the validation, the receipt and the exit-code
+/// split are one body, so the pair cannot drift into two vocabularies.
 ///
 /// One persisting refresh per invocation, and everything downstream reads
 /// its snapshot: validation, so a refusal is a complete instruction about
 /// one state of the repo, and the sweep, so deferred capture feeds the op's
 /// own scope — switch → edit → `add <active>` stages the hunks that
 /// refresh just captured.
-fn add(scope: &StagingScope) -> anyhow::Result<()> {
+fn staging(verb: Staging, scope: &StagingScope) -> anyhow::Result<()> {
     let repo = open_repo()?;
     let workdir = workdir(&repo)?;
     let refreshed = repo.refresh()?;
@@ -610,20 +658,17 @@ fn add(scope: &StagingScope) -> anyhow::Result<()> {
     // capture is already written, and a validation refusal must not
     // swallow the decisions this invocation made on the way to it.
     print_notices(&refreshed.advisories);
-    let sweep = staging::resolve("add", scope, &refreshed.snapshot, &workdir)?;
-    let swept = repo.stage_sweep(
-        &refreshed.snapshot,
-        sweep.changelist.as_deref(),
-        &sweep.rows(),
-    )?;
+    let sweep = staging::resolve(verb.verb(), scope, &refreshed.snapshot, &workdir)?;
+    let swept = verb.sweep(&repo, &refreshed.snapshot, &sweep)?;
     // Staleness at apply fails soft per hunk, but a command that moved
     // nothing it was asked to move is a refusal (#145) — the split is on
     // whether any hunk landed, not on whether any was skipped.
     if swept.moved_nothing() {
         print_notices(&swept.receipt.advisories);
         anyhow::bail!(
-            "nothing staged — every hunk in the scope went stale; re-read with \
-             'gitchange diff' and retry"
+            "nothing {} — every hunk in the scope went stale; re-read with \
+             'gitchange diff' and retry",
+            verb.past_tense()
         );
     }
     receipt(swept.receipt);

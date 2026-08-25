@@ -3,9 +3,10 @@
 //! truth is git's own view of the index (`git diff --cached`, `git show
 //! :<path>`) — never gitchange's account of it.
 //!
-//! Its own module because the fixtures are its own: ownership records that
-//! split one file between two changelists, a changelist that owns nothing,
-//! and a clean path — the shapes every offender class needs.
+//! The fixture is `support::owned_repo`, which `unstage.rs` stages and
+//! sweeps in the other direction: ownership records that split one file
+//! between two changelists, a changelist that owns nothing, and a clean
+//! path — the shapes every offender class needs.
 //!
 //! The fail-soft split (some hunks stale, all hunks stale) is not here: it
 //! needs a worktree edit between the refresh and the apply, which no child
@@ -15,62 +16,13 @@
 use std::path::Path;
 
 use crate::support::{
-    git, gitchange, initialised_repo, long_file, merging_repo, seed_state, seed_state_raw,
+    git, gitchange, initialised_repo, merging_repo, owned_repo, seed_state, staged, staged_paths,
+    write,
 };
-
-fn write(dir: &Path, path: &str, contents: &str) {
-    let file = dir.join(path);
-    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-    std::fs::write(file, contents).unwrap();
-}
 
 fn commit(dir: &Path, message: &str) {
     git(dir, &["add", "-A"]);
     git(dir, &["commit", "-q", "--no-verify", "-m", message]);
-}
-
-/// The fixture most of these tests sweep, capture off (`active: null`) so
-/// ownership is exactly what the records say:
-///
-/// - `a.txt` — two hunks, the first claimed by `'feature'` by record, the
-///   second recordless and so unassigned: one file, two owners, which is
-///   what makes path narrowing observable.
-/// - `b.txt` — one hunk, claimed by `'docs'`.
-/// - `sub/c.txt` — one hunk, unassigned; also the subdirectory a directory
-///   argument needs.
-/// - `keep.txt` — committed and untouched: the clean-path offender.
-/// - `'empty'` — a changelist owning no hunks at all.
-fn owned_repo() -> tempfile::TempDir {
-    let dir = initialised_repo();
-    let repo = dir.path();
-    write(repo, "a.txt", &long_file("first", "last"));
-    write(repo, "b.txt", "one\n");
-    write(repo, "sub/c.txt", "one\n");
-    write(repo, "keep.txt", "unchanged\n");
-    commit(repo, "init");
-    write(repo, "a.txt", &long_file("first edited", "last edited"));
-    write(repo, "b.txt", "two\n");
-    write(repo, "sub/c.txt", "two\n");
-    seed_state_raw(
-        repo,
-        r#"{
-  "version": 1, "active": null,
-  "changelists": [{ "name": "feature" }, { "name": "docs" }, { "name": "empty" }],
-  "records": [
-    {
-      "path": "a.txt", "old_start": 1, "old_lines": 4,
-      "new_start": 1, "new_lines": 4, "changelist": "feature",
-      "anchor": ["-first\n", "+first edited\n"], "dormant_since": null
-    },
-    {
-      "path": "b.txt", "old_start": 1, "old_lines": 1,
-      "new_start": 1, "new_lines": 1, "changelist": "docs",
-      "anchor": ["-one\n", "+two\n"], "dormant_since": null
-    }
-  ]
-}"#,
-    );
-    dir
 }
 
 /// `gitchange add <args>`, asserted to have succeeded, its stdout echo.
@@ -100,18 +52,6 @@ fn refusal(dir: &Path, args: &[&str]) -> String {
         "a failed command leaves stdout empty (#122)"
     );
     String::from_utf8(output.stderr).unwrap()
-}
-
-/// The paths the index holds a change for, in git's order — the ground
-/// truth for what a sweep reached.
-fn staged_paths(dir: &Path) -> Vec<String> {
-    let staged = git(dir, &["diff", "--cached", "--name-only"]);
-    staged.lines().map(str::to_owned).collect()
-}
-
-/// The index's content for one path, as git resolves it.
-fn staged(dir: &Path, path: &str) -> String {
-    git(dir, &["show", &format!(":{path}")])
 }
 
 // --- the sweep --------------------------------------------------------------

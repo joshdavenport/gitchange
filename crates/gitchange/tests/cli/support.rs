@@ -145,6 +145,75 @@ pub fn two_hunk_repo() -> tempfile::TempDir {
     dir
 }
 
+/// Write a file under `dir`, creating its parent directories — the
+/// fixtures' own edit, for the subdirectory cases `std::fs::write` alone
+/// cannot reach.
+pub fn write(dir: &Path, path: &str, contents: &str) {
+    let file = dir.join(path);
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(file, contents).unwrap();
+}
+
+/// The fixture the staging verbs sweep, capture off (`active: null`) so
+/// ownership is exactly what the records say. Its worktree is edited and
+/// its index untouched; `unstage`'s own fixture stages it with raw `git
+/// add` (ADR 0003 — refresh absorbs that), which is how one shape serves
+/// both directions:
+///
+/// - `a.txt` — two hunks, the first claimed by `'feature'` by record, the
+///   second recordless and so unassigned: one file, two owners, which is
+///   what makes path narrowing observable.
+/// - `b.txt` — one hunk, claimed by `'docs'`.
+/// - `sub/c.txt` — one hunk, unassigned; also the subdirectory a directory
+///   argument needs.
+/// - `keep.txt` — committed and untouched: the clean-path offender.
+/// - `'empty'` — a changelist owning no hunks at all.
+pub fn owned_repo() -> tempfile::TempDir {
+    let dir = initialised_repo();
+    let repo = dir.path();
+    write(repo, "a.txt", &long_file("first", "last"));
+    write(repo, "b.txt", "one\n");
+    write(repo, "sub/c.txt", "one\n");
+    write(repo, "keep.txt", "unchanged\n");
+    git(repo, &["add", "-A"]);
+    git(repo, &["commit", "-q", "--no-verify", "-m", "init"]);
+    write(repo, "a.txt", &long_file("first edited", "last edited"));
+    write(repo, "b.txt", "two\n");
+    write(repo, "sub/c.txt", "two\n");
+    seed_state_raw(
+        repo,
+        r#"{
+  "version": 1, "active": null,
+  "changelists": [{ "name": "feature" }, { "name": "docs" }, { "name": "empty" }],
+  "records": [
+    {
+      "path": "a.txt", "old_start": 1, "old_lines": 4,
+      "new_start": 1, "new_lines": 4, "changelist": "feature",
+      "anchor": ["-first\n", "+first edited\n"], "dormant_since": null
+    },
+    {
+      "path": "b.txt", "old_start": 1, "old_lines": 1,
+      "new_start": 1, "new_lines": 1, "changelist": "docs",
+      "anchor": ["-one\n", "+two\n"], "dormant_since": null
+    }
+  ]
+}"#,
+    );
+    dir
+}
+
+/// The paths the index holds a change for, in git's order — the ground
+/// truth for what a sweep reached.
+pub fn staged_paths(dir: &Path) -> Vec<String> {
+    let staged = git(dir, &["diff", "--cached", "--name-only"]);
+    staged.lines().map(str::to_owned).collect()
+}
+
+/// The index's content for one path, as git resolves it.
+pub fn staged(dir: &Path, path: &str) -> String {
+    git(dir, &["show", &format!(":{path}")])
+}
+
 /// A directory that is not a repository and holds nothing: the cwd for a
 /// run that must find no repository, and the foreign cwd the `-C` tests
 /// launch from — so that anything those commands find, they can only have

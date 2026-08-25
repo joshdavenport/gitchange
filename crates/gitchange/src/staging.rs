@@ -144,7 +144,12 @@ fn changelist_scope<'a>(
     if name == ALL {
         return Err(BadScope {
             offender: format!(
-                "'{ALL}' is a view, not a {verb} scope — name one changelist, or '{UNASSIGNED}'"
+                // The verb is quoted rather than used as an adjective:
+                // "a {verb} scope" reads as "a unstage scope" for one half
+                // of the pair, and an article that depends on the caller's
+                // verb is a wart the mirror would only spread.
+                "'{ALL}' is a view, not a scope for '{verb}' — name one changelist, \
+                 or '{UNASSIGNED}'"
             ),
             teach: None,
         });

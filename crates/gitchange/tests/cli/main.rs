@@ -18,6 +18,7 @@
 //! | `locking`    | lock contention at the binary seam: live, dead, unread   |
 //! | `diff`       | `diff`'s scope resolution and its two faces              |
 //! | `add`        | `add`'s sweep, its refusals, and its receipt             |
+//! | `unstage`    | the mirror: the `●`-only sweep and its kept-`◑` notices  |
 
 mod support;
 
@@ -28,3 +29,4 @@ mod invocation;
 mod locking;
 mod status;
 mod switch;
+mod unstage;

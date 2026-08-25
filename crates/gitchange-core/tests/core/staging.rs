@@ -1303,6 +1303,136 @@ fn a_partly_stale_sweep_counts_its_skips_in_the_echo() {
     );
 }
 
+/// One hunk's composed address as the addressing surfaces mint it — what
+/// a kept-`◑` notice has to name if the caller is to paste it back.
+fn address_of(snapshot: &Snapshot, path: &str, index: usize) -> String {
+    let file = snapshot
+        .files
+        .iter()
+        .find(|file| file.path == path)
+        .unwrap_or_else(|| panic!("{path} not in snapshot"));
+    file.hunk_addresses()[index].abbreviated_at(path)
+}
+
+#[test]
+fn an_unstage_sweep_takes_staged_hunks_only_and_names_the_ones_it_kept() {
+    let (fixture, repo) = bulk_fixture();
+    // `one` owns a.txt's top hunk and b.txt's; both staged, then b.txt
+    // edited again so its hunk reads `◑` — the residue a sweep keeps.
+    repo.stage_changelist(Some("one")).unwrap();
+    fixture.write("b.txt", &numbered(&[(2, "b edit, again")]));
+    let snapshot = repo.refresh().unwrap().snapshot;
+    assert_eq!(stages(&snapshot, "b.txt"), vec![HunkStage::StagedStale]);
+
+    let swept = repo.unstage_sweep(&snapshot, Some("one"), &[]).unwrap();
+
+    assert_eq!((swept.moved, swept.skipped), (1, 0));
+    assert_eq!(
+        swept.receipt.echo.as_deref(),
+        Some("unstaged 1 hunk — 'one'")
+    );
+    assert_eq!(
+        swept.receipt.advisories,
+        vec![Advisory::KeptStagedStale {
+            address: address_of(&snapshot, "b.txt", 0),
+            changelist: Some("one".into()),
+        }],
+        "the kept hunk is named by address, once"
+    );
+    assert_eq!(
+        fixture.index_content("a.txt").as_deref(),
+        Some(numbered(&[]).as_str()),
+        "the ● hunk left the index"
+    );
+    assert_eq!(
+        fixture.index_content("b.txt").as_deref(),
+        Some(numbered(&[(2, "b edit")]).as_str()),
+        "the ◑ hunk's staged version is still there — a sweep never discards one"
+    );
+}
+
+#[test]
+fn repeating_an_unstage_over_a_kept_hunk_is_satisfied_and_repeats_the_notice() {
+    // Necessarily satisfied (#145): were a `●`-less scope a refusal, the
+    // second run of the same command would flip outcome on residue the
+    // first run deliberately left behind.
+    let (fixture, repo) = bulk_fixture();
+    repo.stage_changelist(Some("one")).unwrap();
+    // b.txt's staged hunk edited again: `◑`, the only hunk in the scope
+    // below, so the sweep has nothing left to take.
+    fixture.write("b.txt", &numbered(&[(2, "b edit, again")]));
+    let snapshot = repo.refresh().unwrap().snapshot;
+    assert_eq!(stages(&snapshot, "b.txt"), vec![HunkStage::StagedStale]);
+
+    let swept = repo
+        .unstage_sweep(&snapshot, Some("one"), &["b.txt"])
+        .unwrap();
+
+    assert_eq!((swept.moved, swept.skipped), (0, 0));
+    assert!(!swept.moved_nothing(), "nothing to move is a success");
+    assert_eq!(
+        swept.receipt.echo.as_deref(),
+        Some("nothing to unstage — b.txt in 'one'")
+    );
+    assert_eq!(
+        swept.receipt.advisories,
+        vec![Advisory::KeptStagedStale {
+            address: address_of(&snapshot, "b.txt", 0),
+            changelist: Some("one".into()),
+        }],
+        "the notice prints on a satisfied receipt too — the residue is never silent"
+    );
+}
+
+#[test]
+fn an_unstage_sweep_fails_soft_and_splits_on_what_landed() {
+    let (fixture, repo) = bulk_fixture();
+    repo.stage_changelist(Some("one")).unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
+    // b.txt's staged hunk is gone from both index and worktree after the
+    // snapshot: a mid-command race no child process could inject.
+    fixture.write("b.txt", &numbered(&[])).stage("b.txt");
+
+    let swept = repo.unstage_sweep(&snapshot, Some("one"), &[]).unwrap();
+
+    assert_eq!((swept.moved, swept.skipped), (1, 1));
+    assert!(!swept.moved_nothing(), "one hunk landed");
+    assert_eq!(
+        swept.receipt.echo.as_deref(),
+        Some("unstaged 1 of 2 hunks (1 skipped as stale) — 'one'")
+    );
+    assert!(
+        swept.receipt.advisories.iter().any(
+            |advisory| matches!(advisory, Advisory::StaleHunk { path, .. } if path == "b.txt")
+        )
+    );
+}
+
+#[test]
+fn a_wholly_stale_unstage_sweep_moves_nothing_and_says_so() {
+    let (fixture, repo) = bulk_fixture();
+    repo.stage_changelist(Some("one")).unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
+    // The staged hunk the snapshot named is replaced in both index and
+    // worktree: the one hunk in scope is stale by the time the apply runs.
+    fixture
+        .write(
+            "a.txt",
+            &numbered(&[(2, "a different top edit"), (18, "edit near bottom")]),
+        )
+        .stage("a.txt");
+
+    let swept = repo
+        .unstage_sweep(&snapshot, Some("one"), &["a.txt"])
+        .unwrap();
+
+    assert_eq!((swept.moved, swept.skipped), (0, 1));
+    assert!(
+        swept.moved_nothing(),
+        "nothing the caller asked for moved: the refusing half of the split"
+    );
+}
+
 #[test]
 fn a_wholly_stale_sweep_moves_nothing_and_says_which_of_the_two_it_was() {
     let (fixture, repo) = bulk_fixture();

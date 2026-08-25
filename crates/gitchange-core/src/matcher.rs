@@ -89,6 +89,27 @@ pub enum Advisory {
         /// by hand.
         changelists: Vec<String>,
     },
+    /// An unstage sweep left a staged-stale hunk in the index: sweeps
+    /// take `●` only, so a staged version the worktree has since moved
+    /// past is never discarded in bulk (#145). Raised per kept hunk, so
+    /// the residue a sweep declined to touch is named rather than silent.
+    ///
+    /// The one advisory whose message spells whole invocations, and it can
+    /// only do so because [`Repo::unstage_sweep`] is its only source: that
+    /// op serves the CLI alone, so the commands it names are always the
+    /// reader's own surface. The TUI's `space` sweeps a row the user is
+    /// looking at and raises nothing here.
+    ///
+    /// [`Repo::unstage_sweep`]: crate::Repo::unstage_sweep
+    KeptStagedStale {
+        /// The hunk's composed address `<path>:<id>[/<n>]`, minted for
+        /// this receipt — what the addressed resolution takes verbatim.
+        address: String,
+        /// The scope that swept, `None` being unassigned: the resolutions
+        /// are the caller's own command line with the address appended,
+        /// so they need the changelist token back.
+        changelist: Option<String>,
+    },
     /// A delete took the active changelist with it, so unassigned is
     /// active now (ADR 0015 — a neighbour is never promoted). The one
     /// automatic decision a delete makes, and the only one of these an op
@@ -152,6 +173,23 @@ impl Advisory {
             Advisory::StaleHunk { path, new_start } => {
                 format!(
                     "hunk at {path}:{new_start} changed since the last refresh; nothing applied"
+                )
+            }
+            // Both resolutions, each a whole command line: the address
+            // form discards the staged version outright, and the `add`
+            // form keeps the worktree's before a repeat sweep takes it.
+            // Which one is meant is the caller's to know — what the
+            // notice owes them is that the hunk stayed, and both ways out.
+            Advisory::KeptStagedStale {
+                address,
+                changelist,
+            } => {
+                let scope = changelist.as_deref().unwrap_or(UNASSIGNED);
+                format!(
+                    "kept staged-stale hunk {address} — a sweep never discards the staged \
+                     version; unstage it by address with 'gitchange unstage {scope} {address}', \
+                     or 'gitchange add {scope} {address}' first and sweep again to take the \
+                     worktree version"
                 )
             }
             // No forecast of where the next hunks land (#122): the

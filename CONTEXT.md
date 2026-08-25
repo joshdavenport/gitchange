@@ -239,7 +239,9 @@ changelist (or `unassigned`), or that changelist narrowed to some of its
 **file rows**. Always ownership-scoped — a sweep moves only hunks the named
 changelist owns, which is why the staging verbs need no cross-ownership
 override. Direction is the caller's, not the current state's: the stage
-direction takes `○` and `◑`, the unstage direction takes `●` only. A scope
+direction takes `○` and `◑`, the unstage direction takes `●` only — and
+names each `◑` it kept on the receipt, with both ways to move it, so the
+residue is never silent. A scope
 already in the target state is satisfied rather than refused, and a
 **stale action** discovered at apply fails soft per hunk with the skips
 counted on the receipt. Both frontends sweep — the **stage toggle** at
@@ -354,7 +356,7 @@ _Avoid_: message, alert, log level (for severity)
 Core's record of an automatic decision or fail-soft outcome worth
 spot-checking (`Advisory` in `matcher.rs`): auto-capture, entry-unit
 capture, ambiguous overlap, dormant revival, stale hunk, HEAD-move
-dormancy, active-changelist delete. Carried as data
+dormancy, active-changelist delete, kept staged-stale. Carried as data
 beside a persisting refresh's snapshot and on op results — never on the
 snapshot itself, which is how the read-only form's filter is structural
 (ADR 0005) — with one canonical message

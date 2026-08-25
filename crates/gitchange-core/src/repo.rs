@@ -548,6 +548,32 @@ impl Repo {
         )
     }
 
+    /// The CLI's unstage sweep (#145): the mirror of
+    /// [`Repo::stage_sweep`] over the same scope model — index := HEAD for
+    /// the scope's `●` hunks, and `●` only.
+    ///
+    /// Each `◑` hunk the direction's filter leaves behind rides the
+    /// receipt as an [`Advisory::KeptStagedStale`] naming its address, so
+    /// a staged version the worktree has since moved past is kept *and*
+    /// said. The advisories are raised here rather than in the shared
+    /// sweep because they answer for a CLI command's whole scope: the
+    /// TUI's `space` is one keypress on a row the user is looking at,
+    /// where the same lines would be noise in the Log panel.
+    pub fn unstage_sweep(
+        &self,
+        snapshot: &Snapshot,
+        changelist: Option<&str>,
+        paths: &[&str],
+    ) -> Result<SweepOutcome, Error> {
+        let scope = SweepScope::rows(paths, changelist);
+        let mut swept = self.sweep(snapshot, scope, Direction::Unstage)?;
+        swept
+            .receipt
+            .advisories
+            .extend(kept_staged_stale(snapshot, scope));
+        Ok(swept)
+    }
+
     /// A sweep behind its own persisting refresh — the TUI's `space` at
     /// changelist and Files-row scope, where the keypress is the whole
     /// invocation. The counts are dropped: the echo already carries them,
@@ -766,6 +792,34 @@ impl Repo {
         state_file::save(&dir, &mutated)?;
         Ok(true)
     }
+}
+
+/// The `◑` hunks an unstage sweep over `scope` leaves in the index, each
+/// as the notice that names it (#145). Read off the snapshot the sweep
+/// ran against, which is where the staging states it decided by live:
+/// unstaging a `●` hunk cannot make one of its neighbours stale.
+fn kept_staged_stale(snapshot: &Snapshot, scope: SweepScope<'_>) -> Vec<Advisory> {
+    let mut kept = Vec::new();
+    for file in snapshot
+        .files
+        .iter()
+        .filter(|file| scope.covers(&file.path))
+    {
+        // Addresses are minted per file because the ordinal that tells
+        // identical hunks apart is a file-level fact, and only where a
+        // notice is actually due — no address is computed for a sweep
+        // that keeps nothing.
+        let addresses = file.hunk_addresses();
+        for (hunk, address) in file.hunks.iter().zip(addresses) {
+            if hunk.owned_by(scope.changelist) && hunk.stage == HunkStage::StagedStale {
+                kept.push(Advisory::KeptStagedStale {
+                    address: address.abbreviated_at(&file.path),
+                    changelist: scope.changelist.map(str::to_owned),
+                });
+            }
+        }
+    }
+    kept
 }
 
 /// Which way a staging sweep moves the index, and so which hunks it
