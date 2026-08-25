@@ -9,7 +9,8 @@
 //! file's bytes here, as `status`'s is in `status.rs`.
 
 use crate::support::{
-    committed_repo, dirty_repo, gitchange, repo_holding, seed_state, seed_state_raw, state_path,
+    committed_repo, dirty_repo, git, gitchange, repo_holding, seed_state, seed_state_raw,
+    state_path,
 };
 
 /// The listing's lines, with the exit code asserted along the way — a
@@ -89,6 +90,35 @@ fn the_listing_leaves_the_state_file_byte_identical() {
     listing(repo.path());
 
     assert_eq!(std::fs::read(state_path(repo.path())).unwrap(), before);
+}
+
+#[test]
+fn the_listing_answers_where_a_refresh_would_refuse() {
+    // The one place the two read mechanisms differ observably, and so
+    // the pin on ADR 0005's "runs neither form": a bare repository has
+    // no working directory to scan, so every command that builds the
+    // change universe refuses — while the roster, which derives from no
+    // diff, is still there to read.
+    let dir = tempfile::tempdir().unwrap();
+    git(
+        dir.path(),
+        &["init", "-q", "--bare", "--initial-branch=main"],
+    );
+    let state = dir.path().join("gitchange/state.json");
+    std::fs::create_dir_all(state.parent().unwrap()).unwrap();
+    std::fs::write(
+        &state,
+        r#"{ "version": 1, "active": "feature",
+             "changelists": [{ "name": "feature" }, { "name": "docs" }] }"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        gitchange(dir.path(), &["status"]).status.code(),
+        Some(1),
+        "status builds the universe, which a bare repo has none of"
+    );
+    assert_eq!(listing(dir.path()), vec!["* feature", "  docs"]);
 }
 
 #[test]

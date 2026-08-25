@@ -86,9 +86,14 @@ entry-unit join) never previews — a recordless hunk reports as unassigned.
 
 Who runs which: the engine's refreshes persist, as do the refreshes inside
 every mutating op (assign, stage, commit) — the op's receipt carries the
-advisories its refresh produced. Every read-only CLI invocation (`status`,
-`diff`, listing; with or without `--json`) refreshes read-only: a glance at
-the tree never moves membership. The CLI reaches the persisting form only
+advisories its refresh produced. Every read-only CLI invocation whose
+answer reads the change universe (`status`, `diff`; with or without
+`--json`) refreshes read-only: a glance at the tree never moves
+membership. The bare `changelist` listing reads the state file alone — the
+names and the marker derive from no diff — so it runs neither form,
+reaching the same guarantee by doing less; it therefore answers wherever
+the state file is readable, including a repository whose universe cannot
+be built. The CLI reaches the persisting form only
 by name: `gitchange refresh` is the manual refresh key's CLI form — one
 deliberate persisting refresh whose receipt carries its advisories. Deferred capture is the accepted cost:
 with no TUI running, a new hunk stays unassigned until the next mutation's
