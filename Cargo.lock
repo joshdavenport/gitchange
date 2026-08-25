@@ -382,6 +382,7 @@ dependencies = [
  "clap",
  "gitchange-core",
  "gitchange-tui",
+ "serde_json",
  "tempfile",
 ]
 

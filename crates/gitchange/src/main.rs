@@ -7,7 +7,8 @@ use clap::builder::NonEmptyStringValueParser;
 use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand};
 
 use gitchange_core::{
-    ACTIVE_MARKER, Advisory, ChangedFile, GroupKind, LockHolder, OpOutcome, Repo, target_named,
+    ACTIVE_MARKER, Advisory, ChangedFile, GroupKind, LockHolder, OpOutcome, Repo, Snapshot,
+    status_envelope, target_named,
 };
 
 /// The prefix every diagnostic this binary writes to stderr carries, so
@@ -333,12 +334,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         enter(dir)?;
     }
     match cli.command {
-        // The JSON face refuses before the built text path runs: `--json`
-        // must never fall back to text, since exit 0 on a `--json` call
-        // promises the envelope was delivered.
-        Some(Command::Status { json: true }) => not_implemented("status --json"),
         // A read: no lock, so no contention to absorb (#122).
-        Some(Command::Status { json: false }) => status(),
+        Some(Command::Status { json }) => status(json),
         Some(Command::Switch { name }) => with_lock_retry(|| switch(&name)),
         Some(Command::Refresh) => not_implemented("refresh"),
         Some(Command::Changelist { .. }) => not_implemented("changelist"),
@@ -451,15 +448,34 @@ fn print_notices(advisories: &[Advisory]) {
     }
 }
 
-/// The All view as text — core's grouping (`Snapshot::groups`, ADR 0006)
-/// rendered line by line, from the read-only refresh (ADR 0005): a glance
-/// captures nothing and advises nothing. The snapshot is all core hands
-/// back — there is no advisories field to print from — and ownership is
-/// what the records say, so a recordless hunk sits under unassigned even
-/// while a changelist is active; the hint below is how the face says so.
-fn status() -> anyhow::Result<()> {
+/// The repo's context, in whichever face was asked for, from the
+/// read-only refresh (ADR 0005): a glance captures nothing and advises
+/// nothing. The snapshot is all core hands back — there is no advisories
+/// field to print from — and ownership is what the records say, so a
+/// recordless hunk sits under unassigned even while a changelist is
+/// active.
+///
+/// One refresh, both faces rendered from it, so the text and the JSON
+/// cannot disagree about selection or order (ADR 0018). The envelope is
+/// composed in core, the one place the dialect lives: this surface prints
+/// the document and adds nothing to it — the capture-pending hint the text
+/// face gained (#156) is a text-face line, not a field (#157).
+fn status(json: bool) -> anyhow::Result<()> {
     let repo = open_repo()?;
     let snapshot = repo.read_only_refresh()?;
+    if json {
+        println!("{}", status_envelope(&snapshot));
+    } else {
+        print_all_view(&snapshot);
+    }
+    Ok(())
+}
+
+/// The All view as text — core's grouping (`Snapshot::groups`, ADR 0006)
+/// rendered line by line, plus the capture-pending hint, which is this
+/// face's alone: it says in words what the envelope leaves the reader to
+/// derive from `active` and a non-empty unassigned group (#157).
+fn print_all_view(snapshot: &Snapshot) {
     for group in snapshot.groups() {
         match &group.kind {
             // Quarantined unmerged paths (ADR 0007) — outside gitchange's
@@ -495,7 +511,6 @@ fn status() -> anyhow::Result<()> {
             }
         }
     }
-    Ok(())
 }
 
 fn print_files(files: &[&ChangedFile]) {

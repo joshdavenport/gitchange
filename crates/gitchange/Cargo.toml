@@ -13,3 +13,6 @@ anyhow.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# The `--json` faces are asserted as parsed documents, never as strings:
+# a test that pinned the serialised bytes would pin field order too.
+serde_json.workspace = true

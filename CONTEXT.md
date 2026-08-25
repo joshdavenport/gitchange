@@ -64,12 +64,16 @@ least one hunk owned by it.
 _Avoid_: file membership
 
 **File row**:
-One row of the Files panel: a (group, path) pair, where the group is a
-changelist, unassigned, or Conflicts. Not a file — the same path under two
-changelists is two rows and two independent targets, and a row's marker and
+One row of a file listing — the TUI's Files panel, or either face of the
+CLI's `status`: a (group, path) pair, where the group is a changelist,
+unassigned, or Conflicts. Not a file — the same path under two changelists
+is two rows and two independent targets. A Files panel row's marker and
 counts read only the hunks its group owns in the file (issue #97), which is
-why two rows of one path routinely disagree. A Conflicts row owns no hunks
-at all, so `space` and assign politely refuse on it (ADR 0007).
+why two rows of one path routinely disagree there; a `status` row's stage
+and counts are whole-file facts, identical on every row of one path, since
+per-group narrowing belongs to the panel where `space` acts on the row and
+group-scoped hunk detail is `diff --json`'s (#143). A Conflicts row owns no
+hunks at all, so `space` and assign politely refuse on it (ADR 0007).
 _Avoid_: file entry (that's the type), cell, file (when the row is meant)
 
 **Whole-file hunk**:

@@ -56,14 +56,15 @@ fn assert_usage_error(args: &[&str]) {
 }
 
 // --- status ----------------------------------------------------------------
+// The grammar only; both faces are built (#156/#157), so what `status`
+// says is asserted against fixture repos in `cli.rs`.
 
 #[test]
-fn status_json_refuses_via_the_stub_path() {
-    // The flag must never fall back to text: exit 0 on `--json` promises
-    // the envelope was delivered. Outside a repo, so the refusal is proven
-    // to run before discovery — a built `status` would say "not a git
-    // repository" here.
-    assert_stub(&["status", "--json"], "status --json");
+fn status_takes_no_arguments_and_json_takes_no_value() {
+    // A changelist-shaped token is not a scope here — `status` is the
+    // whole All view or nothing — and `--json` is a bare switch.
+    assert_usage_error(&["status", "feature"]);
+    assert_usage_error(&["status", "--json=yes"]);
 }
 
 // --- -C --------------------------------------------------------------------
