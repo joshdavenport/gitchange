@@ -156,7 +156,7 @@ fn lock_contention_message(path: &Path, holder: &LockHolder) -> String {
             format!("gitchange state is locked by pid {pid}; retry in a moment")
         }
         LockHolder::Unreadable => format!(
-            "gitchange state is locked by a process {} records no id for, \
+            "gitchange state is locked by a process that recorded no id in {}, \
              so it is assumed to be running; retry in a moment",
             path.display()
         ),

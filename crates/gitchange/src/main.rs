@@ -14,7 +14,11 @@ const DIAG: &str = "gitchange:";
 // `name` is left to clap, which takes it from the package name.
 #[command(version, about = "Organise uncommitted changes into changelists")]
 struct Cli {
-    /// Run as if gitchange were launched in <dir>
+    /// Run as if gitchange were launched in that directory
+    // The help text says "that directory" rather than repeating `<dir>`,
+    // which clap already prints from `value_name` — and which rustdoc reads
+    // as an unclosed HTML tag, this being a doc comment as well as help.
+    //
     // Git's short, the only spelling git has; single occurrence (clap's
     // default for a `Set` option), so git's repeatable-composing form is
     // not borrowed. Semantics ride #139 — see `main`'s guard.

@@ -24,12 +24,22 @@ use gitchange_core::{Error, LockHolder, Repo};
 /// A repo whose lockfile holds `contents`, standing in for another
 /// writer's hold. One changelist is created first so the state dir and a
 /// real state file already exist — contention, not a first write.
+///
+/// The path is built from `state_file_path()`, the way core builds it,
+/// rather than spelled out from the worktree root: git hands core a
+/// forward-slashed git dir even on Windows, so a hand-spelled path differs
+/// from the printed one by separator alone and the refusal-text assertions
+/// below would fail on spelling.
 fn repo_holding(contents: &str) -> (RepoFixture, Repo, PathBuf) {
     let fixture = RepoFixture::new();
     let repo = Repo::discover(fixture.path()).unwrap();
     repo.create_changelist("feature").unwrap();
 
-    let lock_path = fixture.path().join(".git/gitchange/state.json.lock");
+    let lock_path = repo
+        .state_file_path()
+        .parent()
+        .expect("the state file has a state dir")
+        .join("state.json.lock");
     fs::write(&lock_path, contents).unwrap();
     (fixture, repo, lock_path)
 }
