@@ -410,6 +410,27 @@ fn status_outside_a_repo_exits_1_with_message_on_stderr() {
 }
 
 #[test]
+fn a_stub_refuses_identically_inside_a_repo_and_does_no_repo_work() {
+    // The stub contract (#140): no discovery, no lock, no state read — so
+    // inside a repository the refusal is byte-for-byte the one `grammar.rs`
+    // asserts from an empty directory, and a dirty tree that would capture
+    // under a persisting refresh is left without a state file.
+    let repo = dirty_repo();
+    let output = gitchange(repo.path(), &["refresh"]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.stdout, Vec::<u8>::new());
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "gitchange: 'refresh' is not implemented yet\n"
+    );
+    assert!(
+        !state_path(repo.path()).exists(),
+        "the stub touched the repository"
+    );
+}
+
+#[test]
 fn unknown_subcommand_exits_2() {
     let dir = tempfile::tempdir().unwrap();
     let output = gitchange(dir.path(), &["frobnicate"]);
