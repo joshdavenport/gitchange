@@ -307,6 +307,22 @@ fn the_repo_root_named_as_a_path_is_the_directory_refusal() {
 }
 
 #[test]
+#[cfg(unix)]
+fn a_symlink_named_as_a_path_resolves_to_the_link_not_its_target() {
+    // Canonicalizing a path argument stops short of the last component
+    // (#181): git tracks a link as a link, so `diff -- link` must name the
+    // link's own hunk — and a link pointing outside the worktree must not
+    // read as an escape.
+    let repo = initialised_repo();
+    std::os::unix::fs::symlink("/etc/hosts", repo.path().join("link")).unwrap();
+    commit(repo.path(), "init");
+    std::fs::remove_file(repo.path().join("link")).unwrap();
+    std::os::unix::fs::symlink("/etc/services", repo.path().join("link")).unwrap();
+
+    assert_eq!(files_in(&diff(repo.path(), &["--", "link"])), vec!["link"]);
+}
+
+#[test]
 fn a_deleted_path_named_as_an_argument_resolves_through_the_snapshot() {
     // The tail of a path argument stays lexical (#181): a deleted file has
     // no on-disk path to canonicalize, and canonicalizing it would make

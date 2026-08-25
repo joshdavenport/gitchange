@@ -404,19 +404,23 @@ fn normalize(path: &Path) -> PathBuf {
     normalized
 }
 
-/// `path` with its longest resolvable ancestor canonicalized and whatever
-/// hangs below it left exactly as it arrived.
+/// `path` canonicalized as deep as the filesystem can take it, with
+/// whatever hangs below that left exactly as it arrived.
 ///
 /// What cannot be resolved stays lexical, for [`normalize`]'s reason: a
 /// deleted file has no on-disk path to canonicalize, and it is still a path
-/// of this worktree. A symlink is left as typed too — resolving one would
-/// send an argument naming a link inside the worktree off to wherever it
-/// points, and the link is the path the caller named.
-fn canonical_ancestor(path: &Path) -> PathBuf {
+/// of this worktree.
+///
+/// The last component alone is exempt when it is a symlink: git tracks a
+/// link as a link, so an argument naming one means the link, not its
+/// target. Symlinks *above* it do resolve, and must — a macOS worktree
+/// under `/var` is reached through one, and resolving it is half of what
+/// makes the two spellings meet.
+fn canonicalized(path: &Path) -> PathBuf {
     let mut tail: Vec<&OsStr> = Vec::new();
     let mut current = path;
     loop {
-        if !is_symlink(current)
+        if !current.is_symlink()
             && let Ok(canonical) = current.canonicalize()
         {
             let mut resolved = canonical;
@@ -431,11 +435,6 @@ fn canonical_ancestor(path: &Path) -> PathBuf {
     }
 }
 
-fn is_symlink(path: &Path) -> bool {
-    path.symlink_metadata()
-        .is_ok_and(|meta| meta.file_type().is_symlink())
-}
-
 /// `absolute` as the repo-relative, `/`-separated path every gitchange
 /// surface prints (#122), or `None` where it escapes the worktree.
 ///
@@ -443,13 +442,12 @@ fn is_symlink(path: &Path) -> bool {
 /// they reach here from different sources and the same directory can carry
 /// two spellings: the argument side is built on the cwd the process was
 /// launched with, and `workdir` is libgit2's. The divergence CI confirmed
-/// is Windows 8.3 short names — the cwd arrived as
-/// `C:\Users\RUNNER~1\AppData\Local\Temp\…` where libgit2 gave
-/// `C:/Users/runneradmin/AppData/Local/Temp/…` — one aliased component of
-/// the same directory, which a lexical `strip_prefix` cannot see through.
-/// (The separators differ too, harmlessly: Windows `Path` reads `/` and
-/// `\` alike.) The result was that every path inside the worktree read as
-/// an escape.
+/// is the Windows 8.3 short name: one component of the cwd arrived aliased
+/// (`C:\Users\RUNNER~1\…`) where libgit2 gave it in full
+/// (`C:/Users/runneradmin/…`) — the same directory, and nothing a lexical
+/// `strip_prefix` can see through, so every path inside the worktree read
+/// as an escape. The separators differ too, harmlessly: Windows `Path`
+/// reads `/` and `\` alike.
 ///
 /// Canonicalized at the comparison rather than held in both spellings the
 /// way core's watcher self-loop filter holds its roots: that filter answers
@@ -457,12 +455,14 @@ fn is_symlink(path: &Path) -> bool {
 /// repo-relative path a surface prints, and two spellings would mean
 /// choosing between them.
 fn repo_relative(absolute: &Path, workdir: &Path) -> Option<String> {
-    // The worktree always exists, so this canonicalizes whole; the fallback
-    // is the pre-#181 comparison, which is right whenever it is reachable.
-    let root = workdir
-        .canonicalize()
-        .unwrap_or_else(|_| normalize(workdir));
-    let resolved = canonical_ancestor(absolute);
+    // A worktree is a directory that exists, so the canonical pairing is
+    // what runs. Where it somehow cannot be read, both sides drop back to
+    // lexical together: a canonical argument against a lexical root is the
+    // mismatch this function exists to cure, so the arms are all-or-nothing.
+    let (root, resolved) = match workdir.canonicalize() {
+        Ok(root) => (root, canonicalized(absolute)),
+        Err(_) => (normalize(workdir), absolute.to_owned()),
+    };
     let relative = resolved.strip_prefix(root).ok()?;
     let components: Vec<&str> = relative
         .components()
