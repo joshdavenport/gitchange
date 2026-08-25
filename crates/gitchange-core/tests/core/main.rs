@@ -23,6 +23,7 @@
 //! | `operations`        | the guard's remaining arms — rebase, cherry-pick, am  |
 //! | `apply_corpus`      | the data-driven apply-correctness corpus              |
 //! | `engine`            | real-fs notify wiring: the worktree half and `.git`   |
+//! | `wire`              | the JSON dialect: envelopes, ordering, no advisories  |
 //!
 //! `matcher` and `commit` are directories, split again by mechanism —
 //! start from the table in their `mod.rs`. Cargo only scans the top level
@@ -45,3 +46,4 @@ mod persistence;
 mod read_only_refresh;
 mod refresh;
 mod staging;
+mod wire;

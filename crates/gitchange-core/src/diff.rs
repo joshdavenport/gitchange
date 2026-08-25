@@ -59,8 +59,7 @@ impl FileModes {
     /// mode hunk's material. A `Type` delta stays with the whole-file
     /// hunk (ADR 0017, issue #100), so it reads as no flip here.
     pub(crate) fn flip(&self) -> Option<ModeDelta> {
-        self.delta()
-            .filter(|delta| matches!(delta, ModeDelta::Mode { .. }))
+        self.delta().filter(ModeDelta::is_flip)
     }
 }
 
@@ -127,6 +126,21 @@ impl ModeDelta {
     /// caller re-derives it from a literal.
     pub(crate) fn kind_bits(mode: u32) -> u32 {
         mode & Self::KIND
+    }
+
+    /// Whether this delta is a permission flip — the mode hunk's
+    /// material (ADR 0017). The flavour test stated once, so the sites
+    /// that route by ownership (the mode hunk's material, the wire's
+    /// per-hunk delta) cannot come to disagree about which delta belongs
+    /// to whom.
+    pub(crate) fn is_flip(&self) -> bool {
+        matches!(self, ModeDelta::Mode { .. })
+    }
+
+    /// Whether this delta is the object kind changing — the whole-file
+    /// hunk's, and [`ModeDelta::is_flip`]'s complement.
+    pub(crate) fn is_type_change(&self) -> bool {
+        matches!(self, ModeDelta::Type { .. })
     }
 
     /// The delta between two modes, `None` when they agree.

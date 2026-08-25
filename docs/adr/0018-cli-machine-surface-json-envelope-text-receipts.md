@@ -37,8 +37,8 @@ The envelope carries an integer `schema_version` — a field, not a flag.
 The version is global to the JSON dialect: `status --json` and
 `diff --json` share types (change kinds, stage tokens, the advisory
 shape), so a breaking change to either bumps the one integer for both.
-At build time one wire module owns the constant and the serialisers, so
-the two surfaces cannot drift — core work, still to build.
+One wire module in core owns the constant and the serialisers, so the two
+surfaces cannot drift.
 
 The contract published beside the field: adding a field, adding a member
 to a string-typed enum, and populating a previously-null field are not
