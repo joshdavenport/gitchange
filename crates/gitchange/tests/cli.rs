@@ -137,7 +137,9 @@ fn switch_then_status_round_trip_the_active_marker() {
     let output = gitchange(repo.path(), &["switch", "bugfix"]);
     assert_eq!(output.status.code(), Some(0));
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert_eq!(stdout, "Switched to 'bugfix'\n");
+    // Core's echo, printed verbatim: the receipt's stdout line is
+    // composed beside the write (ADR 0006/0007), never here (#138).
+    assert_eq!(stdout, "switched to 'bugfix'\n");
 
     // A separate invocation sees the persisted marker; the dirty files
     // auto-capture to the newly active changelist.
@@ -163,11 +165,30 @@ fn switch_to_unknown_name_exits_1_with_message_on_stderr() {
 
     let output = gitchange(repo.path(), &["switch", "nope"]);
     assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        output.stdout,
+        Vec::<u8>::new(),
+        "a failed command leaves stdout empty (#122)"
+    );
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
         stderr.contains("no changelist named 'nope'"),
         "unexpected stderr: {stderr}"
     );
+}
+
+#[test]
+fn switching_to_the_already_active_changelist_says_nothing() {
+    // Nothing decided, nothing printed (#122): git's "Already on 'x'"
+    // comfort text is not borrowed, so stdout carries decisions only.
+    let repo = dirty_repo();
+    seed_state(repo.path(), "feature", &["feature"]);
+
+    let output = gitchange(repo.path(), &["switch", "feature"]);
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(output.stdout, Vec::<u8>::new());
+    assert_eq!(output.stderr, Vec::<u8>::new());
 }
 
 #[test]
@@ -258,7 +279,7 @@ fn switch_unassigned_turns_capture_off_and_marks_the_group() {
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        "Switched to 'unassigned'\n"
+        "switched to 'unassigned'\n"
     );
 
     let output = gitchange(repo.path(), &["status"]);
@@ -492,7 +513,7 @@ fn a_hold_released_within_the_budget_never_surfaces() {
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        "Switched to 'bugfix'\n"
+        "switched to 'bugfix'\n"
     );
     assert_eq!(
         String::from_utf8(output.stderr).unwrap(),

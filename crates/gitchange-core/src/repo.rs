@@ -16,10 +16,11 @@ use crate::vocabulary::{ARROW, UNASSIGNED, count_noun};
 /// lazygit-equivalent window, not a full history walk.
 const RECENT_COMMITS_LIMIT: usize = 300;
 
-/// What a fail-soft mutating op did: the transparency echo for the work
-/// actually executed (ADR 0007 — composed here so the TUI and CLI can't
-/// drift, ADR 0006; `None` when nothing applied), plus advisories for
-/// what failed soft.
+/// What a mutating op did: the transparency echo for the work actually
+/// executed (ADR 0007 — composed here so the TUI and CLI can't drift,
+/// ADR 0006; `None` when nothing was decided or applied), plus the
+/// advisories that ride its receipt — what failed soft on a fail-soft
+/// op, and the decisions a bare state write made on its own.
 #[derive(Debug)]
 pub struct OpOutcome {
     pub echo: Option<String>,
@@ -31,6 +32,19 @@ impl OpOutcome {
         Self {
             echo: Some(echo),
             advisories: Vec::new(),
+        }
+    }
+
+    /// A bare state write's outcome: `compose`'s echo when the write
+    /// decided something, silence when it did not (#122 — nothing
+    /// decided says nothing, and the op still succeeded).
+    fn decided(wrote: bool, compose: impl FnOnce() -> String) -> Self {
+        match wrote {
+            true => Self::applied(compose()),
+            false => Self {
+                echo: None,
+                advisories: Vec::new(),
+            },
         }
     }
 }
@@ -597,47 +611,82 @@ impl Repo {
     /// Create a changelist. The active marker stays where it is
     /// (ADR 0015): a caller that wants the new changelist active says so
     /// with [`Repo::switch`].
-    pub fn create_changelist(&self, name: &str) -> Result<(), Error> {
-        self.update_state(|state| state.create(name))
+    pub fn create_changelist(&self, name: &str) -> Result<OpOutcome, Error> {
+        let wrote = self.update_state(|state| state.create(name))?;
+        Ok(OpOutcome::decided(wrote, || {
+            format!("created changelist '{name}'")
+        }))
     }
 
-    /// Rename a changelist, carrying the active marker with it.
-    pub fn rename_changelist(&self, from: &str, to: &str) -> Result<(), Error> {
-        self.update_state(|state| state.rename(from, to))
+    /// Rename a changelist, carrying the active marker with it. A rename
+    /// to the name it already has decides nothing and echoes nothing.
+    pub fn rename_changelist(&self, from: &str, to: &str) -> Result<OpOutcome, Error> {
+        let wrote = self.update_state(|state| state.rename(from, to))?;
+        Ok(OpOutcome::decided(wrote, || {
+            format!("renamed changelist '{from}' {ARROW} '{to}'")
+        }))
     }
 
     /// Delete a changelist, pruning all of its records (ADR 0016).
-    /// Deleting the active one leaves unassigned active.
-    pub fn delete_changelist(&self, name: &str) -> Result<(), Error> {
-        self.update_state(|state| state.delete(name))
+    /// Deleting the active one leaves unassigned active, and says so:
+    /// the marker moving is a decision the caller did not ask for, so it
+    /// rides the receipt as an advisory.
+    pub fn delete_changelist(&self, name: &str) -> Result<OpOutcome, Error> {
+        let mut was_active = false;
+        // Read inside the mutation, so the marker is the one the delete
+        // actually took: the state is loaded under the lock, and a
+        // switch that landed between our decision and the write would
+        // otherwise make this advisory a guess.
+        let wrote = self.update_state(|state| {
+            was_active = state.active.as_deref() == Some(name);
+            state.delete(name)
+        })?;
+        let mut outcome = OpOutcome::decided(wrote, || format!("deleted changelist '{name}'"));
+        if was_active {
+            outcome.advisories.push(Advisory::ActiveChangelistDeleted {
+                changelist: name.into(),
+            });
+        }
+        Ok(outcome)
     }
 
     /// Set the active changelist; `None` is unassigned (ADR 0015's
     /// capture-off). [`target_named`] maps a user-typed name onto
-    /// this argument.
+    /// this argument. Switching to the already-active target decides
+    /// nothing and echoes nothing — git's "Already on" comfort line is
+    /// not borrowed (#122).
     ///
     /// [`target_named`]: crate::target_named
-    pub fn switch(&self, target: Option<&str>) -> Result<(), Error> {
-        self.update_state(|state| state.switch(target))
+    pub fn switch(&self, target: Option<&str>) -> Result<OpOutcome, Error> {
+        let wrote = self.update_state(|state| state.switch(target))?;
+        Ok(OpOutcome::decided(wrote, || {
+            // Unassigned is a switch target, not a changelist, so the
+            // echo names the target alone — "changelist 'unassigned'"
+            // would name one that cannot exist.
+            format!("switched to '{}'", target.unwrap_or(UNASSIGNED))
+        }))
     }
 
     /// One locked load-mutate-save cycle (ADR 0002): fail-fast lock,
     /// atomic replace, nothing persisted when the mutation errors — or
     /// when it changes nothing, so a no-op (releasing already-recordless
-    /// hunks, ADR 0016) never grows or rewrites the state file.
+    /// hunks, ADR 0016) never grows or rewrites the state file. Answers
+    /// whether the state was written, which is exactly what separates an
+    /// op that decided something from one that did not.
     fn update_state(
         &self,
         mutate: impl FnOnce(&mut State) -> Result<(), Error>,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         let dir = self.backend.state_dir();
         let _lock = state_file::lock(&dir)?;
         let state = state_file::load(&dir)?;
         let mut mutated = state.clone();
         mutate(&mut mutated)?;
         if mutated == state {
-            return Ok(());
+            return Ok(false);
         }
-        state_file::save(&dir, &mutated)
+        state_file::save(&dir, &mutated)?;
+        Ok(true)
     }
 }
 

@@ -11,9 +11,11 @@ and buys history for free.
 
 ## The Log panel
 
-- **One chronological stream, two record kinds**: executed git operations
+- **One chronological stream, two record kinds**: executed operations
   (the lazygit-style transparency echo — gitchange's index surgery earns
-  trust by showing its work) and event notices.
+  trust by showing its work, and the bare state writes that move the
+  changelist roster or the active marker echo on the same terms) and
+  event notices.
 - **Three severities**, each with its own tokenised glyph, distinct from
   the staging set (`○●◐◑` mean staging states and nothing else):
   `·` **info** (dim — command echo, routine events), `!` **notice**
@@ -36,8 +38,10 @@ and buys history for free.
 ## Severity mapping
 
 - **notice**: ambiguous-hunk auto-capture (ADR 0001), dormant-record
-  revival ("restored 3 hunks to api-refactor") — automatic membership
-  decisions. Hunks that return *changed* don't revive (exact-match only)
+  revival ("restored 3 hunks to api-refactor"), the active marker falling
+  to unassigned when its changelist is deleted (ADR 0015) — automatic
+  decisions the user did not ask for, membership and the marker alike.
+  Hunks that return *changed* don't revive (exact-match only)
   and auto-capture instead, which emits its own notice — the failure mode
   needs no extra machinery.
 - **info**: soft no-ops (`c` on the all view, `space` on a conflicted

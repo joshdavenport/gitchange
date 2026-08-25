@@ -334,7 +334,7 @@ _Avoid_: message, alert, log level (for severity)
 Core's record of an automatic decision or fail-soft outcome worth
 spot-checking (`Advisory` in `matcher.rs`): auto-capture, entry-unit
 capture, ambiguous overlap, dormant revival, stale hunk, HEAD-move
-dormancy. Carried as data
+dormancy, active-changelist delete. Carried as data
 beside a persisting refresh's snapshot and on op results — never on the
 snapshot itself, which is how the read-only form's filter is structural
 (ADR 0005) — with one canonical message
@@ -347,7 +347,8 @@ _Avoid_: notice (the type — that's a severity), warning
 **Receipt**:
 A mutating CLI command's one-time output: the op's echo on stdout, each
 advisory as a `notice:` line on stderr (#51). The sole delivery of the
-decisions the op's persisting refresh made — nothing replays a discarded
+decisions the op made — its persisting refresh's, or, for a bare state
+write, the ones the write itself produced — nothing replays a discarded
 receipt; the records keep the facts, the receipt carries the narrative.
 Not a parsing contract: agents act on exit codes and re-read state
 through the JSON reads.

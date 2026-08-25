@@ -5,7 +5,9 @@ use std::time::{Duration, Instant};
 use clap::builder::NonEmptyStringValueParser;
 use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand};
 
-use gitchange_core::{ACTIVE_MARKER, ChangedFile, GroupKind, LockHolder, Repo, target_named};
+use gitchange_core::{
+    ACTIVE_MARKER, Advisory, ChangedFile, GroupKind, LockHolder, OpOutcome, Repo, target_named,
+};
 
 /// The prefix every diagnostic this binary writes to stderr carries, so
 /// output piped alongside git's own is attributable at a glance.
@@ -395,14 +397,36 @@ fn report_failure(err: &anyhow::Error) -> u8 {
     }
 }
 
+/// A mutating command's receipt (#122): the op's echo as one line on
+/// stdout — nothing when it decided nothing — and each advisory as a
+/// `notice:` line on stderr, every severity alike (severity is the
+/// presentation layer's, and this surface has one channel for all of
+/// them). Every mutating command answers through here, so no verb
+/// invents its own dressing.
+fn receipt(outcome: OpOutcome) {
+    if let Some(echo) = outcome.echo {
+        println!("{echo}");
+    }
+    print_notices(&outcome.advisories);
+}
+
+/// Core's advisories in this surface's dressing: the `gitchange:` prefix
+/// every diagnostic carries, plus `notice:`, around core's one canonical
+/// message (ADR 0006).
+fn print_notices(advisories: &[Advisory]) {
+    for advisory in advisories {
+        eprintln!("{DIAG} notice: {}", advisory.message());
+    }
+}
+
 /// The All view as text — core's grouping (`Snapshot::groups`, ADR 0006)
 /// rendered line by line.
 fn status() -> anyhow::Result<()> {
     let repo = open_repo()?;
     let refreshed = repo.refresh()?;
-    for advisory in &refreshed.advisories {
-        eprintln!("{DIAG} notice: {}", advisory.message());
-    }
+    // A read that advises at all is the built persisting refresh showing
+    // through; #156 flips it to the read-only form and this call goes.
+    print_notices(&refreshed.advisories);
     for group in refreshed.snapshot.groups() {
         match &group.kind {
             // Quarantined unmerged paths (ADR 0007) — outside gitchange's
@@ -445,13 +469,13 @@ fn print_files(files: &[&ChangedFile]) {
 }
 
 /// `switch <name>`, where `unassigned` is a valid target: capture and
-/// ambiguous-edit routing then flow to unassigned (ADR 0015). One
-/// sentence covers both, since "changelist 'unassigned'" would name a
-/// changelist that cannot exist.
+/// ambiguous-edit routing then flow to unassigned (ADR 0015). The line
+/// is core's echo, not this frontend's: the marker write and the
+/// sentence describing it are composed in one place (ADR 0006/0007), so
+/// a switch reads the same in the Log panel and on stdout.
 fn switch(name: &str) -> anyhow::Result<()> {
     let repo = open_repo()?;
-    repo.switch(target_named(name))?;
-    println!("Switched to '{name}'");
+    receipt(repo.switch(target_named(name))?);
     Ok(())
 }
 

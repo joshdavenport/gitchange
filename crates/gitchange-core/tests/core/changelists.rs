@@ -217,6 +217,88 @@ fn delete_unknown_name_is_an_error() {
 }
 
 #[test]
+fn the_bare_write_ops_echo_the_decision_they_made() {
+    // ADR 0006/0007: the echo is composed here, beside the write, so no
+    // frontend spells one of these lines itself and drifts.
+    let fixture = RepoFixture::new();
+    let repo = repo(&fixture);
+
+    let created = repo.create_changelist("feature").unwrap();
+    assert_eq!(
+        created.echo.as_deref(),
+        Some("created changelist 'feature'")
+    );
+
+    let switched = repo.switch(Some("feature")).unwrap();
+    assert_eq!(switched.echo.as_deref(), Some("switched to 'feature'"));
+
+    let renamed = repo.rename_changelist("feature", "feature-x").unwrap();
+    assert_eq!(
+        renamed.echo.as_deref(),
+        Some("renamed changelist 'feature' → 'feature-x'")
+    );
+
+    // Unassigned is a switch target like any other (ADR 0015), and the
+    // echo names it as the target rather than as a changelist.
+    let switched = repo.switch(None).unwrap();
+    assert_eq!(switched.echo.as_deref(), Some("switched to 'unassigned'"));
+
+    let deleted = repo.delete_changelist("feature-x").unwrap();
+    assert_eq!(
+        deleted.echo.as_deref(),
+        Some("deleted changelist 'feature-x'")
+    );
+    assert!(deleted.advisories.is_empty(), "the marker was elsewhere");
+}
+
+#[test]
+fn an_op_that_decides_nothing_echoes_nothing() {
+    // #122: silence, not a comfort line — git's "Already on 'x'" is not
+    // borrowed, so a caller reading stdout sees a decision or nothing.
+    let fixture = RepoFixture::new();
+    let repo = repo(&fixture);
+    repo.create_changelist("feature").unwrap();
+    repo.switch(Some("feature")).unwrap();
+
+    let switched = repo.switch(Some("feature")).unwrap();
+    assert_eq!(switched.echo, None, "already the active changelist");
+
+    let renamed = repo.rename_changelist("feature", "feature").unwrap();
+    assert_eq!(renamed.echo, None, "renamed to the name it already has");
+
+    // Switching to unassigned from unassigned is the same nothing, on
+    // the target that has no changelist behind it.
+    repo.switch(None).unwrap();
+    assert_eq!(repo.switch(None).unwrap().echo, None);
+}
+
+#[test]
+fn deleting_the_active_changelist_notices_that_the_marker_moved() {
+    // The marker moved without being asked to (ADR 0015), so the delete's
+    // receipt says so — one canonical message, composed here (ADR 0006).
+    let fixture = RepoFixture::new();
+    let repo = repo(&fixture);
+    repo.create_changelist("feature").unwrap();
+    repo.switch(Some("feature")).unwrap();
+
+    let deleted = repo.delete_changelist("feature").unwrap();
+
+    assert_eq!(
+        deleted.echo.as_deref(),
+        Some("deleted changelist 'feature'")
+    );
+    let messages: Vec<String> = deleted
+        .advisories
+        .iter()
+        .map(|advisory| advisory.message())
+        .collect();
+    assert_eq!(
+        messages,
+        vec!["'feature' was the active changelist — unassigned is active now"]
+    );
+}
+
+#[test]
 fn state_file_is_pretty_json_with_schema_version_at_the_git_path() {
     let fixture = RepoFixture::new();
     let repo = repo(&fixture);

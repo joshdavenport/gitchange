@@ -246,6 +246,50 @@ fn n_creates_a_changelist_and_switches_to_it() {
 }
 
 #[test]
+fn the_bare_write_ops_join_the_logs_echo_stream() {
+    // #138: the changelist ops and switch write state and nothing else,
+    // but they still decide something — so they echo through the same
+    // path index surgery does, core composing every line (ADR 0006/0007).
+    let (_fixture, repo) = repo_with_commit();
+    let mut app = App::new("repo");
+
+    // `n` is create-then-switch, so one keypress leaves two lines.
+    run_op(&repo, &mut app, Op::CreateChangelist { name: "wip".into() });
+    run_op(
+        &repo,
+        &mut app,
+        Op::RenameChangelist {
+            from: "wip".into(),
+            to: "wip-2".into(),
+        },
+    );
+    run_op(
+        &repo,
+        &mut app,
+        Op::DeleteChangelist {
+            name: "wip-2".into(),
+        },
+    );
+
+    assert!(app.error_modal.is_none());
+    assert_eq!(
+        entries(&app, Severity::Info),
+        vec![
+            "created changelist 'wip'",
+            "switched to 'wip'",
+            "renamed changelist 'wip' → 'wip-2'",
+            "deleted changelist 'wip-2'",
+        ]
+    );
+    // The delete took the active marker with it — a decision nobody
+    // asked for, so it lands at `!` beside the echo.
+    assert_eq!(
+        entries(&app, Severity::Notice),
+        vec!["'wip-2' was the active changelist — unassigned is active now"]
+    );
+}
+
+#[test]
 fn s_on_the_unassigned_row_switches_capture_off() {
     // ADR 0015: `s` on unassigned is capture-off, and the executor's
     // half of it is one ordinary switch with `None` as the target.

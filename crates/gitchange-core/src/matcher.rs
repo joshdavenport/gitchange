@@ -12,14 +12,15 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use crate::diff::ChangeKind;
 use crate::state::{MembershipRecord, RecordIdentity};
 use crate::universe::{ChangedFile, Hunk, HunkIdentity, ranges_overlap};
-use crate::vocabulary::{ARROW, count_noun, holder_label};
+use crate::vocabulary::{ARROW, UNASSIGNED, count_noun, holder_label};
 
 /// Dormant records prune after 14 days (ADR 0002).
 const DORMANT_TTL_SECS: u64 = 14 * 24 * 60 * 60;
 
-/// An automatic membership decision worth spot-checking, surfaced as
-/// data on the snapshot (rendered by the CLI as stderr lines, by the TUI
-/// Log panel later).
+/// An automatic decision worth spot-checking — membership mostly, and
+/// the marker move a delete makes — surfaced as data beside a persisting
+/// refresh's snapshot and on op outcomes (rendered by the CLI as stderr
+/// notice lines, by the TUI in the Log panel).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Advisory {
     /// A new hunk overlapped records from two or more changelists; it was
@@ -88,6 +89,14 @@ pub enum Advisory {
         /// by hand.
         changelists: Vec<String>,
     },
+    /// A delete took the active changelist with it, so unassigned is
+    /// active now (ADR 0015 — a neighbour is never promoted). The one
+    /// automatic decision a delete makes, and the only one of these an op
+    /// rather than a refresh raises.
+    ActiveChangelistDeleted {
+        /// The deleted changelist that held the marker.
+        changelist: String,
+    },
 }
 
 impl Advisory {
@@ -144,6 +153,12 @@ impl Advisory {
                 format!(
                     "hunk at {path}:{new_start} changed since the last refresh; nothing applied"
                 )
+            }
+            // No forecast of where the next hunks land (#122): the
+            // marker's new home is the fact, and what capture does with
+            // it is the next refresh's to report.
+            Advisory::ActiveChangelistDeleted { changelist } => {
+                format!("'{changelist}' was the active changelist — {UNASSIGNED} is active now")
             }
             Advisory::HeadMoveDormancy { path, changelists } => {
                 let list = quoted_list(changelists);

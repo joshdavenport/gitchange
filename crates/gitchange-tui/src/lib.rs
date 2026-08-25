@@ -230,40 +230,39 @@ fn event_loop<B: Backend>(
     }
 }
 
-/// Execute one sync op. Successful index surgery echoes at `·` — core
-/// composes the echo alongside the work it executed (ADR 0006/0007),
-/// this frontend only assigns the channel — fail-soft advisories land
-/// at `!`, and hard failures take the error-modal contract.
+/// Execute one sync op. What it decided echoes at `·` — core composes
+/// the echo alongside the work it executed (ADR 0006/0007), this
+/// frontend only assigns the channel — advisories land at `!`, and hard
+/// failures take the error-modal contract.
 fn run_op(repo: &Repo, app: &mut App, op: Op) {
-    let done = |app: &mut App, title: &str, result: Result<(), gitchange_core::Error>| {
-        if let Err(error) = result {
-            app.show_error(title, error.to_string());
-        }
-    };
     match op {
         // `n` is create-then-switch (`Op::CreateChangelist`): core
         // creates without moving the marker, so the switch is a second
-        // op. A failed create leaves the marker alone.
+        // op. A failed create leaves the marker alone. Both echo, so the
+        // Log records the two decisions the one keypress made.
         Op::CreateChangelist { name } => {
-            if let Err(error) = repo.create_changelist(&name) {
-                app.show_error(CREATE_CHANGELIST_FAILED, error.to_string());
-                return;
+            match repo.create_changelist(&name) {
+                Ok(outcome) => log_outcome(app, outcome),
+                Err(error) => {
+                    app.show_error(CREATE_CHANGELIST_FAILED, error.to_string());
+                    return;
+                }
             }
-            done(app, SWITCH_CHANGELIST_FAILED, repo.switch(Some(&name)));
+            op_outcome(app, SWITCH_CHANGELIST_FAILED, repo.switch(Some(&name)));
         }
-        Op::RenameChangelist { from, to } => done(
+        Op::RenameChangelist { from, to } => op_outcome(
             app,
             "Rename changelist failed",
             repo.rename_changelist(&from, &to),
         ),
         Op::DeleteChangelist { name } => {
-            done(
+            op_outcome(
                 app,
                 "Delete changelist failed",
                 repo.delete_changelist(&name),
             );
         }
-        Op::SetActive { changelist } => done(
+        Op::SetActive { changelist } => op_outcome(
             app,
             SWITCH_CHANGELIST_FAILED,
             repo.switch(changelist.as_deref()),
@@ -314,11 +313,13 @@ fn run_op(repo: &Repo, app: &mut App, op: Op) {
                     // A name that already exists is a valid target: fall
                     // through to the assign rather than stranding it
                     // behind the create.
-                    if let Err(error) = repo.create_changelist(name)
-                        && !matches!(error, gitchange_core::Error::ChangelistExists { .. })
-                    {
-                        app.show_error(CREATE_CHANGELIST_FAILED, error.to_string());
-                        return;
+                    match repo.create_changelist(name) {
+                        Ok(outcome) => log_outcome(app, outcome),
+                        Err(gitchange_core::Error::ChangelistExists { .. }) => {}
+                        Err(error) => {
+                            app.show_error(CREATE_CHANGELIST_FAILED, error.to_string());
+                            return;
+                        }
                     }
                     Some(name.as_str())
                 }
@@ -329,19 +330,24 @@ fn run_op(repo: &Repo, app: &mut App, op: Op) {
     }
 }
 
-/// A fail-soft op's outcome: core's echo at `·` for what applied
-/// (`None` when nothing did), `!` advisories for what failed soft, the
-/// modal otherwise.
+/// A mutating op's outcome: core's echo at `·` for what it decided
+/// (`None` when it decided nothing), `!` advisories for what failed soft
+/// or moved on its own, the modal otherwise.
 fn op_outcome(app: &mut App, title: &str, result: Result<OpOutcome, gitchange_core::Error>) {
     match result {
-        Ok(outcome) => {
-            if let Some(echo) = outcome.echo {
-                app.push_log(Severity::Info, echo);
-            }
-            app.push_advisories(&outcome.advisories);
-        }
+        Ok(outcome) => log_outcome(app, outcome),
         Err(error) => app.show_error(title, error.to_string()),
     }
+}
+
+/// A successful outcome onto the Log panel's two channels — core's
+/// phrasing throughout (ADR 0006), this frontend assigning only the
+/// severity (ADR 0007).
+fn log_outcome(app: &mut App, outcome: OpOutcome) {
+    if let Some(echo) = outcome.echo {
+        app.push_log(Severity::Info, echo);
+    }
+    app.push_advisories(&outcome.advisories);
 }
 
 /// Execute one commit-flow IO step (ticket #33, ADR 0004); outcomes go
@@ -355,10 +361,7 @@ fn run_commit_step(repo: &Repo, app: &mut App, step: CommitStep) {
             // fail-soft per hunk), then fall into the dialog.
             match repo.stage_all(changelist.as_deref()) {
                 Ok(outcome) => {
-                    if let Some(echo) = outcome.echo {
-                        app.push_log(Severity::Info, echo);
-                    }
-                    app.push_advisories(&outcome.advisories);
+                    log_outcome(app, outcome);
                     open_commit_dialog(repo, app, changelist);
                 }
                 Err(error) => app.show_error(COMMIT_FAILED, error.to_string()),
@@ -371,12 +374,7 @@ fn run_commit_step(repo: &Repo, app: &mut App, step: CommitStep) {
             // the payload is re-derived so the drift guard compares the
             // aligned content, not the stale confirmation.
             match repo.align(draft.changelist.as_deref()) {
-                Ok(outcome) => {
-                    if let Some(echo) = outcome.echo {
-                        app.push_log(Severity::Info, echo);
-                    }
-                    app.push_advisories(&outcome.advisories);
-                }
+                Ok(outcome) => log_outcome(app, outcome),
                 Err(error) => {
                     app.show_error(COMMIT_FAILED, error.to_string());
                     app.restore_commit_dialog(draft);
