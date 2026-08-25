@@ -11,6 +11,7 @@ use gitchange_core::{
     Snapshot, SweepOutcome, diff_envelope, status_envelope, target_named,
 };
 
+mod assign;
 mod diff;
 mod scope;
 mod staging;
@@ -148,22 +149,9 @@ enum Command {
         rename: Option<Vec<String>>,
     },
     /// Assign hunks to a changelist, or release them to unassigned
-    #[command(group(ArgGroup::new("target").required(true)))]
     Assign {
-        /// Paths, or single hunks as `<path>:<hunk-id>`
-        #[arg(value_name = "path[:hunk-id]", required = true)]
-        paths: Vec<String>,
         #[command(flatten)]
-        containing: Containing,
-        /// Take hunks other changelists own, not just unassigned ones
-        #[arg(long)]
-        take_owned: bool,
-        /// The changelist to own the hunks
-        #[arg(long, value_name = "changelist", group = "target")]
-        to: Option<String>,
-        /// Release the hunks to unassigned
-        #[arg(long, group = "target")]
-        unassign: bool,
+        scope: AssignScope,
     },
     /// Stage a changelist's hunks: all of them, or the addressed ones
     // The alias is vocabulary — git's staging verb — not an abbreviation,
@@ -256,6 +244,28 @@ impl Command {
     fn restore_staged(staged: bool, rest: &[String]) -> bool {
         staged || rest.iter().any(|arg| arg == "--staged")
     }
+}
+
+/// `assign`'s grammar (#140): at least one path, and exactly one target —
+/// `--to <changelist>` or its `--unassign` sugar, neither optional and never
+/// both, which clap raises as exit 2 either way.
+#[derive(Args)]
+#[command(group(ArgGroup::new("target").required(true)))]
+struct AssignScope {
+    /// Paths, or single hunks as `<path>:<hunk-id>`
+    #[arg(value_name = "path[:hunk-id]", required = true)]
+    paths: Vec<String>,
+    #[command(flatten)]
+    containing: Containing,
+    /// Take hunks other changelists own, not just unassigned ones
+    #[arg(long)]
+    take_owned: bool,
+    /// The changelist to own the hunks
+    #[arg(long, value_name = "changelist", group = "target")]
+    to: Option<String>,
+    /// Release the hunks to unassigned
+    #[arg(long, group = "target")]
+    unassign: bool,
 }
 
 /// `add`'s grammar, which `unstage` carries verbatim: one symmetric
@@ -360,7 +370,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Some(Command::Switch { name }) => with_lock_retry(|| switch(&name)),
         Some(Command::Refresh) => not_implemented("refresh"),
         Some(Command::Changelist { .. }) => not_implemented("changelist"),
-        Some(Command::Assign { .. }) => not_implemented("assign"),
+        Some(Command::Assign { scope }) => with_lock_retry(|| assign(&scope)),
         Some(Command::Add { scope }) => with_lock_retry(|| staging(Staging::Add, &scope)),
         Some(Command::Unstage { scope }) => with_lock_retry(|| staging(Staging::Unstage, &scope)),
         Some(Command::Commit { .. }) => not_implemented("commit"),
@@ -677,20 +687,64 @@ fn staging(verb: Staging, scope: &StagingScope) -> anyhow::Result<()> {
     // swallow the decisions this invocation made on the way to it.
     print_notices(&refreshed.advisories);
     let sweep = staging::resolve(verb.verb(), scope, &refreshed.snapshot, &workdir)?;
-    let swept = verb.sweep(&repo, &refreshed.snapshot, &sweep)?;
-    // Staleness at apply fails soft per hunk, but a command that moved
-    // nothing it was asked to move is a refusal (#145) — the split is on
-    // whether any hunk landed, not on whether any was skipped.
-    if swept.moved_nothing() {
-        print_notices(&swept.receipt.advisories);
+    swept(
+        verb.sweep(&repo, &refreshed.snapshot, &sweep)?,
+        verb.past_tense(),
+    )
+}
+
+/// A sweep's answer: the receipt, or the refusal a sweep that moved nothing
+/// earns. Staleness at apply fails soft per hunk, but a command that moved
+/// nothing it was asked to move is a refusal (#145/#147) — the split is on
+/// whether any hunk landed, not on whether any was skipped, and it is the
+/// same split for every sweeping verb, so they share one answer. `past_tense`
+/// is the verb's own word for what did not happen.
+fn swept(outcome: SweepOutcome, past_tense: &str) -> anyhow::Result<()> {
+    if outcome.moved_nothing() {
+        print_notices(&outcome.receipt.advisories);
         anyhow::bail!(
-            "nothing {} — every hunk in the scope went stale; re-read with \
-             'gitchange diff' and retry",
-            verb.past_tense()
+            "nothing {past_tense} — every hunk in the scope went stale; re-read \
+             with 'gitchange diff' and retry"
         );
     }
-    receipt(swept.receipt);
+    receipt(outcome.receipt);
     Ok(())
+}
+
+/// `assign <path>... (--to <changelist> | --unassign)` (#147): the
+/// membership verb — the manual counterpart to the active changelist's
+/// automatic capture, and the escalation ladder's first rung.
+///
+/// One persisting refresh per invocation, and everything downstream reads
+/// its snapshot: validation, so a refusal is a complete instruction about
+/// one state of the repo, and the sweep, so the op acts on the membership
+/// its own capture just decided. That has a two-sided consequence worth
+/// knowing (#147): capture-on, a just-edited hunk arrives *already* captured
+/// into the active changelist, so assigning it there is satisfied and
+/// assigning it elsewhere trips the ownership guard naming the active
+/// changelist as owner — both facts, and the capture advisory, in one round
+/// trip.
+///
+/// Membership and staging are separate axes (ADR 0003): a sweep takes the
+/// path's whole universe, staged hunks included, and moves nothing in or out
+/// of the index.
+fn assign(scope: &AssignScope) -> anyhow::Result<()> {
+    let repo = open_repo()?;
+    let workdir = workdir(&repo)?;
+    let refreshed = repo.refresh()?;
+    // Delivered before anything can refuse, and so exactly once: the capture
+    // is already written, and a validation refusal must not swallow the
+    // decisions this invocation made on the way to it.
+    print_notices(&refreshed.advisories);
+    let assignment = assign::resolve(scope, &refreshed.snapshot, &workdir)?;
+    swept(
+        repo.assign_sweep(
+            &refreshed.snapshot,
+            &assignment.paths,
+            assignment.target.as_deref(),
+        )?,
+        assignment.past_tense(),
+    )
 }
 
 /// The worktree every path argument resolves against. A bare repository —

@@ -241,15 +241,15 @@ fn nothing_to_do(verb: &str, path: &str) -> String {
     format!("'{path}' has no changes — nothing to {verb}")
 }
 
-/// The all-or-nothing refusal: every offender in argument order, and the
-/// grammar note where there is one — on its own line at the end, which is
-/// where a reader looks for what to do rather than what went wrong. Inside
-/// the `; `-joined list it would read as one more offender, and split the
-/// list across a line break.
+/// The shared all-or-nothing refusal plus the grammar note where there is
+/// one — on its own line at the end, which is where a reader looks for what
+/// to do rather than what went wrong. Inside the `; `-joined list it would
+/// read as one more offender, and split the list across a line break.
 fn refusal(offenders: &[String], teach: Option<&str>) -> String {
+    let offenders = scope::refusal(offenders);
     match teach {
-        Some(teach) => format!("{}\n{teach}", offenders.join("; ")),
-        None => offenders.join("; "),
+        Some(teach) => format!("{offenders}\n{teach}"),
+        None => offenders,
     }
 }
 
@@ -341,19 +341,8 @@ fn unowned(
     Some(format!(
         "no hunks of '{path}' belong to {} — they belong to {}",
         holder_label(changelist),
-        owners(file)
+        // Every holder, unassigned included: whoever holds them is who the
+        // retry has to name.
+        scope::holders(file, |_| true).join(", ")
     ))
-}
-
-/// Who owns a file's hunks, each holder named once in file order, in the
-/// spelling every holder line uses.
-fn owners(file: &ChangedFile) -> String {
-    let mut holders: Vec<String> = Vec::new();
-    for hunk in &file.hunks {
-        let label = holder_label(hunk.changelist.as_deref());
-        if !holders.contains(&label) {
-            holders.push(label);
-        }
-    }
-    holders.join(", ")
 }

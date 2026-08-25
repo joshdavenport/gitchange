@@ -19,10 +19,12 @@
 //! | `diff`       | `diff`'s scope resolution and its two faces              |
 //! | `add`        | `add`'s sweep, its refusals, and its receipt             |
 //! | `unstage`    | the mirror: the `●`-only sweep and its kept-`◑` notices  |
+//! | `assign`     | membership: the path sweep, the ownership guard, release |
 
 mod support;
 
 mod add;
+mod assign;
 mod diff;
 mod grammar;
 mod invocation;

@@ -125,9 +125,12 @@ Placing hunks under a changelist's ownership by hand — the manual
 counterpart to the active changelist's automatic capture. The target is
 any changelist or `unassigned`; as a target, `unassigned` means release
 (ADR 0016): the hunks' records are deleted, and unless capture is off
-the next refresh captures them into the active changelist. Scope
-escalates in three steps: the selected hunk, a file's unassigned hunks,
-all of a file's hunks including those owned by other changelists.
+the next refresh captures them into the active changelist. In the TUI,
+scope escalates in three steps: the selected hunk, a file's unassigned
+hunks, all of a file's hunks including those owned by other changelists.
+The CLI states its scope instead (§Op parity): a path is a **membership
+sweep** and the third step is the named `--take-owned`, so taking another
+changelist's hunks is always said out loud.
 _Avoid_: move, add (git's `add` is staging), sort, tag
 
 **Foreign**:
@@ -234,15 +237,18 @@ rule about keybindings, not ops; the CLI's explicit-direction `add` and
 `unstage` verbs are separate ops by design), whole-file stage
 
 **Sweep**:
-A staging op over every hunk in a scope rather than one named hunk: a whole
-changelist (or `unassigned`), or that changelist narrowed to some of its
-**file rows**. Always ownership-scoped — a sweep moves only hunks the named
-changelist owns, which is why the staging verbs need no cross-ownership
-override. Direction is the caller's, not the current state's: the stage
-direction takes `○` and `◑`, the unstage direction takes `●` only — and
-names each `◑` it kept on the receipt, with both ways to move it, so the
-residue is never silent. A scope
-already in the target state is satisfied rather than refused, and a
+An op over every hunk in a scope rather than one named hunk. A **staging
+sweep**'s scope is a whole changelist (or `unassigned`), or that changelist
+narrowed to some of its **file rows**, and it is always ownership-scoped —
+it moves only hunks the named changelist owns, which is why the staging
+verbs need no cross-ownership override. A **membership sweep**'s scope is a
+path: `assign <path>` takes that path's whole universe whoever owns it, so
+the taking is guarded rather than scoped — default-on, and the override is
+the named `--take-owned` (ADR 0015). Direction is the caller's, not the
+current state's: the stage direction takes `○` and `◑`, the unstage
+direction takes `●` only — and names each `◑` it kept on the receipt,
+with both ways to move it, so the residue is never silent. A scope already
+in the target state is satisfied rather than refused, and a
 **stale action** discovered at apply fails soft per hunk with the skips
 counted on the receipt. Both frontends sweep — the **stage toggle** at
 Files-panel and Changelists-panel scope, `add`/`unstage` at the same two

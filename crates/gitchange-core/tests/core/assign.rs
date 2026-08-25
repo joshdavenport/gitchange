@@ -511,3 +511,185 @@ fn the_entry_unit_holds_across_unstaged_content() {
         vec![Some("chores".into()), Some("chores".into())]
     );
 }
+
+// --- the CLI's assign sweep (#147) ------------------------------------------
+// `Repo::assign_sweep` is the CLI's primitive: the caller's own persisting
+// refresh hands it the snapshot, so validation and application see one state.
+// What lands here rather than at the binary seam is the fail-soft split, which
+// needs a worktree edit *between* the snapshot and the apply — a mid-command
+// race the binary seam cannot inject (ADR 0008).
+
+/// Two changed files carrying three hunks between them, all unassigned
+/// (capture off), with 'chores' as the target: the shape a multi-path sweep
+/// needs.
+fn sweep_fixture() -> (RepoFixture, Repo, Snapshot) {
+    let fixture = RepoFixture::new();
+    fixture
+        .write("a.txt", &numbered(30, &[]))
+        .write("b.txt", &numbered(30, &[]))
+        .commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("chores").unwrap();
+    fixture
+        .write("a.txt", &numbered(30, &[(5, "five!"), (25, "twentyfive!")]))
+        .write("b.txt", &numbered(30, &[(5, "b five!")]));
+    let snapshot = repo.refresh().unwrap().snapshot;
+    (fixture, repo, snapshot)
+}
+
+/// The sweep's paths, as the CLI's path resolution hands them over.
+fn paths(paths: &[&str]) -> Vec<String> {
+    paths.iter().map(|path| (*path).to_owned()).collect()
+}
+
+#[test]
+fn an_assign_sweep_takes_every_hunk_of_the_named_paths() {
+    let (_fixture, repo, snapshot) = sweep_fixture();
+
+    let swept = repo
+        .assign_sweep(&snapshot, &paths(&["a.txt", "b.txt"]), Some("chores"))
+        .unwrap();
+
+    assert_eq!((swept.moved, swept.skipped), (3, 0));
+    assert_eq!(
+        swept.receipt.echo.as_deref(),
+        Some("assigned 3 hunks → 'chores'"),
+        "one echo for the invocation, however many paths it named"
+    );
+    let after = repo.refresh().unwrap().snapshot;
+    assert_eq!(
+        owners(&after, "a.txt"),
+        vec![Some("chores".into()), Some("chores".into())]
+    );
+    assert_eq!(owners(&after, "b.txt"), vec![Some("chores".into())]);
+}
+
+#[test]
+fn a_repeated_assign_sweep_is_satisfied_rather_than_counted_again() {
+    let (_fixture, repo, snapshot) = sweep_fixture();
+    repo.assign_sweep(&snapshot, &paths(&["a.txt"]), Some("chores"))
+        .unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
+
+    let swept = repo
+        .assign_sweep(&snapshot, &paths(&["a.txt"]), Some("chores"))
+        .unwrap();
+
+    assert_eq!((swept.moved, swept.skipped), (0, 0));
+    assert!(
+        !swept.moved_nothing(),
+        "nothing needed to move, which is a success — the zero it shares with \
+         the wholly-stale sweep below is not the same answer"
+    );
+    assert_eq!(
+        swept.receipt.echo.as_deref(),
+        Some("nothing to assign — every hunk named already belongs to 'chores'")
+    );
+}
+
+#[test]
+fn a_release_sweep_counts_what_it_released_and_names_unassigned() {
+    let (fixture, repo, snapshot) = sweep_fixture();
+    repo.assign_sweep(&snapshot, &paths(&["b.txt"]), Some("chores"))
+        .unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
+
+    let swept = repo
+        .assign_sweep(&snapshot, &paths(&["b.txt"]), None)
+        .unwrap();
+
+    assert_eq!((swept.moved, swept.skipped), (1, 0));
+    assert_eq!(
+        swept.receipt.echo.as_deref(),
+        Some("released 1 hunk → unassigned")
+    );
+    assert_eq!(
+        stored_owners(&fixture),
+        Vec::<serde_json::Value>::new(),
+        "the release is recordless (ADR 0016): no parking spot was written"
+    );
+}
+
+#[test]
+fn a_partly_stale_assign_sweep_counts_its_skips_in_the_echo() {
+    let (fixture, repo, snapshot) = sweep_fixture();
+    let stale_start = snapshot.files[0].hunks[0].new_start;
+    // The worktree moves on after the snapshot the sweep validated against:
+    // a.txt's first hunk no longer exists in the live tree.
+    fixture.write(
+        "a.txt",
+        &numbered(30, &[(5, "five, changed!"), (25, "twentyfive!")]),
+    );
+
+    let swept = repo
+        .assign_sweep(&snapshot, &paths(&["a.txt"]), Some("chores"))
+        .unwrap();
+
+    assert_eq!((swept.moved, swept.skipped), (1, 1));
+    assert!(
+        !swept.moved_nothing(),
+        "one hunk landed, so the CLI's split answers success with the skips counted"
+    );
+    assert_eq!(
+        swept.receipt.echo.as_deref(),
+        Some("assigned 1 of 2 hunks (1 skipped as stale) → 'chores'"),
+        "the count is on stdout so a harness that drops stderr still re-reads"
+    );
+    assert_eq!(
+        swept.receipt.advisories,
+        vec![Advisory::StaleHunk {
+            path: "a.txt".into(),
+            new_start: stale_start,
+        }]
+    );
+    let after = repo.refresh().unwrap().snapshot;
+    assert_eq!(
+        owners(&after, "a.txt"),
+        vec![None, Some("chores".into())],
+        "the hunk that was still there moved; the stale one did not"
+    );
+}
+
+#[test]
+fn a_wholly_stale_assign_sweep_moves_nothing_and_says_so() {
+    let (fixture, repo, snapshot) = sweep_fixture();
+    // Both of a.txt's hunks vanish under the snapshot's feet.
+    fixture.write("a.txt", &numbered(30, &[]));
+
+    let swept = repo
+        .assign_sweep(&snapshot, &paths(&["a.txt"]), Some("chores"))
+        .unwrap();
+
+    assert_eq!((swept.moved, swept.skipped), (0, 2));
+    assert!(
+        swept.moved_nothing(),
+        "nothing the caller asked for moved — the CLI answers that with a refusal"
+    );
+    assert_eq!(swept.receipt.advisories.len(), 2);
+    let after = repo.refresh().unwrap().snapshot;
+    assert!(after.files_in(Some("chores")).is_empty());
+}
+
+#[test]
+fn a_partly_stale_release_sweep_counts_its_skips_too() {
+    // The release direction's own words on the same split: a release that
+    // skipped a hunk says so in the count, and it says *released*.
+    let (fixture, repo, snapshot) = sweep_fixture();
+    repo.assign_sweep(&snapshot, &paths(&["a.txt"]), Some("chores"))
+        .unwrap();
+    let snapshot = repo.refresh().unwrap().snapshot;
+    fixture.write(
+        "a.txt",
+        &numbered(30, &[(5, "five, changed!"), (25, "twentyfive!")]),
+    );
+
+    let swept = repo
+        .assign_sweep(&snapshot, &paths(&["a.txt"]), None)
+        .unwrap();
+
+    assert_eq!((swept.moved, swept.skipped), (1, 1));
+    assert_eq!(
+        swept.receipt.echo.as_deref(),
+        Some("released 1 of 2 hunks (1 skipped as stale) → unassigned")
+    );
+}

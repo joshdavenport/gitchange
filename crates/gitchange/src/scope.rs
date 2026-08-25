@@ -14,7 +14,7 @@
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
-use gitchange_core::{ChangedFile, Hunk, HunkId, Snapshot, UNASSIGNED};
+use gitchange_core::{ChangedFile, Hunk, HunkId, Snapshot, UNASSIGNED, holder_label};
 
 /// One resolved `<path>[:<hunk-id>]` argument: the path in the spelling
 /// every gitchange surface prints (repo-relative, `/`-separated), plus the
@@ -200,9 +200,35 @@ pub fn resolve_paths<'a>(
 ) -> anyhow::Result<Vec<PathArg>> {
     let (resolved, offenders) = locate_paths(tokens, snapshot, workdir);
     if !offenders.is_empty() {
-        anyhow::bail!(offenders.join("; "));
+        anyhow::bail!(refusal(&offenders));
     }
     Ok(resolved)
+}
+
+/// The all-or-nothing refusal: every offender in argument order, one line.
+/// Beside [`locate_paths`], which is where offenders come from, so the
+/// verbs that add classes of their own join the list the same way.
+pub fn refusal(offenders: &[String]) -> String {
+    offenders.join("; ")
+}
+
+/// The holders of `file`'s hunks that `keep` accepts, each named once in
+/// file order, in the spelling every holder line uses (`None` is
+/// unassigned). What a refusal prints when the answer to "whose hunks are
+/// these?" is the retry the caller needs.
+pub fn holders(file: &ChangedFile, keep: impl Fn(Option<&str>) -> bool) -> Vec<String> {
+    let mut holders: Vec<String> = Vec::new();
+    for hunk in &file.hunks {
+        let owner = hunk.changelist.as_deref();
+        if !keep(owner) {
+            continue;
+        }
+        let label = holder_label(owner);
+        if !holders.contains(&label) {
+            holders.push(label);
+        }
+    }
+    holders
 }
 
 /// [`resolve_paths`] with the refusal left to the caller: what resolved,

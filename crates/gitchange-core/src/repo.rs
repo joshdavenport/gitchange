@@ -10,7 +10,7 @@ use crate::snapshot::Snapshot;
 use crate::state::State;
 use crate::state_file;
 use crate::universe::{self, ChangedFile, Hunk, HunkStage};
-use crate::vocabulary::{ARROW, UNASSIGNED, count_noun};
+use crate::vocabulary::{ARROW, UNASSIGNED, count_noun, holder_label};
 
 /// How far back the snapshot's Commits panel material reaches — a plain
 /// lazygit-equivalent window, not a full history walk.
@@ -701,6 +701,97 @@ impl Repo {
         hunks: &[Hunk],
         target: Option<&str>,
     ) -> Result<OpOutcome, Error> {
+        let tally = self.assign_over(path, hunks, target)?;
+        let echo = (tally.moved > 0).then(|| match target {
+            Some(name) => format!(
+                "{} {} — {path} {ARROW} '{name}'",
+                assign_words(target).past,
+                count_noun(tally.moved, "hunk")
+            ),
+            None => format!(
+                "{} {} — {path}",
+                assign_words(target).past,
+                count_noun(tally.moved, "hunk")
+            ),
+        });
+        Ok(OpOutcome {
+            echo,
+            advisories: tally.advisories,
+        })
+    }
+
+    /// The CLI's assign sweep (#147): every hunk of each named path moved
+    /// to `target`, over a scope the caller has already validated against
+    /// `snapshot` — one counted echo for the whole invocation, whatever the
+    /// path count.
+    ///
+    /// Takes the snapshot rather than refreshing behind the caller's back,
+    /// for [`Repo::stage_sweep`]'s reason: one invocation runs exactly one
+    /// persisting refresh, the caller's, whose advisories are the caller's
+    /// to deliver.
+    ///
+    /// Hunks `target` already owns are left out of the payload, so a
+    /// repeated assign is *satisfied* rather than counted again — the zero
+    /// it reports is the nothing-needed one, not the wholly-stale one
+    /// [`SweepOutcome::moved_nothing`] splits on. One case puts such a hunk
+    /// back: the index-entry unit is widened at apply (ADR 0009), so a unit
+    /// split between `target` and somebody else re-writes the member
+    /// `target` already had, and the count says so — the echo counts the
+    /// widened payload, which is what was written. Ownership is otherwise
+    /// unchecked here: a sweep takes the path's whole universe, and who may
+    /// take another changelist's hunks is the caller's guard (#147's
+    /// `--take-owned`), a refusal with an exit code rather than a
+    /// membership decision.
+    pub fn assign_sweep(
+        &self,
+        snapshot: &Snapshot,
+        paths: &[String],
+        target: Option<&str>,
+    ) -> Result<SweepOutcome, Error> {
+        let mut tally = Tally::default();
+        for path in paths {
+            // The caller validated these paths against this same snapshot,
+            // so a path with no file here is a caller bug rather than a
+            // clean path — an empty sweep is never the answer to one (#147).
+            let Some(file) = snapshot.files.iter().find(|file| &file.path == path) else {
+                debug_assert!(
+                    false,
+                    "'{path}' is not in the snapshot it was validated against"
+                );
+                continue;
+            };
+            let moving: Vec<Hunk> = file
+                .hunks
+                .iter()
+                .filter(|hunk| !hunk.owned_by(target))
+                .cloned()
+                .collect();
+            if moving.is_empty() {
+                continue;
+            }
+            tally.absorb(self.assign_over(path, &moving, target)?);
+        }
+        Ok(SweepOutcome {
+            receipt: OpOutcome {
+                echo: Some(assign_echo(tally.moved, tally.skipped, target)),
+                advisories: tally.advisories,
+            },
+            moved: tally.moved,
+            skipped: tally.skipped,
+        })
+    }
+
+    /// One path's membership write: the live hunks matching `hunks`,
+    /// widened to their index-entry unit, assigned to `target` under one
+    /// locked cycle — with what vanished counted and advised instead. The
+    /// body both assign forms share, so the per-path op and the sweep
+    /// cannot come to widen, fail soft, or count differently.
+    fn assign_over(
+        &self,
+        path: &str,
+        hunks: &[Hunk],
+        target: Option<&str>,
+    ) -> Result<Tally, Error> {
         let files = universe::build(self.backend.diffs()?);
         let mut advisories = Vec::new();
         let mut fresh = Vec::new();
@@ -717,17 +808,14 @@ impl Repo {
         if let Some(file) = found_in {
             fresh = file.widen_to_entry_unit(fresh);
         }
-        let echo = (!fresh.is_empty()).then(|| match target {
-            Some(name) => format!(
-                "assigned {} — {path} {ARROW} '{name}'",
-                count_noun(fresh.len(), "hunk")
-            ),
-            None => format!("released {} — {path}", count_noun(fresh.len(), "hunk")),
-        });
         if !fresh.is_empty() {
             self.update_state(|state| state.assign_records(path, &fresh, target))?;
         }
-        Ok(OpOutcome { echo, advisories })
+        Ok(Tally {
+            moved: fresh.len(),
+            skipped: advisories.len(),
+            advisories,
+        })
     }
 
     /// Create a changelist. The active marker stays where it is
@@ -904,6 +992,52 @@ fn sweep_echo(verb: &str, moved: usize, skipped: usize, scope: SweepScope<'_>) -
     }
 }
 
+/// What a membership op in this direction is called: the bare verb a
+/// nothing-to-do line needs and the past tense a receipt needs. One place,
+/// so the per-path op and the sweep cannot come to call a release an
+/// assignment (ADR 0006) — the direction is `target`'s alone, there being
+/// no third way to move a hunk's membership (ADR 0016: releasing is not
+/// placing).
+struct AssignWords {
+    stem: &'static str,
+    past: &'static str,
+}
+
+fn assign_words(target: Option<&str>) -> AssignWords {
+    match target {
+        Some(_) => AssignWords {
+            stem: "assign",
+            past: "assigned",
+        },
+        None => AssignWords {
+            stem: "release",
+            past: "released",
+        },
+    }
+}
+
+/// An assign sweep's echo (#147): one line for the whole invocation,
+/// counting what moved and naming the target — the release direction
+/// included.
+///
+/// Shaped like [`sweep_echo`] and for the same reasons: the skips ride the
+/// count on stdout, so a harness that drops stderr still sees the apply was
+/// partial, and the `of` clause appears only when something was skipped.
+/// The satisfied line is its own answer rather than a zero count — nothing
+/// needed to move, which is not the same fact as nothing moving.
+fn assign_echo(moved: usize, skipped: usize, target: Option<&str>) -> String {
+    let holder = holder_label(target);
+    let AssignWords { stem, past } = assign_words(target);
+    match (moved, skipped) {
+        (0, 0) => format!("nothing to {stem} — every hunk named already belongs to {holder}"),
+        (moved, 0) => format!("{past} {} {ARROW} {holder}", count_noun(moved, "hunk")),
+        (moved, skipped) => format!(
+            "{past} {moved} of {} ({skipped} skipped as stale) {ARROW} {holder}",
+            count_noun(moved + skipped, "hunk")
+        ),
+    }
+}
+
 /// One thing a staging op moves, inside its changelist scope. The two
 /// variants are the two kinds of narrowing the staging verbs have, and the
 /// distinction is CONTEXT.md's §Sweep boundary: a **row** is swept, an
@@ -1051,6 +1185,14 @@ struct Tally {
 }
 
 impl Tally {
+    /// Fold another traversal's counts into this one — the multi-path
+    /// ops' running total, where one call already counted many hunks.
+    fn absorb(&mut self, other: Tally) {
+        self.moved += other.moved;
+        self.skipped += other.skipped;
+        self.advisories.extend(other.advisories);
+    }
+
     fn record(&mut self, outcome: OpOutcome) {
         if outcome.advisories.is_empty() {
             self.moved += 1;

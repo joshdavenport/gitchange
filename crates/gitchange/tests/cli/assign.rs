@@ -1,0 +1,490 @@
+//! End-to-end tests of `assign`'s whole-path sweep (#163): what a path
+//! takes, the ownership guard and its named override, the all-or-nothing
+//! refusals, and the receipt. Membership is asserted through gitchange's own
+//! read — `diff --json`'s per-hunk owner — because membership is a gitchange
+//! fact with no git command to check it against, unlike the index the
+//! staging suites hold `git diff --cached` up to.
+//!
+//! The fixture is `support::owned_repo`, capture off so ownership is exactly
+//! what the records say: one file split between a changelist and unassigned,
+//! one file another changelist owns, an unassigned file, a clean path, and a
+//! changelist owning nothing.
+//!
+//! The fail-soft split (some hunks stale, all hunks stale) is not here: it
+//! needs a worktree edit between the refresh and the apply, which no child
+//! process can inject, so it lands at core's integration seam (ADR 0008,
+//! core's `assign` suite).
+
+use std::path::Path;
+
+use crate::support::{
+    git, gitchange, initialised_repo, merging_repo, owned_repo, seed_state, seed_state_raw, write,
+};
+
+/// Each hunk's owner for `path`, in file order — read back through
+/// `diff --json`, the surface a caller has for the same question.
+fn owners(dir: &Path, path: &str) -> Vec<Option<String>> {
+    let output = gitchange(dir, &["diff", "--json", "--no-content", path]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "diff --json {path}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let envelope: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("the envelope is one JSON document");
+    envelope["files"]
+        .as_array()
+        .expect("files")
+        .iter()
+        .find(|file| file["path"] == serde_json::json!(path))
+        .unwrap_or_else(|| panic!("no '{path}' in {envelope}"))["hunks"]
+        .as_array()
+        .expect("hunks")
+        .iter()
+        .map(|hunk| hunk["changelist"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// `gitchange assign <args>`, asserted to have succeeded, its stdout echo.
+fn assign(dir: &Path, args: &[&str]) -> String {
+    let output = gitchange(dir, &[&["assign"], args].concat());
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "gitchange assign {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+/// The refusal `gitchange assign <args>` produces: exit 1, empty stdout, and
+/// the stderr text for the caller to read the fragments it cares about.
+fn refusal(dir: &Path, args: &[&str]) -> String {
+    let output = gitchange(dir, &[&["assign"], args].concat());
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "gitchange assign {args:?} should refuse"
+    );
+    assert_eq!(
+        output.stdout,
+        Vec::<u8>::new(),
+        "a failed command leaves stdout empty (#122)"
+    );
+    String::from_utf8(output.stderr).unwrap()
+}
+
+fn changelist(name: &str) -> Option<String> {
+    Some(name.to_owned())
+}
+
+// --- the sweep --------------------------------------------------------------
+
+#[test]
+fn a_whole_path_sweep_takes_every_hunk_of_the_path_staged_and_unstaged() {
+    // Membership and staging are separate axes (ADR 0003), so the staged
+    // file's hunk moves exactly like the unstaged one — and a.txt's hunk
+    // that 'feature' already holds is satisfied rather than counted again.
+    let dir = owned_repo();
+    let repo = dir.path();
+    git(repo, &["add", "sub/c.txt"]);
+
+    let echo = assign(repo, &["sub/c.txt", "a.txt", "--to", "feature"]);
+
+    assert!(echo.contains("assigned 2 hunks"), "{echo}");
+    assert!(
+        echo.contains("'feature'"),
+        "the echo names the target: {echo}"
+    );
+    assert_eq!(
+        owners(repo, "a.txt"),
+        vec![changelist("feature"), changelist("feature")]
+    );
+    assert_eq!(owners(repo, "sub/c.txt"), vec![changelist("feature")]);
+}
+
+#[test]
+fn unassign_and_to_unassigned_release_identically() {
+    for target in [vec!["--unassign"], vec!["--to", "unassigned"]] {
+        let dir = owned_repo();
+        let repo = dir.path();
+
+        let echo = assign(
+            repo,
+            &[&["b.txt", "--take-owned"], target.as_slice()].concat(),
+        );
+
+        assert!(echo.contains("released 1 hunk"), "{target:?}: {echo}");
+        assert!(
+            echo.contains("unassigned"),
+            "the echo names the target: {echo}"
+        );
+        assert_eq!(owners(repo, "b.txt"), vec![None], "{target:?}");
+    }
+}
+
+#[test]
+fn a_released_hunk_is_claimed_by_the_next_refresh_with_a_changelist_active() {
+    // ADR 0016: a release is recordless, not a parking spot. With capture
+    // on, the *next* persisting refresh claims the hunk back — here the one
+    // the following mutation runs — and says so.
+    let dir = initialised_repo();
+    let repo = dir.path();
+    write(repo, "a.txt", "one\n");
+    git(repo, &["add", "-A"]);
+    git(repo, &["commit", "-q", "--no-verify", "-m", "init"]);
+    seed_state(repo, "feature", &["feature"]);
+    write(repo, "a.txt", "two\n");
+    // This invocation's own refresh captures the hunk into 'feature'; the
+    // release then deletes the record it just wrote.
+    assign(repo, &["a.txt", "--unassign", "--take-owned"]);
+    assert_eq!(owners(repo, "a.txt"), vec![None], "released, for now");
+
+    let recaptured = gitchange(repo, &["add", "feature"]);
+
+    assert_eq!(recaptured.status.code(), Some(0));
+    assert!(
+        String::from_utf8(recaptured.stderr)
+            .unwrap()
+            .contains("gitchange: notice: auto-captured hunk at a.txt"),
+        "the claim is loud, never silent"
+    );
+    assert_eq!(owners(repo, "a.txt"), vec![changelist("feature")]);
+}
+
+#[test]
+fn a_released_hunk_stays_unassigned_with_capture_off() {
+    // The supported way to keep hunks loose: unassigned active. The fixture
+    // is capture-off already, so nothing re-claims the released hunk — not
+    // even the next mutation's refresh.
+    let dir = owned_repo();
+    let repo = dir.path();
+    assign(repo, &["b.txt", "--take-owned", "--unassign"]);
+
+    let staged = gitchange(repo, &["add", "unassigned", "b.txt"]);
+
+    assert_eq!(staged.status.code(), Some(0));
+    assert_eq!(owners(repo, "b.txt"), vec![None]);
+}
+
+// --- ownership --------------------------------------------------------------
+
+#[test]
+fn a_path_holding_another_changelists_hunks_refuses_naming_the_owner() {
+    let dir = owned_repo();
+    let repo = dir.path();
+
+    let refusal = refusal(repo, &["a.txt", "--to", "docs"]);
+
+    assert!(
+        refusal.contains("'a.txt' holds hunks owned by 'feature'"),
+        "{refusal}"
+    );
+    assert!(refusal.contains("--take-owned"), "{refusal}");
+    assert_eq!(
+        owners(repo, "a.txt"),
+        vec![changelist("feature"), None],
+        "a refused command assigned nothing"
+    );
+}
+
+#[test]
+fn unassigned_hunks_are_not_owned_and_pass_unguarded() {
+    let dir = owned_repo();
+    let repo = dir.path();
+
+    let echo = assign(repo, &["sub/c.txt", "--to", "docs"]);
+
+    assert!(echo.contains("assigned 1 hunk"), "{echo}");
+    assert_eq!(owners(repo, "sub/c.txt"), vec![changelist("docs")]);
+}
+
+#[test]
+fn take_owned_takes_the_other_changelists_hunks_too() {
+    let dir = owned_repo();
+    let repo = dir.path();
+
+    let echo = assign(repo, &["a.txt", "--to", "docs", "--take-owned"]);
+
+    assert!(echo.contains("assigned 2 hunks"), "{echo}");
+    assert_eq!(
+        owners(repo, "a.txt"),
+        vec![changelist("docs"), changelist("docs")]
+    );
+}
+
+// --- the refusals -----------------------------------------------------------
+
+#[test]
+fn an_unrecognised_target_lists_the_candidates_and_creates_nothing() {
+    let dir = owned_repo();
+    let repo = dir.path();
+
+    let refusal = refusal(repo, &["sub/c.txt", "--to", "ghost"]);
+
+    assert!(refusal.contains("no changelist named 'ghost'"), "{refusal}");
+    assert!(
+        refusal.contains("unassigned, 'feature', 'docs', 'empty'"),
+        "{refusal}"
+    );
+    let status = gitchange(repo, &["status"]);
+    assert!(
+        !String::from_utf8(status.stdout).unwrap().contains("ghost"),
+        "assign never creates a changelist"
+    );
+}
+
+#[test]
+fn a_clean_path_refuses_rather_than_assigning_nothing() {
+    let dir = owned_repo();
+
+    let refusal = refusal(dir.path(), &["keep.txt", "--to", "feature"]);
+
+    assert!(refusal.contains("'keep.txt' has no changes"), "{refusal}");
+}
+
+#[test]
+fn a_nonexistent_path_refuses() {
+    let dir = owned_repo();
+
+    let refusal = refusal(dir.path(), &["gone.txt", "--to", "feature"]);
+
+    assert!(refusal.contains("no such path 'gone.txt'"), "{refusal}");
+}
+
+#[test]
+fn a_directory_names_the_changed_files_under_it() {
+    let dir = owned_repo();
+
+    let refusal = refusal(dir.path(), &["sub", "--to", "feature"]);
+
+    assert!(refusal.contains("'sub' is a directory"), "{refusal}");
+    assert!(refusal.contains("sub/c.txt"), "{refusal}");
+}
+
+#[test]
+fn a_repo_escaping_path_refuses() {
+    let dir = owned_repo();
+
+    let refusal = refusal(dir.path(), &["../outside.txt", "--to", "feature"]);
+
+    assert!(refusal.contains("is outside the repository"), "{refusal}");
+}
+
+#[test]
+fn a_conflicted_path_is_quarantined_rather_than_swept() {
+    let dir = merging_repo();
+
+    let refusal = refusal(dir.path(), &["tracked.txt", "--unassign"]);
+
+    assert!(refusal.contains("tracked.txt is conflicted"), "{refusal}");
+}
+
+#[test]
+fn one_offender_among_valid_arguments_refuses_the_whole_command() {
+    let dir = owned_repo();
+    let repo = dir.path();
+    let before = membership(repo);
+
+    // Three offender classes beside a path that would have swept fine.
+    let refusal = refusal(
+        repo,
+        &["sub/c.txt", "keep.txt", "gone.txt", "a.txt", "--to", "docs"],
+    );
+
+    assert!(refusal.contains("'keep.txt' has no changes"), "{refusal}");
+    assert!(refusal.contains("no such path 'gone.txt'"), "{refusal}");
+    assert!(
+        refusal.contains("'a.txt' holds hunks owned by 'feature'"),
+        "{refusal}"
+    );
+    assert_eq!(
+        membership(repo),
+        before,
+        "a refused command assigned nothing — not even the arguments that were valid"
+    );
+}
+
+/// Every changed file's per-hunk ownership: what "a refused command assigned
+/// nothing" is asserted against.
+///
+/// Membership rather than the state file's bytes, because those move for a
+/// reason of their own: the invocation's persisting refresh restamps the file
+/// on its way to the refusal (ADR 0005), which is a decision about baselines,
+/// not about who owns what.
+fn membership(dir: &Path) -> Vec<(String, Vec<Option<String>>)> {
+    ["a.txt", "b.txt", "sub/c.txt"]
+        .iter()
+        .map(|path| ((*path).to_owned(), owners(dir, path)))
+        .collect()
+}
+
+#[test]
+fn an_unrecognised_target_still_reports_the_path_offenders_beside_it() {
+    let dir = owned_repo();
+
+    let refusal = refusal(dir.path(), &["gone.txt", "--to", "ghost"]);
+
+    assert!(refusal.contains("no changelist named 'ghost'"), "{refusal}");
+    assert!(refusal.contains("no such path 'gone.txt'"), "{refusal}");
+}
+
+// --- idempotency ------------------------------------------------------------
+
+#[test]
+fn repeating_an_assign_over_target_owned_hunks_is_satisfied() {
+    let dir = owned_repo();
+    let repo = dir.path();
+    assign(repo, &["sub/c.txt", "--to", "docs"]);
+
+    let echo = assign(repo, &["sub/c.txt", "--to", "docs"]);
+
+    assert!(echo.contains("nothing to assign"), "{echo}");
+    assert_eq!(owners(repo, "sub/c.txt"), vec![changelist("docs")]);
+}
+
+#[test]
+fn repeating_a_release_over_unassigned_hunks_is_satisfied() {
+    let dir = owned_repo();
+    let repo = dir.path();
+
+    let echo = assign(repo, &["sub/c.txt", "--unassign"]);
+
+    assert!(echo.contains("nothing to release"), "{echo}");
+    assert_eq!(owners(repo, "sub/c.txt"), vec![None]);
+}
+
+#[test]
+fn one_path_named_twice_sweeps_once() {
+    let dir = owned_repo();
+    let repo = dir.path();
+
+    let echo = assign(repo, &["sub/c.txt", "sub/c.txt", "--to", "docs"]);
+
+    assert!(echo.contains("assigned 1 hunk"), "{echo}");
+}
+
+// --- deferred capture, two-sided --------------------------------------------
+
+/// A repo with `a.txt` edited under an active changelist and no records: the
+/// hunk this invocation's own refresh will capture on its way to validation.
+fn capturing_repo() -> tempfile::TempDir {
+    let dir = initialised_repo();
+    let repo = dir.path();
+    write(repo, "a.txt", "one\n");
+    git(repo, &["add", "-A"]);
+    git(repo, &["commit", "-q", "--no-verify", "-m", "init"]);
+    seed_state(repo, "active", &["active", "other"]);
+    write(repo, "a.txt", "two\n");
+    dir
+}
+
+#[test]
+fn assigning_a_just_captured_hunk_to_the_active_changelist_is_satisfied() {
+    let dir = capturing_repo();
+    let repo = dir.path();
+
+    let output = gitchange(repo, &["assign", "a.txt", "--to", "active"]);
+
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{stderr}");
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("nothing to assign"),
+        "this command's own refresh already placed it there"
+    );
+    assert!(
+        stderr.contains("gitchange: notice: auto-captured hunk at a.txt"),
+        "the capture rides this receipt, once: {stderr}"
+    );
+    assert_eq!(owners(repo, "a.txt"), vec![changelist("active")]);
+}
+
+#[test]
+fn assigning_a_just_captured_hunk_elsewhere_trips_the_ownership_guard() {
+    // The other side of the same fact: the capture happened before
+    // validation, so the active changelist is the owner the guard names —
+    // and the caller learns both in one round trip.
+    let dir = capturing_repo();
+    let repo = dir.path();
+
+    let output = gitchange(repo, &["assign", "a.txt", "--to", "other"]);
+
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(output.stdout.is_empty());
+    assert!(
+        stderr.contains("gitchange: notice: auto-captured hunk at a.txt"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("'a.txt' holds hunks owned by 'active'"),
+        "{stderr}"
+    );
+    assert_eq!(owners(repo, "a.txt"), vec![changelist("active")]);
+}
+
+// --- the addressed forms, not yet built -------------------------------------
+
+#[test]
+fn the_addressed_forms_refuse_rather_than_widening_into_a_sweep() {
+    // #164/#165 build them. Until then an address is a refusal, never a
+    // fallback onto the whole-path sweep — silently widening an address is
+    // the one move this verb's rules exist to prevent.
+    let dir = owned_repo();
+    let repo = dir.path();
+
+    let addressed = refusal(repo, &["a.txt:h1a2b3c4", "--to", "feature"]);
+    let containing = refusal(
+        repo,
+        &["a.txt", "--containing", "first edited", "--to", "feature"],
+    );
+
+    assert!(addressed.contains("not implemented yet"), "{addressed}");
+    assert!(containing.contains("not implemented yet"), "{containing}");
+    assert_eq!(owners(repo, "a.txt"), vec![changelist("feature"), None]);
+}
+
+// --- degenerate hunks -------------------------------------------------------
+
+/// A file whose index entry holds two hunks at once — ADR 0009's entry unit:
+/// a text edit staged, then the worktree copy replaced with binary content,
+/// so the universe presents a whole-file hunk beside the index-only text hunk
+/// it shares an index entry with. Both unassigned.
+fn entry_unit_repo() -> tempfile::TempDir {
+    let dir = initialised_repo();
+    let repo = dir.path();
+    write(repo, "f.txt", "one\ntwo\nthree\n");
+    git(repo, &["add", "-A"]);
+    git(repo, &["commit", "-q", "--no-verify", "-m", "init"]);
+    // Capture off (`active: null`), as `owned_repo` is: the hunks below stay
+    // unassigned, so what the sweep moves is the sweep's own doing.
+    seed_state_raw(
+        repo,
+        r#"{ "version": 1, "active": null, "changelists": [{ "name": "feature" }] }"#,
+    );
+    write(repo, "f.txt", "one\nEDIT\nthree\n");
+    git(repo, &["add", "f.txt"]);
+    std::fs::write(repo.join("f.txt"), b"bin\x00\x01\x02data\n").unwrap();
+    dir
+}
+
+#[test]
+fn a_sweep_over_an_entry_unit_assigns_it_whole() {
+    // Degenerate hunks are hunks (#147): the whole-file hunk of a binary
+    // moves like any other, and a sweep names everything, so the ADR 0009
+    // widening it would trip is a no-op here — the unit-subset refusal is
+    // the addressed forms' problem (#165), never a sweep's.
+    let dir = entry_unit_repo();
+    let repo = dir.path();
+
+    let echo = assign(repo, &["f.txt", "--to", "feature"]);
+
+    assert!(echo.contains("assigned 2 hunks"), "{echo}");
+    assert_eq!(
+        owners(repo, "f.txt"),
+        vec![changelist("feature"), changelist("feature")]
+    );
+}

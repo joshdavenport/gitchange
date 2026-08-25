@@ -143,21 +143,20 @@ fn changelist_has_no_machine_flags_and_no_alias() {
     assert_usage_error(&["cl"]);
 }
 
-// --- assign ----------------------------------------------------------------
+// --- assign ------------------------------------------------------------------
+// The whole-path sweep is built (#163), so what it does is asserted against
+// fixture repos in `assign.rs`; the grammar edges stay here, plus the proof
+// that every parsed form gets as far as looking for a repository.
 
 #[test]
-fn assign_every_form_is_a_stub() {
-    assert_stub(&["assign", "src/a.rs", "--to", "feature"], "assign");
-    assert_stub(
+fn every_assign_form_parses_and_reaches_the_repository() {
+    for args in [
+        &["assign", "src/a.rs", "--to", "feature"][..],
         &["assign", "src/a.rs", "src/b.rs", "--to", "feature"],
-        "assign",
-    );
-    assert_stub(
+        // The addressed forms are #164's to build; they parse now and refuse
+        // as unbuilt from inside the verb, so they reach the repository like
+        // any other form.
         &["assign", "src/a.rs:h1a2b3c4", "--to", "feature"],
-        "assign",
-    );
-    assert_stub(&["assign", "src/a.rs", "--unassign"], "assign");
-    assert_stub(
         &[
             "assign",
             "src/a.rs",
@@ -166,18 +165,9 @@ fn assign_every_form_is_a_stub() {
             "--to",
             "feature",
         ],
-        "assign",
-    );
-    assert_stub(
+        &["assign", "src/a.rs", "--unassign"],
         &["assign", "src/a.rs", "--take-owned", "--to", "feature"],
-        "assign",
-    );
-}
-
-#[test]
-fn assign_containing_accepts_a_leading_hyphen() {
-    // A changed line may begin with `-`.
-    assert_stub(
+        // A changed line may begin with `-`.
         &[
             "assign",
             "src/a.rs",
@@ -186,9 +176,6 @@ fn assign_containing_accepts_a_leading_hyphen() {
             "--to",
             "feature",
         ],
-        "assign",
-    );
-    assert_stub(
         &[
             "assign",
             "src/a.rs",
@@ -197,8 +184,16 @@ fn assign_containing_accepts_a_leading_hyphen() {
             "--to",
             "feature",
         ],
-        "assign",
-    );
+    ] {
+        let output = gitchange(args);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        assert_eq!(stdout(&output), "", "{args:?} wrote to stdout");
+        assert!(
+            stderr(&output).contains("not a git repository"),
+            "{args:?}: {}",
+            stderr(&output)
+        );
+    }
 }
 
 #[test]
