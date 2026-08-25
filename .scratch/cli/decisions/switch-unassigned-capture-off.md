@@ -1,1 +1,0 @@
-The active changelist may be the **unassigned** pseudo-changelist; capture and ambiguous-edit routing flow there. No new verb, state, or indicator. Only `switch` moves the marker: creating a changelist never activates it, and deleting the active one leaves unassigned active.

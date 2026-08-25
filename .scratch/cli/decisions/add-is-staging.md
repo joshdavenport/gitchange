@@ -1,1 +1,0 @@
-`gitchange add` (alias `stage`) stages. Consistent with refusing `add` for assign: git's `add` means staging, so gitchange's does too. The agent skill teaches add-then-commit with gitchange verbs as the primary flow; raw `git add` stays valid because staging is write-through (ADR 0003).
