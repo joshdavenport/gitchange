@@ -31,6 +31,45 @@ impl HunkId {
     /// SHA.
     pub const SIGIL: char = 'h';
 
+    /// How many hex digits an abbreviated ID carries
+    /// ([`HunkId::abbreviated`]) — comfortably above [`MIN_PREFIX_HEX`],
+    /// so every abbreviation a text face prints is an address that
+    /// resolves when pasted back.
+    ///
+    /// [`MIN_PREFIX_HEX`]: HunkId::MIN_PREFIX_HEX
+    pub const ABBREVIATED_HEX: usize = 8;
+
+    /// The shortest hex prefix an address may name (#122). Short enough
+    /// to type, long enough that a prefix collision within one file needs
+    /// a deliberate search rather than bad luck.
+    pub const MIN_PREFIX_HEX: usize = 7;
+
+    /// What every printed address depends on: an abbreviation a caller
+    /// pastes back has to clear the minimum a caller may type.
+    const _ABBREVIATION_IS_ADDRESSABLE: () = assert!(Self::ABBREVIATED_HEX >= Self::MIN_PREFIX_HEX);
+
+    /// The ID as a text face prints it: the sigil and the first
+    /// [`ABBREVIATED_HEX`] hex digits — a prefix of the full form, so it
+    /// resolves as an address (#122).
+    ///
+    /// [`ABBREVIATED_HEX`]: HunkId::ABBREVIATED_HEX
+    pub fn abbreviated(&self) -> String {
+        let full = self.to_string();
+        // The sigil plus the digits: both are ASCII, so the byte
+        // truncation is a character truncation.
+        full[..1 + Self::ABBREVIATED_HEX].to_owned()
+    }
+
+    /// Whether `hex` — the ID's digits with no sigil, in either case — is
+    /// a prefix of this ID. The comparison lives here because the
+    /// rendering does: a caller that lowercased the wrong side, or
+    /// compared against a sigil'd string, would silently never match.
+    pub fn has_prefix(&self, hex: &str) -> bool {
+        // The rendering leads with the sigil; the typed prefix is digits
+        // alone, in whichever case it was pasted.
+        self.to_string()[1..].starts_with(&hex.to_ascii_lowercase())
+    }
+
     /// Mint the ID of a hunk at `path`. A text hunk hashes its content
     /// anchor — the verbatim lines records store (ADR 0001) — so an
     /// unrelated edit elsewhere in the file leaves it unchanged; a
@@ -91,6 +130,22 @@ pub struct HunkAddress {
     /// hunks sharing its [`HunkId`] — `Some` exactly when the ID is
     /// shared, so a unique hunk's address needs no `/<n>`.
     pub offset: Option<usize>,
+}
+
+impl HunkAddress {
+    /// The composed address `<path>:<id>[/<n>]` as a text face prints it:
+    /// the ID abbreviated ([`HunkId::abbreviated`]), the ordinal carried
+    /// only where identical hunks make it part of the address. Composed
+    /// here rather than at each printing site so the string a refusal
+    /// names and the string a patch header carries are one shape — and
+    /// one an agent can paste straight back into a verb.
+    pub fn abbreviated_at(&self, path: &str) -> String {
+        let ordinal = match self.offset {
+            Some(offset) => format!("/{offset}"),
+            None => String::new(),
+        };
+        format!("{path}:{}{ordinal}", self.id.abbreviated())
+    }
 }
 
 /// The addresses of `file`'s hunks, aligned with [`ChangedFile::hunks`].

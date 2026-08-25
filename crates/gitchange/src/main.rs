@@ -11,6 +11,9 @@ use gitchange_core::{
     status_envelope, target_named,
 };
 
+mod diff;
+mod scope;
+
 /// The prefix every diagnostic this binary writes to stderr carries, so
 /// output piped alongside git's own is attributable at a glance.
 const DIAG: &str = "gitchange:";
@@ -297,8 +300,18 @@ struct DiffScope {
 }
 
 impl DiffScope {
+    /// The first positional as the scope resolver takes it, given whether
+    /// the command line carried `--` ([`double_dash_typed`]): with the
+    /// boundary present the slot is a changelist and nothing else (#143).
+    fn token(&self, settled: bool) -> diff::ScopeToken<'_> {
+        match (self.scope.as_deref(), settled) {
+            (None, _) => diff::ScopeToken::Absent,
+            (Some(name), true) => diff::ScopeToken::Settled(name),
+            (Some(name), false) => diff::ScopeToken::Ambiguous(name),
+        }
+    }
+
     /// The full path list in argument order, `--` boundary spent.
-    #[allow(dead_code)] // read by the diff handler (#158)
     fn paths(&self) -> impl Iterator<Item = &str> {
         self.paths
             .iter()
@@ -343,7 +356,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Some(Command::Add { .. }) => not_implemented("add"),
         Some(Command::Unstage { .. }) => not_implemented("unstage"),
         Some(Command::Commit { .. }) => not_implemented("commit"),
-        Some(Command::Diff { .. }) => not_implemented("diff"),
+        // A read, like `status`: no lock, so no contention to absorb.
+        Some(Command::Diff { scope, json, .. }) => diff(&scope, json),
         Some(Command::Restore { .. }) => unreachable!("handled in main"),
         None => gitchange_tui::run().map_err(anyhow::Error::from),
     }
@@ -524,6 +538,48 @@ fn print_files(files: &[&ChangedFile]) {
             file.total_hunks(),
         );
     }
+}
+
+/// The hunk-level read (#158): the scope resolved against the read-only
+/// refresh's snapshot, then rendered — one refresh, and the face is an
+/// argument to it, so text and JSON can never select differently
+/// (ADR 0018). A read, so it takes no lock and writes nothing; an empty
+/// selection prints nothing and exits `0`, a wrong question refuses.
+fn diff(scope: &DiffScope, json: bool) -> anyhow::Result<()> {
+    if json {
+        return not_implemented("diff --json");
+    }
+    let repo = open_repo()?;
+    let snapshot = repo.read_only_refresh()?;
+    // Paths resolve against the worktree, so a bare repository — which has
+    // no changed files to name in the first place — has nothing to resolve
+    // them against.
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| anyhow::anyhow!("this repository has no worktree"))?;
+    let files = diff::select(
+        &snapshot,
+        scope.token(double_dash_typed()),
+        scope.paths(),
+        &workdir,
+    )?;
+    diff::print_patch(&files);
+    Ok(())
+}
+
+/// Whether the command line carried an explicit `--`. Clap spends the
+/// boundary on the `last` positional and cannot report an empty one —
+/// `diff <name> --` parses identically to `diff <name>` — yet the boundary
+/// is exactly what settles `diff`'s ambiguous first token (#143). So the
+/// one fact the parse throws away is read back from the raw arguments.
+///
+/// Reading them is sound because no invocation that reaches a handler can
+/// carry a `--` meaning anything else: clap claims the token as the
+/// boundary, so the one flag that could have swallowed it (`-C`, the only
+/// global taking a value) dies as a usage error instead — `gitchange -C --
+/// status` exits 2 rather than running.
+fn double_dash_typed() -> bool {
+    std::env::args_os().any(|arg| arg == "--")
 }
 
 /// `switch <name>`, where `unassigned` is a valid target: capture and

@@ -6,7 +6,7 @@
 //! `ChangedFile::hunk_addresses()` per ADR 0008.
 
 use crate::support::RepoFixture;
-use gitchange_core::{HunkAddress, Repo};
+use gitchange_core::{HunkAddress, HunkId, Repo};
 
 /// The addresses of `path`'s hunks as a fresh read-only refresh derives
 /// them, in file order.
@@ -47,6 +47,64 @@ fn a_hunk_renders_as_the_h_sigil_plus_64_lowercase_hex_and_a_unique_one_has_no_o
     let rendered = addresses[0].id.to_string();
     assert!(is_sigil_plus_64_hex(&rendered), "{rendered}");
     assert_eq!(addresses[0].offset, None, "a unique hunk needs no ordinal");
+}
+
+#[test]
+fn an_abbreviated_id_is_a_prefix_of_the_full_one_and_resolves_as_one() {
+    // What a text face prints (#158) has to be an address an agent can
+    // paste back: the abbreviation is a prefix of the full rendering, long
+    // enough to clear the minimum a verb accepts, and the prefix test
+    // recognises it in either case.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("a.txt", "one\ntwo\nthree\n")
+        .commit_all("init")
+        .write("a.txt", "one\ntwo edited\nthree\n");
+
+    let id = addresses_of(&fixture, "a.txt")[0].id;
+    let abbreviated = id.abbreviated();
+
+    assert!(id.to_string().starts_with(&abbreviated), "{abbreviated}");
+    assert_eq!(abbreviated.len(), 1 + HunkId::ABBREVIATED_HEX);
+    let hex = abbreviated.strip_prefix(HunkId::SIGIL).unwrap();
+    assert!(id.has_prefix(hex));
+    assert!(id.has_prefix(&hex.to_uppercase()), "case-insensitive");
+    assert!(!id.has_prefix(&format!("{hex}0000000")), "a wrong prefix");
+}
+
+#[test]
+fn a_composed_address_carries_the_ordinal_only_where_it_is_needed() {
+    // `<path>:<id>[/<n>]` (`CONTEXT.md` §Hunk ID): the ordinal is part of
+    // the address exactly when identical hunks share the ID, so a unique
+    // hunk's address never grows a `/0` an agent would have to strip.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("a.txt", &BLOCK.repeat(3))
+        .commit_all("init")
+        .write(
+            "a.txt",
+            &[
+                BLOCK.replace("delta", "DELTA"),
+                BLOCK.to_owned(),
+                BLOCK.replace("delta", "DELTA"),
+            ]
+            .concat(),
+        );
+
+    let shared = addresses_of(&fixture, "a.txt");
+    let unique = HunkAddress {
+        id: shared[0].id,
+        offset: None,
+    };
+
+    assert_eq!(
+        shared[1].abbreviated_at("a.txt"),
+        format!("a.txt:{}/1", shared[1].id.abbreviated())
+    );
+    assert_eq!(
+        unique.abbreviated_at("a.txt"),
+        format!("a.txt:{}", unique.id.abbreviated())
+    );
 }
 
 /// Seven distinct lines, repeated: an edit to the same line of two

@@ -1,9 +1,13 @@
 //! End-to-end tests of the clap tree (#142): every decided command parses,
 //! unbuilt commands refuse as not-implemented (exit 1, empty stdout), and
-//! each declarative usage rule dies as exit 2 before any repo work. Same
-//! seam as `cli.rs` — the binary boundary — split out because nothing here
-//! needs a fixture repo: the grammar is asserted from an empty directory,
-//! which is also what proves a stub does no repo work.
+//! each declarative usage rule dies as exit 2 before any repo work. Its own
+//! module because nothing here needs a fixture repo: the grammar is
+//! asserted from an empty directory, which is also what proves a stub does
+//! no repo work.
+//!
+//! That empty directory is why the runner below is local rather than
+//! `support::gitchange` — every case here wants a fresh nowhere to run in,
+//! not a repo handed to it, so the tempdir is the helper's own business.
 
 use std::process::{Command, Output};
 
@@ -57,7 +61,7 @@ fn assert_usage_error(args: &[&str]) {
 
 // --- status ----------------------------------------------------------------
 // The grammar only; both faces are built (#156/#157), so what `status`
-// says is asserted against fixture repos in `cli.rs`.
+// says is asserted against fixture repos in `status.rs`.
 
 #[test]
 fn status_takes_no_arguments_and_json_takes_no_value() {
@@ -69,7 +73,7 @@ fn status_takes_no_arguments_and_json_takes_no_value() {
 
 // --- -C --------------------------------------------------------------------
 // The grammar only; `-C`'s semantics — run as if launched in <dir> — are
-// asserted against fixture repos in `cli.rs`.
+// asserted against fixture repos in `invocation.rs`.
 
 #[test]
 fn dash_c_is_single_occurrence() {
@@ -352,18 +356,38 @@ fn commit_no_edit_requires_amend() {
 // --- diff ------------------------------------------------------------------
 
 #[test]
-fn diff_every_form_is_a_stub() {
-    assert_stub(&["diff"], "diff");
-    assert_stub(&["diff", "feature"], "diff");
-    assert_stub(
+fn diff_every_text_form_parses_and_reaches_the_repository() {
+    // The text face is built (#158), so from an empty directory each form
+    // gets as far as discovery and refuses there — which is what proves
+    // the shape parsed rather than dying as usage. What each scope selects
+    // is asserted against fixture repos in `diff.rs`.
+    for args in [
+        &["diff"][..],
+        &["diff", "feature"],
         &["diff", "feature", "src/a.rs", "src/b.rs:h1a2b3c4"],
-        "diff",
+        &["diff", "--", "src/a.rs"],
+        &["diff", "feature", "--", "src/a.rs", "src/b.rs"],
+        &["diff", "feature", "src/a.rs", "--", "src/b.rs"],
+    ] {
+        let output = gitchange(args);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        assert_eq!(stdout(&output), "", "{args:?}");
+        assert!(
+            stderr(&output).contains("not a git repository"),
+            "{args:?}: {}",
+            stderr(&output)
+        );
+    }
+}
+
+#[test]
+fn diff_json_is_a_stub() {
+    // The JSON face is #159's; the flags parse today and refuse honestly.
+    assert_stub(&["diff", "--json"], "diff --json");
+    assert_stub(
+        &["diff", "feature", "--json", "--no-content"],
+        "diff --json",
     );
-    assert_stub(&["diff", "--", "src/a.rs"], "diff");
-    assert_stub(&["diff", "feature", "--", "src/a.rs", "src/b.rs"], "diff");
-    assert_stub(&["diff", "feature", "src/a.rs", "--", "src/b.rs"], "diff");
-    assert_stub(&["diff", "--json"], "diff");
-    assert_stub(&["diff", "feature", "--json", "--no-content"], "diff");
 }
 
 #[test]
