@@ -19,6 +19,12 @@
 //! to the hunk it names: a foreign hunk elsewhere in the file is irrelevant
 //! to an exact address (#164).
 //!
+//! The other guard this verb alone has is the **unit-subset refusal**
+//! ([`subset_of_a_unit`], #165): core widens every assign payload to the
+//! whole index-entry unit (ADR 0009), so an address naming part of one would
+//! become a sweep without saying so. Staging inherits neither guard —
+//! membership is independent of staging, so `add`/`unstage` never widen.
+//!
 //! Every refusal here is exit `1`: whether a name is a changelist, who owns
 //! a file's hunks, and whether a path has any changes at all are repo facts,
 //! which clap cannot see. The exception is [`check_grammar`], which answers
@@ -97,10 +103,47 @@ pub fn resolve<'a>(
     // staging pair dedupes on this side instead, its core traversal being
     // per-snapshot-file rather than per-payload.
     let containing = args.containing.containing.as_deref();
+    // Resolution first, scope second — the order `--containing` already
+    // follows (#122), extended to the whole command line because the
+    // unit-subset refusal is a question about the *set* an invocation
+    // addressed: what one argument scopes to cannot be judged until every
+    // other argument has said which hunks it named. Kept per-argument, so
+    // the offenders below still come out in argument order.
+    let narrowed: Vec<Result<Narrowed<'a>, String>> = resolved
+        .iter()
+        .map(|arg| narrow(arg, containing, snapshot))
+        .collect();
+    let addressed_set: Vec<&Narrowed<'a>> = narrowed
+        .iter()
+        .filter_map(|one| one.as_ref().ok())
+        .collect();
     let mut targets: Vec<AssignTarget<'a>> = Vec::new();
-    for arg in &resolved {
-        match narrow(arg, containing, target, args.take_owned, snapshot) {
-            Ok(narrowed) => targets.push(narrowed),
+    // One unit, one refusal: a second member addressed beside the first
+    // offends identically and would print the same list twice. It still
+    // meets the ownership guard, so the owner it would have named is not
+    // lost with the duplicate line.
+    let mut refused_units: Vec<&str> = Vec::new();
+    for one in &narrowed {
+        let one = match one {
+            Ok(one) => one,
+            Err(offender) => {
+                offenders.push(offender.clone());
+                continue;
+            }
+        };
+        let scoped = match &one.addressed {
+            None => sweepable(&one.path, target, args.take_owned, one.file)
+                .map(|()| AssignTarget::Path(one.path.clone())),
+            Some((hunk, address)) => match subset_of_a_unit(one, hunk, address, &addressed_set) {
+                Err(refusal) if !refused_units.contains(&one.path.as_str()) => {
+                    refused_units.push(&one.path);
+                    Err(refusal)
+                }
+                _ => addressed(&one.path, hunk, address, target, args.take_owned),
+            },
+        };
+        match scoped {
+            Ok(assignable) => targets.push(assignable),
             Err(offender) => offenders.push(offender),
         }
     }
@@ -113,28 +156,120 @@ pub fn resolve<'a>(
     })
 }
 
-/// What one path argument narrows the assignment to, in the shared
-/// grammar's dispatch ([`scope::narrow`]): this verb supplies only its two
-/// answers — a whole path past the sweep's guard, or one addressed hunk past
-/// the same guard narrowed to it.
+/// One argument resolved against the snapshot, before any of this verb's
+/// scope guards have run. Every narrowed argument reached a file of the
+/// change universe — a path with nothing there refuses at resolution — and
+/// some of them named one hunk of it.
+struct Narrowed<'a> {
+    /// Repo-relative, as every gitchange surface prints paths (#122).
+    path: String,
+    /// The path's entry in the change universe.
+    file: &'a ChangedFile,
+    /// The hunk an address named, with the composed address a refusal would
+    /// name it by; `None` where the argument was a bare path and so sweeps
+    /// the file whole.
+    addressed: Option<(&'a Hunk, String)>,
+}
+
+/// What one path argument resolves to, in the shared grammar's dispatch
+/// ([`scope::narrow`]): this verb supplies only its two answers — a whole
+/// path that has something to sweep, or the single hunk an address named.
 fn narrow<'a>(
     arg: &scope::PathArg,
     containing: Option<&str>,
-    target: Option<&str>,
-    take_owned: bool,
     snapshot: &'a Snapshot,
-) -> Result<AssignTarget<'a>, String> {
+) -> Result<Narrowed<'a>, String> {
+    // The same lookup `scope::narrow` hands the whole-path arm, taken here
+    // so the addressed arm carries the file too: the unit-subset guard needs
+    // the entry an address sits in, not just the hunk it named.
+    let entry = scope::file_in(snapshot, &arg.path);
+    let of = |addressed| match entry {
+        Some(file) => Ok(Narrowed {
+            path: arg.path.clone(),
+            file,
+            addressed,
+        }),
+        // It resolved as a path and is absent from the change universe: a
+        // clean file, or one that never changed. (An address can only ever
+        // have resolved inside a file that is there, so this is the
+        // whole-path arm's answer in practice.)
+        None => Err(nothing_to_assign(&arg.path)),
+    };
     scope::narrow(
         arg,
         containing,
         snapshot,
         nothing_to_assign,
-        |file| {
-            sweepable(&arg.path, target, take_owned, file)
-                .map(|()| AssignTarget::Path(arg.path.clone()))
-        },
-        |hunk, address| addressed(&arg.path, hunk, address, target, take_owned),
+        |_| of(None),
+        |hunk, address| of(Some((hunk, address.to_owned()))),
     )
+}
+
+/// Whether `arg`'s address names only *part* of its file's index-entry unit
+/// — the refusal that keeps an address from widening (#147/#165, ADR 0009).
+///
+/// Core widens every assign payload to the whole unit, so handing it one
+/// member would move them all: an address becoming a sweep, which is exactly
+/// the move `--containing`'s multi-match refusal already rejects, and which
+/// in a split unit takes another changelist's hunks. So the CLI never hands
+/// core a proper subset, and core's widening no-ops instead of being
+/// overridden — ADR 0009 is untouched, and its "moves them together" holds
+/// because what the caller names is the whole unit.
+///
+/// The addressed set is the whole command line's, not one argument's: naming
+/// every member across several arguments is the retry the refusal asks for.
+/// A whole-path argument beside them satisfies it outright — a sweep names
+/// everything — and a single-member unit can never be a proper subset of
+/// itself.
+fn subset_of_a_unit(
+    arg: &Narrowed<'_>,
+    hunk: &Hunk,
+    address: &str,
+    narrowed: &[&Narrowed<'_>],
+) -> Result<(), String> {
+    // Membership is core's own predicate — the one `widen_to_entry_unit`
+    // gates on — so the CLI cannot come to refuse a set core would not
+    // widen. A mode hunk and a file presenting no whole-file hunk are both
+    // "not in the unit" there (ADR 0017, ADR 0009).
+    if !arg.file.in_entry_unit(hunk) {
+        return Ok(());
+    }
+    let members = unit_members(arg.file);
+    // The only member: naming it is naming the unit, so nothing widens.
+    if members.len() < 2 {
+        return Ok(());
+    }
+    let mut named: Vec<&str> = Vec::new();
+    for one in narrowed.iter().filter(|one| one.path == arg.path) {
+        match &one.addressed {
+            Some((_, address)) => named.push(address),
+            None => return Ok(()),
+        }
+    }
+    if members
+        .iter()
+        .all(|member| named.contains(&member.as_str()))
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "'{address}' is one of {} hunks sharing an index entry, which assign moves as one \
+         — name them all: {}, or sweep the path: '{}'",
+        members.len(),
+        members.join(", "),
+        arg.path
+    ))
+}
+
+/// The composed addresses of `file`'s index-entry unit, in file order — what
+/// the refusal lists, and what a caller pastes back as the retry (#155).
+fn unit_members(file: &ChangedFile) -> Vec<String> {
+    file.hunks
+        .iter()
+        .zip(file.hunk_addresses())
+        .filter(|(hunk, _)| file.in_entry_unit(hunk))
+        .map(|(_, address)| address.abbreviated_at(&file.path))
+        .collect()
 }
 
 /// One addressed hunk as a target, past **the ownership guard narrowed to
@@ -211,20 +346,15 @@ fn target_of<'a>(args: &'a AssignScope, snapshot: &Snapshot) -> Result<Option<&'
 /// Hunks `target` already owns are satisfied, not offenders: repeating an
 /// assign is idempotent, and so is releasing what is already unassigned.
 ///
-/// `file` is the path's entry in the change universe, `None` where it has
-/// none — the caller has it in hand, and the conflicted case is its to have
-/// answered already.
+/// `file` is the path's entry in the change universe, which resolution has
+/// already established it has — a path with nothing to sweep never reaches
+/// here, and neither does a conflicted one.
 fn sweepable(
     path: &str,
     target: Option<&str>,
     take_owned: bool,
-    file: Option<&ChangedFile>,
+    file: &ChangedFile,
 ) -> Result<(), String> {
-    let Some(file) = file else {
-        // It resolved as a path and is absent from the change universe: a
-        // clean file, or one that never changed.
-        return Err(nothing_to_assign(path));
-    };
     if take_owned {
         return Ok(());
     }

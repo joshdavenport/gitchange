@@ -1,14 +1,16 @@
-//! End-to-end tests of `assign`'s whole-path sweep (#163): what a path
-//! takes, the ownership guard and its named override, the all-or-nothing
-//! refusals, and the receipt. Membership is asserted through gitchange's own
-//! read — `diff --json`'s per-hunk owner — because membership is a gitchange
-//! fact with no git command to check it against, unlike the index the
-//! staging suites hold `git diff --cached` up to.
+//! End-to-end tests of `assign` (#147): what a path sweep takes, what an
+//! address narrows to, the ownership guard and its named override, the
+//! unit-subset refusal that keeps an address from widening, the
+//! all-or-nothing refusals, and the receipt. Membership is asserted through
+//! gitchange's own read — `diff --json`'s per-hunk owner — because membership
+//! is a gitchange fact with no git command to check it against, unlike the
+//! index the staging suites hold `git diff --cached` up to.
 //!
-//! The fixture is `support::owned_repo`, capture off so ownership is exactly
-//! what the records say: one file split between a changelist and unassigned,
-//! one file another changelist owns, an unassigned file, a clean path, and a
-//! changelist owning nothing.
+//! The main fixture is `support::owned_repo`, capture off so ownership is
+//! exactly what the records say: one file split between a changelist and
+//! unassigned, one file another changelist owns, an unassigned file, a clean
+//! path, and a changelist owning nothing. The index-entry-unit cases need a
+//! file whose entry holds two hunks at once, so they build their own below.
 //!
 //! The fail-soft split (some hunks stale, all hunks stale) is not here: it
 //! needs a worktree edit between the refresh and the apply, which no child
@@ -750,7 +752,7 @@ fn a_sweep_over_an_entry_unit_assigns_it_whole() {
     // Degenerate hunks are hunks (#147): the whole-file hunk of a binary
     // moves like any other, and a sweep names everything, so the ADR 0009
     // widening it would trip is a no-op here — the unit-subset refusal is
-    // the addressed forms' problem (#165), never a sweep's.
+    // the addressed forms' alone, never a sweep's.
     let dir = entry_unit_repo();
     let repo = dir.path();
 
@@ -787,21 +789,205 @@ fn a_degenerate_hunk_is_a_candidate_but_never_a_match() {
     );
 }
 
+// --- the unit-subset refusal ------------------------------------------------
+
+/// `entry_unit_repo` with the index-only text hunk claimed by `'feature'`,
+/// so the unit is split between a changelist and unassigned — the shape whose
+/// full-membership retry has to meet the ownership guard.
+fn split_entry_unit_repo() -> tempfile::TempDir {
+    let dir = initialised_repo();
+    let repo = dir.path();
+    write(repo, "f.txt", "one\ntwo\nthree\n");
+    git(repo, &["add", "-A"]);
+    git(repo, &["commit", "-q", "--no-verify", "-m", "init"]);
+    seed_state_raw(
+        repo,
+        r#"{
+  "version": 1, "active": null,
+  "changelists": [{ "name": "feature" }, { "name": "docs" }],
+  "records": [
+    {
+      "path": "f.txt", "old_start": 1, "old_lines": 3,
+      "new_start": 1, "new_lines": 3, "changelist": "feature",
+      "anchor": ["-two\n", "+EDIT\n"], "dormant_since": null
+    }
+  ]
+}"#,
+    );
+    write(repo, "f.txt", "one\nEDIT\nthree\n");
+    git(repo, &["add", "f.txt"]);
+    std::fs::write(repo.join("f.txt"), b"bin\x00\x01\x02data\n").unwrap();
+    dir
+}
+
+/// A file whose whole change is one whole-file hunk: a committed text file
+/// replaced with binary content, nothing staged. Its index-entry unit has a
+/// single member, which is the shape that must never trip the refusal.
+fn lone_member_repo() -> tempfile::TempDir {
+    let dir = initialised_repo();
+    let repo = dir.path();
+    write(repo, "f.txt", "one\ntwo\nthree\n");
+    git(repo, &["add", "-A"]);
+    git(repo, &["commit", "-q", "--no-verify", "-m", "init"]);
+    seed_state_raw(
+        repo,
+        r#"{ "version": 1, "active": null, "changelists": [{ "name": "feature" }] }"#,
+    );
+    std::fs::write(repo.join("f.txt"), b"bin\x00\x01\x02data\n").unwrap();
+    dir
+}
+
 #[test]
-fn an_addressed_entry_unit_member_still_widens_until_the_subset_refusal_lands() {
-    // The gap #165 closes: core widens every assign payload to the whole
-    // index-entry unit (ADR 0009), so an address naming one member moves both
-    // — and the echo counts the widened payload. #165 refuses that command
-    // instead, listing every member, so this test becomes the refusal's.
+fn addressing_one_member_of_a_unit_refuses_listing_every_member() {
+    // Core widens every assign payload to the whole index-entry unit
+    // (ADR 0009), so on the CLI an address naming one member would be a
+    // silent broaden. It refuses instead, and the list is the retry (#147).
     let dir = entry_unit_repo();
     let repo = dir.path();
-    let member = address(repo, "f.txt", 1);
+    let first = address(repo, "f.txt", 0);
+    let second = address(repo, "f.txt", 1);
 
-    let echo = assign(repo, &[&member, "--to", "feature"]);
+    let refusal = refusal(repo, &[&second, "--to", "feature"]);
+
+    assert!(refusal.contains(&first), "every member is named: {refusal}");
+    assert!(refusal.contains(&second), "{refusal}");
+    assert!(
+        refusal.contains("sweep the path: 'f.txt'"),
+        "both resolutions are named: {refusal}"
+    );
+    assert_eq!(
+        owners(repo, "f.txt"),
+        vec![None, None],
+        "a refused command assigned nothing"
+    );
+}
+
+#[test]
+fn the_full_membership_retry_assigns_the_unit() {
+    // The retry is an ordinary multi-ID assign under the standing rules — no
+    // new flag, no unit-scope variant (#147).
+    let dir = entry_unit_repo();
+    let repo = dir.path();
+    let first = address(repo, "f.txt", 0);
+    let second = address(repo, "f.txt", 1);
+
+    let echo = assign(repo, &[&first, &second, "--to", "feature"]);
 
     assert!(echo.contains("assigned 2 hunks"), "{echo}");
     assert_eq!(
         owners(repo, "f.txt"),
         vec![changelist("feature"), changelist("feature")]
     );
+}
+
+#[test]
+fn a_split_units_full_membership_retry_meets_the_ownership_guard() {
+    // In a split unit the retry the refusal asked for runs into the members
+    // owned elsewhere, and `--take-owned` is the deliberate statement the
+    // guard exists to extract (#147).
+    let dir = split_entry_unit_repo();
+    let repo = dir.path();
+    let first = address(repo, "f.txt", 0);
+    let second = address(repo, "f.txt", 1);
+    assert_eq!(
+        owners(repo, "f.txt"),
+        vec![None, changelist("feature")],
+        "the fixture's unit is split"
+    );
+
+    let refusal = refusal(repo, &[&first, &second, "--to", "docs"]);
+    assert!(
+        refusal.contains(&format!("hunk '{second}' is owned by 'feature'")),
+        "{refusal}"
+    );
+
+    let echo = assign(repo, &[&first, &second, "--to", "docs", "--take-owned"]);
+
+    assert!(echo.contains("assigned 2 hunks"), "{echo}");
+    assert_eq!(
+        owners(repo, "f.txt"),
+        vec![changelist("docs"), changelist("docs")]
+    );
+}
+
+#[test]
+fn a_release_of_part_of_a_unit_refuses_too() {
+    // ADR 0009's rule is explicitly "in a release too", so the refusal is
+    // the target's business only insofar as every direction has it.
+    let dir = entry_unit_repo();
+    let repo = dir.path();
+    let member = address(repo, "f.txt", 1);
+    assign(repo, &["f.txt", "--to", "feature"]);
+
+    let refusal = refusal(repo, &[&member, "--unassign"]);
+
+    assert!(refusal.contains("sweep the path: 'f.txt'"), "{refusal}");
+    assert_eq!(
+        owners(repo, "f.txt"),
+        vec![changelist("feature"), changelist("feature")],
+        "a refused release released nothing"
+    );
+}
+
+#[test]
+fn a_swept_path_satisfies_the_unit_beside_an_address_of_its_own() {
+    // A sweep names everything, so an address of the same path beside it
+    // cannot be naming only part of the unit.
+    let dir = entry_unit_repo();
+    let repo = dir.path();
+    let member = address(repo, "f.txt", 1);
+
+    let echo = assign(repo, &["f.txt", &member, "--to", "feature"]);
+
+    assert!(echo.contains("assigned 2 hunks"), "{echo}");
+    assert_eq!(
+        owners(repo, "f.txt"),
+        vec![changelist("feature"), changelist("feature")]
+    );
+}
+
+#[test]
+fn a_single_member_unit_never_trips_the_refusal() {
+    // A plain binary: the unit is the one hunk addressed, so naming it is
+    // naming all of it and core's widening has nothing to widen.
+    let dir = lone_member_repo();
+    let repo = dir.path();
+    let only = address(repo, "f.txt", 0);
+
+    let echo = assign(repo, &[&only, "--to", "feature"]);
+
+    assert!(echo.contains("assigned 1 hunk"), "{echo}");
+    assert_eq!(owners(repo, "f.txt"), vec![changelist("feature")]);
+}
+
+#[test]
+fn containing_landing_on_a_unit_member_trips_the_refusal() {
+    // `--containing`'s unique match is the addressed set, so it is a proper
+    // subset exactly as an explicit ID would be (#147).
+    let dir = entry_unit_repo();
+    let repo = dir.path();
+    let first = address(repo, "f.txt", 0);
+    let second = address(repo, "f.txt", 1);
+
+    let refusal = refusal(repo, &["f.txt", "--containing", "EDIT", "--to", "feature"]);
+
+    assert!(refusal.contains(&first), "{refusal}");
+    assert!(refusal.contains(&second), "{refusal}");
+    assert_eq!(owners(repo, "f.txt"), vec![None, None]);
+}
+
+#[test]
+fn the_unit_subset_refusal_joins_the_all_or_nothing_set() {
+    let dir = entry_unit_repo();
+    let repo = dir.path();
+    let member = address(repo, "f.txt", 1);
+
+    let refusal = refusal(repo, &[&member, "gone.txt", "--to", "feature"]);
+
+    assert!(refusal.contains("no such path 'gone.txt'"), "{refusal}");
+    assert!(
+        refusal.contains("sweep the path: 'f.txt'"),
+        "the unit offender is named beside it: {refusal}"
+    );
+    assert_eq!(owners(repo, "f.txt"), vec![None, None]);
 }
