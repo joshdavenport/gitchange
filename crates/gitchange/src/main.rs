@@ -384,10 +384,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             changelist::Mode::Delete { names, release } => {
                 with_lock_retry(|| delete_changelists(&names, release))
             }
-            // The stub names the mode, not the command: three of the four
-            // modes run, so "changelist is not implemented" would be a
-            // lie to anyone who just listed.
-            changelist::Mode::Rename => not_implemented("changelist --move"),
+            changelist::Mode::Rename { from, to } => {
+                with_lock_retry(|| rename_changelist(&from, &to))
+            }
         },
         Some(Command::Assign { scope }) => with_lock_retry(|| assign(&scope)),
         Some(Command::Add { scope }) => with_lock_retry(|| staging(Staging::Add, &scope)),
@@ -845,6 +844,59 @@ fn delete_changelists(names: &[String], release: Release) -> anyhow::Result<()> 
         }
         Deletion::Refused(offenders) => anyhow::bail!(changelist::refusal(&offenders)),
     }
+}
+
+/// `changelist -m <old> <new>` (#149): pure bookkeeping. The changelist,
+/// every membership record naming it — live and dormant alike, since a
+/// record stores the name (ADR 0001) — and the active marker where `<old>`
+/// held it all follow, in core's one locked cycle.
+///
+/// So the mode has no guard and no notice: nothing is released and nothing
+/// is lost, and the receipt is core's echo alone. Renaming a changelist to
+/// the name it already has decides nothing, so it says nothing and exits
+/// `0` — but only once `<old>` has been recognised, which is why an
+/// unknown name refuses even when the two names match.
+///
+/// A bare state write, like create and delete: no refresh runs, so no
+/// capture advisory can ride the receipt.
+fn rename_changelist(from: &str, to: &str) -> anyhow::Result<()> {
+    let repo = open_repo()?;
+    let error = match repo.rename_changelist(from, to) {
+        Ok(outcome) => {
+            receipt(outcome);
+            return Ok(());
+        }
+        Err(error) => error,
+    };
+    // The candidates a typo'd `<old>` earns are read back rather than
+    // carried out of the refusal. They are advice for the retry, not the
+    // guarantee — that nothing was written — which core's locked cycle
+    // already makes; and the retry validates again anyway, so a list read
+    // an instant later is the one thing it cannot be wrong about. Every
+    // other verb's candidate sentence comes from a read of its own too
+    // (`scope::changelist_scopes`, off the snapshot).
+    match changelist::rename_refusal(from, to, &error, || changelist_names(&repo)) {
+        Some(refusal) => anyhow::bail!(refusal),
+        // Everything else keeps its class, so lock contention still reaches
+        // the retry budget and exit 3 rather than an ordinary refusal.
+        None => Err(error.into()),
+    }
+}
+
+/// The real changelists in user order — what a refusal offers a retry — or
+/// `None` where the roster could not be read at all. The two cases are kept
+/// apart because they read as opposites: an empty roster is a repository
+/// with no changelists, which is a fact worth stating, while an unreadable
+/// one knows nothing and must say nothing.
+fn changelist_names(repo: &Repo) -> Option<Vec<String>> {
+    let roster = repo.roster().ok()?;
+    Some(
+        roster
+            .changelists
+            .into_iter()
+            .map(|changelist| changelist.name)
+            .collect(),
+    )
 }
 
 /// A usage error a handler raised: the grammar violations clap cannot

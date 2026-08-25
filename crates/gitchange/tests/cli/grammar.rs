@@ -87,13 +87,24 @@ fn dash_c_needs_a_value() {
 
 // --- changelist ------------------------------------------------------------
 
-/// The one unbuilt mode (#168). The stub names the mode rather than the
-/// command, because the other three run: "changelist is not implemented"
-/// would be a lie to anyone who just listed.
+/// Both spellings of the rename mode parse and reach the repository —
+/// which from nowhere is a refusal about the repository, not about the
+/// command line. What the mode then *does* is `changelist.rs`'s (#168).
 #[test]
-fn changelist_rename_is_a_stub() {
-    assert_stub(&["changelist", "-m", "old", "new"], "changelist --move");
-    assert_stub(&["changelist", "--move", "old", "new"], "changelist --move");
+fn every_rename_spelling_parses() {
+    for args in [
+        vec!["changelist", "-m", "old", "new"],
+        vec!["changelist", "--move", "old", "new"],
+    ] {
+        let output = gitchange(&args);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        assert_eq!(stdout(&output), "", "{args:?} wrote to stdout");
+        assert!(
+            stderr(&output).contains("not a git repository"),
+            "{args:?}: {}",
+            stderr(&output)
+        );
+    }
 }
 
 /// Every spelling of the delete mode parses and reaches the repository —

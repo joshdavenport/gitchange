@@ -5,13 +5,14 @@ use crate::commit::{self, CommitOptions, CommitOutcome, CommitPayload};
 use crate::diff::{ChangeKind, FileDiff};
 use crate::error::Error;
 use crate::git2_backend::Git2Backend;
-use crate::matcher::{self, Advisory, quoted_list};
+use crate::matcher::{self, Advisory};
 use crate::snapshot::Snapshot;
 use crate::state::{Changelist, RecordCounts, State};
 use crate::state_file;
 use crate::universe::{self, ChangedFile, Hunk, HunkStage};
 use crate::vocabulary::{
     ARROW, FOR_THE_NEXT_REFRESH, NO_REVIVAL, UNASSIGNED, count_noun, holder_label,
+    unknown_changelist,
 };
 
 /// How far back the snapshot's Commits panel material reaches — a plain
@@ -175,19 +176,9 @@ impl Undeletable {
     /// and a dormant-only one states the revival it is about to lose.
     pub fn message(&self) -> String {
         match self {
-            Undeletable::Unrecognised { name, candidates } => {
-                let known = match candidates.is_empty() {
-                    true => "this repository has no changelists".to_owned(),
-                    // Deliberately not `scope::changelist_scopes`'
-                    // sentence, which is about the CLI's changelist
-                    // *scopes* and so includes unassigned: no mode of the
-                    // noun command has a meaning for a reserved name, so
-                    // this list is the real changelists and reads
-                    // differently on purpose.
-                    false => format!("the changelists are: {}", quoted_list(candidates)),
-                };
-                format!("no changelist named '{name}' — {known}")
-            }
+            // The noun command's own unrecognised-name sentence, shared
+            // with the rename mode's refused `<old>` (#168).
+            Undeletable::Unrecognised { name, candidates } => unknown_changelist(name, candidates),
             Undeletable::HoldsRecords { name, records } => {
                 let stake = match records.live {
                     0 => format!("deleting it prunes them, so {NO_REVIVAL}"),

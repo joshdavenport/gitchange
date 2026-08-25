@@ -106,6 +106,38 @@ pub fn holder_label(holder: Option<&str>) -> String {
     }
 }
 
+/// `'a', 'b', 'c'` — changelist names as quoted prose, each spelled by
+/// [`holder_label`] so one holder reads the same wherever it is listed
+/// (ADR 0006). These are always real names, never unassigned.
+pub(crate) fn quoted_list(names: &[String]) -> String {
+    names
+        .iter()
+        .map(|name| holder_label(Some(name)))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The unrecognised-name sentence the **noun command** refuses with
+/// (#149): the name that matched nothing, and the changelists a retry can
+/// name instead — gh's error shape (#122), so a typo costs one round trip.
+///
+/// Real changelists only. Unassigned is the absence of membership
+/// (ADR 0016) and `all` a pseudo-view, so no mode of `changelist` has a
+/// meaning for either, and both read here as simply unrecognised. That is
+/// what makes this a different sentence from the CLI's `changelist_scopes`,
+/// whose subject is the scopes a *verb* takes and which does include
+/// unassigned.
+///
+/// Shared by the two modes that name an existing changelist — delete's
+/// offender list and rename's `<old>` — so one repository answers one list.
+pub fn unknown_changelist(name: &str, candidates: &[String]) -> String {
+    let known = match candidates.is_empty() {
+        true => "this repository has no changelists".to_owned(),
+        false => format!("the changelists are: {}", quoted_list(candidates)),
+    };
+    format!("no changelist named '{name}' — {known}")
+}
+
 /// The reserved name and display label for the All pseudo-view
 /// (`CONTEXT.md`'s "All"): every changed file grouped by changelist.
 pub const ALL: &str = "all";

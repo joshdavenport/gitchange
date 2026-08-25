@@ -1,17 +1,19 @@
-//! `changelist` at the binary seam (#149/#166/#167): the bare listing,
-//! create, and delete behind the records guard. Its own module because
-//! the noun command's subject is the changelist roster rather than the
-//! change universe — most assertions here read the listing, which is both
-//! the feature and the way a creation or a deletion is observed.
+//! `changelist` at the binary seam (#149/#166/#167/#168): the bare
+//! listing, create, delete behind the records guard, and rename. Its own
+//! module because the noun command's subject is the changelist roster
+//! rather than the change universe — most assertions here read the
+//! listing, which is both the feature and the way a creation, a deletion
+//! or a rename is observed.
 //!
 //! The listing is the one read that touches no diff at all (a pure state
 //! read), so its write-nothing property is asserted against the state
 //! file's bytes here, as `status`'s is in `status.rs` — and so is the
 //! all-or-nothing promise that a refused delete wrote nothing.
 //!
-//! Dormancy is absent: a dormant record's guard case cannot be built
-//! through this seam (it needs a refresh with the hunk gone and another
-//! with it back), so it lands at core's integration seam instead.
+//! Dormancy is absent: a dormant record's cases — the delete guard's, and
+//! a rename's rewrite — cannot be built through this seam (each needs a
+//! refresh with the hunk gone and another with it back), so they land at
+//! core's integration seam instead.
 
 use std::path::Path;
 
@@ -466,6 +468,114 @@ fn delete_is_all_or_nothing_and_names_every_offender() {
     assert_eq!(
         listing(repo.path()),
         vec!["  feature", "  docs", "  empty", "* unassigned"]
+    );
+}
+
+#[test]
+fn rename_carries_the_records_and_the_marker() {
+    // Pure bookkeeping (#168): the name changes everywhere at once — the
+    // listing, the marker, and the ownership its records carry — and
+    // nothing is released, so there is nothing to notice.
+    let repo = owned_repo();
+    assert_eq!(
+        gitchange(repo.path(), &["switch", "feature"]).status.code(),
+        Some(0)
+    );
+
+    let (stdout, stderr) = succeeds(repo.path(), &["-m", "feature", "feature-x"]);
+
+    assert!(
+        stdout.contains("renamed changelist 'feature'") && stdout.contains("'feature-x'"),
+        "unexpected stdout: {stdout}"
+    );
+    assert_eq!(stderr, "", "nothing was lost, so nothing is noticed");
+    assert_eq!(
+        listing(repo.path()),
+        vec!["* feature-x", "  docs", "  empty"],
+        "the marker follows the changelist it was on"
+    );
+    assert_eq!(
+        owners(repo.path(), "a.txt"),
+        vec![Some("feature-x".to_owned()), None],
+        "the record follows too, so ownership is unbroken"
+    );
+}
+
+#[test]
+fn renaming_to_the_name_it_already_has_is_satisfied_in_silence() {
+    // Nothing decided, so nothing echoed (#122) — and nothing written: the
+    // no-op is a genuine no-op, not a rewrite of the same bytes.
+    let repo = dirty_repo();
+    seed_state(repo.path(), "feature", &["feature"]);
+    let before = std::fs::read(state_path(repo.path())).unwrap();
+
+    let (stdout, stderr) = succeeds(repo.path(), &["-m", "feature", "feature"]);
+
+    assert_eq!(stdout, "");
+    assert_eq!(stderr, "");
+    assert_eq!(std::fs::read(state_path(repo.path())).unwrap(), before);
+}
+
+#[test]
+fn an_unrecognised_old_name_refuses_with_the_candidates() {
+    // #122's gh shape, and the same sentence a delete's offender carries:
+    // one repository answers one list.
+    let repo = dirty_repo();
+    seed_state(repo.path(), "feature", &["feature", "docs"]);
+
+    let stderr = refusal(repo.path(), &["-m", "nope", "other"]);
+
+    assert!(
+        stderr.contains("no changelist named 'nope'")
+            && stderr.contains("the changelists are: 'feature', 'docs'"),
+        "unexpected stderr: {stderr}"
+    );
+
+    // Recognition precedes the nothing-decided check (#149): `-m x x` is
+    // satisfied over a changelist that exists, and an ordinary
+    // unrecognised-name refusal over one that does not.
+    let stderr = refusal(repo.path(), &["-m", "nope", "nope"]);
+    assert!(
+        stderr.contains("no changelist named 'nope'"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn a_reserved_new_name_refuses() {
+    // `<new>` validates exactly as a create's name does — a reserved name
+    // is no more available to a rename than to a creation.
+    let repo = dirty_repo();
+    seed_state(repo.path(), "feature", &["feature"]);
+
+    for name in ["unassigned", "all"] {
+        let stderr = refusal(repo.path(), &["-m", "feature", name]);
+        assert!(stderr.contains("reserved"), "'{name}': {stderr}");
+    }
+    assert_eq!(listing(repo.path()), vec!["* feature"]);
+}
+
+#[test]
+fn an_existing_new_name_refuses_naming_the_composition() {
+    // There is no `-M` (#149): core has no clobbering rename, and a
+    // CLI-side delete-plus-rename would pose as one op. So the refusal
+    // spells the destructive half as the explicit op it is, and the retry
+    // is two copy-pasteable commands.
+    let repo = owned_repo();
+    let before = std::fs::read(state_path(repo.path())).unwrap();
+
+    let stderr = refusal(repo.path(), &["-m", "feature", "docs"]);
+
+    assert!(stderr.contains("already exists"), "{stderr}");
+    assert!(
+        stderr.contains("gitchange changelist -D docs")
+            && stderr.contains("gitchange changelist -m feature docs"),
+        "the composition is named: {stderr}"
+    );
+    assert_eq!(
+        std::fs::read(state_path(repo.path())).unwrap(),
+        before,
+        "a refused rename wrote nothing"
     );
 }
 

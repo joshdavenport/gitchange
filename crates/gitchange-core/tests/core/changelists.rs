@@ -151,6 +151,79 @@ fn rename_carries_the_active_marker() {
 }
 
 #[test]
+fn rename_rewrites_every_record_live_and_dormant() {
+    // A record stores its changelist's name (ADR 0001), so the rewrite has
+    // to be total for a rename to be the pure bookkeeping #168 promises: a
+    // dormant record left under the old name would either be pruned as an
+    // unknown changelist's or revive into a name nothing carries.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("live.txt", "one\n")
+        .write("dormant.txt", "one\n")
+        .commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("feature").unwrap();
+    repo.switch(Some("feature")).unwrap();
+    fixture
+        .write("live.txt", "two\n")
+        .write("dormant.txt", "two\n");
+    repo.refresh().unwrap();
+    // The second edit leaves the diff, so its record goes dormant while
+    // the first stays live — one changelist, one of each.
+    fixture.write("dormant.txt", "one\n");
+    repo.refresh().unwrap();
+
+    repo.rename_changelist("feature", "feature-x").unwrap();
+
+    let records = records(&fixture);
+    assert_eq!(
+        records,
+        vec![
+            ("live.txt".to_owned(), "feature-x".to_owned(), false),
+            ("dormant.txt".to_owned(), "feature-x".to_owned(), true),
+        ],
+        "both records follow the name, and dormancy is untouched"
+    );
+
+    // And the dormant one still revives, under the new name. Capture is
+    // off for the revival, so nothing but the record can be claiming it.
+    repo.switch(None).unwrap();
+    fixture.write("dormant.txt", "two\n");
+    let snapshot = repo.refresh().unwrap().snapshot;
+    let revived = snapshot
+        .files
+        .iter()
+        .find(|file| file.path == "dormant.txt")
+        .expect("the edit is back in the diff");
+    assert_eq!(
+        revived.hunks[0].changelist.as_deref(),
+        Some("feature-x"),
+        "a dormant record revives under the name the rename gave it"
+    );
+}
+
+/// Every stored record as (path, owner, dormant), in file order — read off
+/// the persisted shape (ADR 0002), which is where a rename's rewrite either
+/// happened or did not.
+fn records(fixture: &RepoFixture) -> Vec<(String, String, bool)> {
+    let raw = fs::read_to_string(fixture.path().join(".git/gitchange/state.json"))
+        .expect("state file exists");
+    let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    json["records"]
+        .as_array()
+        .expect("records")
+        .iter()
+        .map(|record| {
+            (
+                record["path"].as_str().unwrap().to_owned(),
+                record["changelist"].as_str().unwrap().to_owned(),
+                record["dormant_since"].is_u64(),
+            )
+        })
+        .collect()
+}
+
+#[test]
 fn rename_unknown_name_is_an_error() {
     let fixture = RepoFixture::new();
     let repo = repo(&fixture);

@@ -1,21 +1,16 @@
 //! The noun command (#149): `git branch`'s grammar wholesale — the bare
-//! listing, create, delete, rename — of which the built modes are the
-//! listing and create (#166) and delete (#167).
+//! listing and create (#166), delete (#167) and rename (#168).
 //!
 //! What lives here is what the argument list means ([`Mode`]), how the
-//! listing reads ([`print()`]), and how a refused delete reads
-//! ([`refusal()`]); the repository work is main.rs's, as every other
-//! verb's is.
+//! listing reads ([`print()`]), and how a refused delete or rename reads
+//! ([`refusal()`], [`rename_refusal()`]); the repository work is main.rs's,
+//! as every other verb's is.
 
-use gitchange_core::{Release, Roster, UNASSIGNED, Undeletable, target_line};
+use gitchange_core::{Error, Release, Roster, UNASSIGNED, Undeletable, target_line};
 
 /// Which of the four modes an invocation is. Every other combination of
 /// the flags is unrepresentable — the pairwise conflicts are clap's
 /// (#140), so a mode is chosen by the parse, not validated here.
-///
-/// The one unbuilt mode carries nothing yet: its values are read by the
-/// ticket that builds it (#168's pair), and a mode is all the dispatch
-/// asks for until then.
 pub enum Mode {
     /// Bare `changelist`: the listing, and the command's only read.
     List,
@@ -30,7 +25,7 @@ pub enum Mode {
         release: Release,
     },
     /// `-m <old> <new>`.
-    Rename,
+    Rename { from: String, to: String },
 }
 
 impl Mode {
@@ -66,7 +61,13 @@ impl Mode {
             };
         }
         match rename {
-            Some(_) => Mode::Rename,
+            // Exactly two values or no parse at all (#140), so the pair is
+            // whole by the time it arrives: the arity clap enforced is the
+            // one this destructuring relies on.
+            Some(pair) => match <[String; 2]>::try_from(pair) {
+                Ok([from, to]) => Mode::Rename { from, to },
+                Err(_) => unreachable!("'-m' parses with num_args = 2"),
+            },
             None => Mode::List,
         }
     }
@@ -96,6 +97,47 @@ pub fn refusal(offenders: &[Undeletable]) -> String {
             format!("{listed}\nrelease them deliberately with 'gitchange changelist -D <name>...'")
         }
         false => listed,
+    }
+}
+
+/// A refused rename, or `None` where core's own error is the whole answer
+/// (#149). Two of the three refusals want more than the error alone says;
+/// the rest — lock contention above all — must reach
+/// [`crate::report_failure`] as the error they are, since that is what the
+/// exit-code split reads.
+///
+/// - an unrecognised `<old>` refuses with the candidates listed. The
+///   sentence is core's, the same one a delete's offender carries (so one
+///   repository answers one list); what this surface adds is the list,
+///   which the error does not carry;
+/// - an existing `<new>` refuses **naming the composition**: there is no
+///   `-M`, because core has no clobbering rename and a CLI-side
+///   delete-then-rename would pose as one op. So the destructive half is
+///   spelled as the op it is, and the retry is two named commands.
+///
+/// A reserved `<new>` needs nothing added: core's sentence names the name
+/// and says why, and the fix is to pick another one.
+///
+/// `candidates` is a thunk answering `None` where the roster could not be
+/// read: only the first arm has any use for one — the retry's advice, read
+/// when there is a retry to advise — and an unread roster must fall through
+/// to core's bare sentence rather than be dressed as an empty one, which
+/// would state that the repository has no changelists.
+pub fn rename_refusal(
+    from: &str,
+    to: &str,
+    error: &Error,
+    candidates: impl FnOnce() -> Option<Vec<String>>,
+) -> Option<String> {
+    match error {
+        Error::UnknownChangelist { name } => {
+            candidates().map(|candidates| gitchange_core::unknown_changelist(name, &candidates))
+        }
+        Error::ChangelistExists { .. } => Some(format!(
+            "{error}\nthere is no clobbering rename — delete it deliberately with \
+             'gitchange changelist -D {to}', then 'gitchange changelist -m {from} {to}'"
+        )),
+        _ => None,
     }
 }
 

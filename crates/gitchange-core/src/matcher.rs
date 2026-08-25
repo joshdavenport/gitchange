@@ -13,7 +13,7 @@ use crate::diff::ChangeKind;
 use crate::state::{MembershipRecord, RecordCounts, RecordIdentity};
 use crate::universe::{ChangedFile, Hunk, HunkIdentity, ranges_overlap};
 use crate::vocabulary::{
-    ARROW, FOR_THE_NEXT_REFRESH, NO_REVIVAL, UNASSIGNED, count_noun, holder_label,
+    ARROW, FOR_THE_NEXT_REFRESH, NO_REVIVAL, UNASSIGNED, count_noun, quoted_list,
 };
 
 /// Dormant records prune after 14 days (ADR 0002).
@@ -250,18 +250,6 @@ impl Advisory {
             }
         }
     }
-}
-
-/// `'a', 'b', 'c'` — changelist names as quoted prose, each spelled by
-/// [`holder_label`] so one holder reads the same here and in the commit's
-/// refusal (ADR 0006). These are always real names, never unassigned: a
-/// changelist has to hold a record to be listed.
-pub(crate) fn quoted_list(names: &[String]) -> String {
-    names
-        .iter()
-        .map(|name| holder_label(Some(name)))
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 /// The paths a HEAD move changed between the stored baseline and the

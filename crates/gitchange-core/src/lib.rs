@@ -36,6 +36,6 @@ pub use universe::{ChangedFile, FileStage, Hunk, HunkIdentity, HunkStage, file_s
 pub use vocabulary::{
     ACTIVE_MARKER, ALL, ARROW, CONFLICTS, FOR_THE_NEXT_REFRESH, NO_REVIVAL, PARTIALLY_STAGED,
     RESOLVE_OUTSIDE_GITCHANGE, SEPARATOR, STAGED, STAGED_STALE, UNASSIGNED, UNSTAGED,
-    conflicted_hint, count_noun, holder_label, target_line, target_named,
+    conflicted_hint, count_noun, holder_label, target_line, target_named, unknown_changelist,
 };
 pub use wire::{HunkContent, diff_envelope, status_envelope};

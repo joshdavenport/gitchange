@@ -365,12 +365,17 @@ pub fn locate_paths<'a>(
 /// changelist is named, not a changelist anyone created. Shared by every
 /// verb that takes a changelist, so one repo answers one list.
 pub fn changelist_scopes(snapshot: &Snapshot) -> String {
+    // Each real name through `holder_label`, the one home for how a holder
+    // is spelled (ADR 0006), so this list and the noun command's — which
+    // reaches the same helper through core's own sentence — cannot come to
+    // quote a changelist two ways. Unassigned leads, unquoted: it is not a
+    // name anyone chose, which is what `holder_label(None)` says too.
     let names: Vec<String> = std::iter::once(UNASSIGNED.to_owned())
         .chain(
             snapshot
                 .changelists
                 .iter()
-                .map(|changelist| format!("'{}'", changelist.name)),
+                .map(|changelist| holder_label(Some(&changelist.name))),
         )
         .collect();
     format!("the changelist scopes are: {}", names.join(", "))
