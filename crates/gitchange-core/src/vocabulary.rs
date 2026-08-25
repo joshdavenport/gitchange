@@ -44,6 +44,17 @@ pub const ARROW: char = '→';
 /// The active-changelist marker.
 pub const ACTIVE_MARKER: char = '*';
 
+/// One switch target as a text listing prints it: the marker column,
+/// then the label. Both of the CLI's listings compose their lines here —
+/// `status`'s group headers and the bare `changelist` listing — so the
+/// column they share cannot come to disagree about its width or its
+/// glyph, which two spellings of `{marker} {label}` would do silently
+/// (ADR 0006's one-home rule for shared tokens).
+pub fn target_line(active: bool, label: &str) -> String {
+    let marker = if active { ACTIVE_MARKER } else { ' ' };
+    format!("{marker} {label}")
+}
+
 /// The inline separator between clauses in one-line summaries and hint
 /// lines.
 pub const SEPARATOR: char = '·';

@@ -20,11 +20,13 @@
 //! | `add`        | `add`'s sweep, its refusals, and its receipt             |
 //! | `unstage`    | the mirror: the `●`-only sweep and its kept-`◑` notices  |
 //! | `assign`     | membership: the path sweep, the ownership guard, release |
+//! | `changelist` | the noun command: the bare listing, and create           |
 
 mod support;
 
 mod add;
 mod assign;
+mod changelist;
 mod diff;
 mod grammar;
 mod invocation;

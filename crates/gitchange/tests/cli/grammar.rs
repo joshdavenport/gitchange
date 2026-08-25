@@ -87,22 +87,34 @@ fn dash_c_needs_a_value() {
 
 // --- changelist ------------------------------------------------------------
 
+/// The two unbuilt modes (#167, #168). Each stub names the mode rather
+/// than the command, because the other two modes run: "changelist is not
+/// implemented" would be a lie to anyone who just listed. The built
+/// modes — the bare listing and create — are `changelist.rs`'s, which
+/// needs a repository to assert them in.
 #[test]
-fn changelist_every_mode_is_a_stub() {
-    assert_stub(&["changelist"], "changelist");
-    assert_stub(&["changelist", "feature"], "changelist");
-    assert_stub(&["changelist", "-d", "feature"], "changelist");
+fn changelist_delete_and_rename_are_stubs() {
+    assert_stub(&["changelist", "-d", "feature"], "changelist --delete");
     assert_stub(
         &["changelist", "--delete", "feature", "bugfix"],
-        "changelist",
+        "changelist --delete",
     );
-    assert_stub(&["changelist", "-d", "feature", "-f"], "changelist");
-    assert_stub(&["changelist", "-d", "feature", "--force"], "changelist");
-    assert_stub(&["changelist", "-D", "feature"], "changelist");
+    assert_stub(
+        &["changelist", "-d", "feature", "-f"],
+        "changelist --delete",
+    );
+    assert_stub(
+        &["changelist", "-d", "feature", "--force"],
+        "changelist --delete",
+    );
+    assert_stub(&["changelist", "-D", "feature"], "changelist --delete");
     // git's tolerance where it maps: `-f` beside `-D` is legal-redundant.
-    assert_stub(&["changelist", "-D", "feature", "-f"], "changelist");
-    assert_stub(&["changelist", "-m", "old", "new"], "changelist");
-    assert_stub(&["changelist", "--move", "old", "new"], "changelist");
+    assert_stub(
+        &["changelist", "-D", "feature", "-f"],
+        "changelist --delete",
+    );
+    assert_stub(&["changelist", "-m", "old", "new"], "changelist --move");
+    assert_stub(&["changelist", "--move", "old", "new"], "changelist --move");
 }
 
 #[test]

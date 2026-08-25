@@ -269,9 +269,12 @@ pub fn state_path(dir: &Path) -> std::path::PathBuf {
     dir.join(".git/gitchange/state.json")
 }
 
-/// Seed a state file directly (the CLI has no create subcommand by
-/// design — ticket 13 fixed the surface to `status` + `switch`). Doubles
-/// as a schema-v1 stability check: this JSON must stay readable.
+/// Seed a state file directly: a fixture arrives with its changelists
+/// and its marker already placed, rather than paying an invocation per
+/// changelist through `changelist <name>` and a `switch` (#166) — and a
+/// fixture built that way would assert the verbs under test with the
+/// verbs under test. Doubles as a schema-v1 stability check: this JSON
+/// must stay readable.
 pub fn seed_state(dir: &Path, active: &str, names: &[&str]) {
     let changelists: Vec<String> = names
         .iter()

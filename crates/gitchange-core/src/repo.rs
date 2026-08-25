@@ -7,7 +7,7 @@ use crate::error::Error;
 use crate::git2_backend::Git2Backend;
 use crate::matcher::{self, Advisory};
 use crate::snapshot::Snapshot;
-use crate::state::State;
+use crate::state::{Changelist, State};
 use crate::state_file;
 use crate::universe::{self, ChangedFile, Hunk, HunkStage};
 use crate::vocabulary::{ARROW, UNASSIGNED, count_noun, holder_label};
@@ -90,6 +90,18 @@ impl SweepOutcome {
 pub struct RefreshOutcome {
     pub snapshot: Snapshot,
     pub advisories: Vec<Advisory>,
+}
+
+/// A repository's changelist set on its own: the names in user order
+/// (creation-append) and which one holds the active marker — everything
+/// [`Snapshot`] carries about changelists, and nothing it carries about
+/// the change universe.
+#[derive(Debug)]
+pub struct Roster {
+    pub changelists: Vec<Changelist>,
+    /// The active changelist; `None` is unassigned — capture off
+    /// (ADR 0015).
+    pub active: Option<String>,
 }
 
 /// Which of ADR 0005's two refresh forms a recompute pass is running.
@@ -797,6 +809,24 @@ impl Repo {
             moved: fresh.len(),
             skipped: advisories.len(),
             advisories,
+        })
+    }
+
+    /// The changelist roster, read without recomputing anything: the
+    /// CLI's bare listing (#149) asks only what the state file already
+    /// says, so neither refresh form is run — a persisting one would
+    /// capture hunks nobody asked it to, and even a read-only one would
+    /// pay for both diffs and the matcher to answer from a field it
+    /// carries verbatim.
+    ///
+    /// Like every read it takes no lock: writers replace the file
+    /// atomically (ADR 0002), so a roster is some writer's before or
+    /// after state, never a torn one.
+    pub fn roster(&self) -> Result<Roster, Error> {
+        let state = state_file::load(&self.backend.state_dir())?;
+        Ok(Roster {
+            changelists: state.changelists,
+            active: state.active,
         })
     }
 

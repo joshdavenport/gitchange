@@ -40,6 +40,14 @@ creating a changelist never does, and deleting the active one leaves
 unassigned active.
 _Avoid_: current, selected, default
 
+**Changelist roster**:
+Every changelist in user order plus which one holds the marker — the
+changelist set on its own, carrying nothing from the change universe.
+What the CLI's bare `changelist` listing reads, and the only question
+answerable without a refresh of either form; a **snapshot** carries the
+same facts alongside the universe.
+_Avoid_: list, registry, index
+
 **Unassigned**:
 The pseudo-changelist holding every hunk with no membership record —
 that absence is the one membership test (ADR 0016). Holds the dirty

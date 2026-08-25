@@ -26,13 +26,15 @@ pub use engine::{Condition, Engine, EngineEvent};
 pub use error::{ApplySite, Error, LockHolder};
 pub use hunk_id::{HunkAddress, HunkId};
 pub use matcher::Advisory;
-pub use repo::{AssignTarget, OpOutcome, RefreshOutcome, Repo, StagingTarget, SweepOutcome};
+pub use repo::{
+    AssignTarget, OpOutcome, RefreshOutcome, Repo, Roster, StagingTarget, SweepOutcome,
+};
 pub use snapshot::{CommitInfo, FileGroup, GitOperation, GroupKind, Head, Snapshot};
 pub use state::{Changelist, MembershipRecord, OidAnchor, RESERVED_NAMES};
 pub use universe::{ChangedFile, FileStage, Hunk, HunkIdentity, HunkStage, file_stage};
 pub use vocabulary::{
     ACTIVE_MARKER, ALL, ARROW, CONFLICTS, PARTIALLY_STAGED, RESOLVE_OUTSIDE_GITCHANGE, SEPARATOR,
     STAGED, STAGED_STALE, UNASSIGNED, UNSTAGED, conflicted_hint, count_noun, holder_label,
-    target_named,
+    target_line, target_named,
 };
 pub use wire::{HunkContent, diff_envelope, status_envelope};

@@ -7,11 +7,12 @@ use clap::builder::NonEmptyStringValueParser;
 use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand};
 
 use gitchange_core::{
-    ACTIVE_MARKER, Advisory, ChangedFile, GroupKind, HunkContent, LockHolder, OpOutcome, Repo,
-    Snapshot, SweepOutcome, diff_envelope, status_envelope, target_named,
+    Advisory, ChangedFile, GroupKind, HunkContent, LockHolder, OpOutcome, Repo, Snapshot,
+    SweepOutcome, diff_envelope, status_envelope, target_line, target_named,
 };
 
 mod assign;
+mod changelist;
 mod diff;
 mod scope;
 mod staging;
@@ -369,7 +370,26 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Some(Command::Status { json }) => status(json),
         Some(Command::Switch { name }) => with_lock_retry(|| switch(&name)),
         Some(Command::Refresh) => not_implemented("refresh"),
-        Some(Command::Changelist { .. }) => not_implemented("changelist"),
+        Some(Command::Changelist {
+            name,
+            delete,
+            force_delete,
+            // The delete mode's own flag (#167); which mode this is
+            // does not turn on it, since `-f` cannot arrive without one
+            // of the delete slots filled (#140).
+            force: _,
+            rename,
+        }) => match changelist::Mode::of(name, delete, force_delete, rename) {
+            // A read, and the one read that touches no diff: no lock, so
+            // no contention to absorb (#122).
+            changelist::Mode::List => list_changelists(),
+            changelist::Mode::Create(name) => with_lock_retry(|| create_changelist(&name)),
+            // The stub names the mode, not the command: two of the four
+            // modes run, so "changelist is not implemented" would be a
+            // lie to anyone who just listed.
+            changelist::Mode::Delete => not_implemented("changelist --delete"),
+            changelist::Mode::Rename => not_implemented("changelist --move"),
+        },
         Some(Command::Assign { scope }) => with_lock_retry(|| assign(&scope)),
         Some(Command::Add { scope }) => with_lock_retry(|| staging(Staging::Add, &scope)),
         Some(Command::Unstage { scope }) => with_lock_retry(|| staging(Staging::Unstage, &scope)),
@@ -537,8 +557,7 @@ fn print_all_view(snapshot: &Snapshot) {
             // terms, since both are switch targets (ADR 0015), so one
             // arm prints them.
             kind => {
-                let marker = if kind.active() { ACTIVE_MARKER } else { ' ' };
-                println!("{marker} {}", kind.label());
+                println!("{}", target_line(kind.active(), kind.label()));
                 // Unassigned, not active, holding hunks: exactly one target
                 // is always active (CONTEXT.md), so "not unassigned" is "a
                 // real changelist", and capture is on for these. The hint
@@ -783,6 +802,26 @@ fn double_dash_typed() -> bool {
 fn switch(name: &str) -> anyhow::Result<()> {
     let repo = open_repo()?;
     receipt(repo.switch(target_named(name))?);
+    Ok(())
+}
+
+/// Bare `changelist` (#149): the roster, rendered. Read-only per #122's
+/// taxonomy and a pure state read besides — nothing in the listing
+/// derives from the change universe, so neither refresh form runs and
+/// glancing at the changelist set can never move membership.
+fn list_changelists() -> anyhow::Result<()> {
+    changelist::print(&open_repo()?.roster()?);
+    Ok(())
+}
+
+/// `changelist <name>`: a bare locked state write, so its receipt is
+/// core's echo and nothing else — no refresh runs, so no capture
+/// advisory can ride it. The refusals are core's too (a reserved name, a
+/// name already taken), reaching exit 1 through the ordinary error path.
+/// Creation never moves the active marker (ADR 0015).
+fn create_changelist(name: &str) -> anyhow::Result<()> {
+    let repo = open_repo()?;
+    receipt(repo.create_changelist(name)?);
     Ok(())
 }
 
