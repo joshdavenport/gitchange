@@ -272,6 +272,64 @@ fn paths_resolve_against_the_cwd_and_print_repo_relative() {
     );
 }
 
+/// Temporary (#181): the two spellings, read off `test (windows-latest)`.
+/// Fails on purpose — a passing test's output is captured, and the values
+/// are the whole point. Deleted once the mechanism is recorded on the
+/// comparison it explains.
+#[cfg(windows)]
+#[test]
+fn the_windows_spellings_of_one_directory() {
+    let repo = owned_repo();
+    let cwd = std::process::Command::new("cmd")
+        .args(["/C", "cd"])
+        .current_dir(repo.path())
+        .output()
+        .expect("run cmd");
+
+    panic!(
+        "temp_dir:  {:?}\ntempdir:   {:?}\ncanonical: {:?}\nchild cwd: {}\ntoplevel:  {}",
+        std::env::temp_dir(),
+        repo.path(),
+        repo.path().canonicalize(),
+        String::from_utf8_lossy(&cwd.stdout).trim(),
+        git(repo.path(), &["rev-parse", "--show-toplevel"]),
+    );
+}
+
+#[test]
+fn an_absolute_path_resolves_and_one_outside_the_worktree_still_refuses() {
+    // Either spelling in (#181): the caller's cwd and libgit2's worktree
+    // root can name the same directory differently, so both sides of the
+    // comparison are canonicalized — and an absolute path typed from
+    // outside must still read as the escape it is.
+    let repo = owned_repo();
+    let inside = repo.path().join("a.txt");
+    let outside = repo.path().parent().unwrap().join("outside.txt");
+
+    assert_eq!(
+        files_in(&diff(repo.path(), &["--", inside.to_str().unwrap()])),
+        vec!["a.txt"]
+    );
+
+    let stderr = refusal(repo.path(), &["--", outside.to_str().unwrap()]);
+    assert!(stderr.contains("is outside the repository"), "{stderr}");
+}
+
+#[test]
+fn a_deleted_path_named_as_an_argument_resolves_through_the_snapshot() {
+    // The tail of a path argument stays lexical (#181): a deleted file has
+    // no on-disk path to canonicalize, and canonicalizing it would make
+    // `diff` unable to name the deletion it prints.
+    let repo = initialised_repo();
+    write(repo.path(), "gone.txt", "one\n");
+    commit(repo.path(), "init");
+    std::fs::remove_file(repo.path().join("gone.txt")).unwrap();
+
+    let patch = diff(repo.path(), &["--", "gone.txt"]);
+
+    assert!(patch.contains("--- a/gone.txt\n+++ /dev/null\n"), "{patch}");
+}
+
 // --- token resolution ------------------------------------------------------
 
 #[test]

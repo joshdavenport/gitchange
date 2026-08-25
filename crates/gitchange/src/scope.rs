@@ -11,6 +11,7 @@
 //! clap cannot see. Path offenders are collected and reported together, so
 //! a caller fixing a command line learns all of its mistakes at once.
 
+use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
 use gitchange_core::{ChangedFile, Hunk, HunkId, Snapshot, UNASSIGNED};
@@ -403,10 +404,52 @@ fn normalize(path: &Path) -> PathBuf {
     normalized
 }
 
+/// `path` with its longest existing ancestor canonicalized and everything
+/// below that left exactly as it arrived.
+///
+/// The tail stays lexical for [`normalize`]'s reason — a deleted file has
+/// no on-disk path to canonicalize — and the last component is never
+/// canonicalized even when it does exist, so a symlink named as an argument
+/// still resolves to the link's own repo-relative path rather than to
+/// wherever it points.
+fn canonical_ancestor(path: &Path) -> PathBuf {
+    let mut tail: Vec<&OsStr> = Vec::new();
+    let mut current = path;
+    while let (Some(parent), Some(name)) = (current.parent(), current.file_name()) {
+        tail.push(name);
+        current = parent;
+        if let Ok(canonical) = current.canonicalize() {
+            let mut resolved = canonical;
+            resolved.extend(tail.iter().rev());
+            return resolved;
+        }
+    }
+    path.to_owned()
+}
+
 /// `absolute` as the repo-relative, `/`-separated path every gitchange
 /// surface prints (#122), or `None` where it escapes the worktree.
+///
+/// Both sides are canonicalized before they are compared (#181), because
+/// they reach here from different sources and the same directory can carry
+/// two spellings: the argument side is built on the cwd the process was
+/// launched with, and `workdir` is libgit2's. A lexical `strip_prefix`
+/// across that divergence reads every path inside the worktree as an
+/// escape.
+///
+/// Canonicalized at the comparison rather than held in both spellings the
+/// way core's watcher self-loop filter holds its roots: that filter answers
+/// yes/no over roots it never has to name, where this must produce the one
+/// repo-relative path a surface prints, and two spellings would mean
+/// choosing between them.
 fn repo_relative(absolute: &Path, workdir: &Path) -> Option<String> {
-    let relative = absolute.strip_prefix(normalize(workdir)).ok()?;
+    // The worktree always exists, so this canonicalizes whole; the fallback
+    // is the pre-#181 comparison, which is right whenever it is reachable.
+    let root = workdir
+        .canonicalize()
+        .unwrap_or_else(|_| normalize(workdir));
+    let resolved = canonical_ancestor(absolute);
+    let relative = resolved.strip_prefix(root).ok()?;
     let components: Vec<&str> = relative
         .components()
         .map(|component| component.as_os_str().to_str())
