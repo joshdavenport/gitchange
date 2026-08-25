@@ -459,6 +459,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+    use crate::error::LockHolder;
     use crate::snapshot::Snapshot;
 
     /// Generous ceiling for waiting on an event that must arrive; never
@@ -830,8 +831,12 @@ mod tests {
     fn lock_contention_is_retried_not_surfaced() {
         let engine = TestEngine::spawn_with(|run| {
             if run == 1 {
+                // The engine retries on contention whatever the holder is:
+                // its own next tick is the retry, so no classification
+                // reaches the frontend.
                 Err(Error::LockContention {
                     path: PathBuf::from("/repo/.git/gitchange/state.json.lock"),
+                    holder: LockHolder::Alive { pid: 4242 },
                 })
             } else {
                 Ok(empty_refresh())

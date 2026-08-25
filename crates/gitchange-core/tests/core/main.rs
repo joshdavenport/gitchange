@@ -15,6 +15,7 @@
 //! | `assign`            | explicit `Repo::assign_hunks` re-anchoring            |
 //! | `changelists`       | changelist sync ops and state-file persistence        |
 //! | `persistence`       | ADR 0002's file-level properties, not per-operation   |
+//! | `lockfile`          | contention: fail-fast, and dead vs. live holders      |
 //! | `staging`           | write-through stage/unstage against the live index    |
 //! | `commit`            | commit from a temporary index, plus record aftermath  |
 //! | `head_moves`        | tier-2 staleness under an external HEAD move          |
@@ -37,6 +38,7 @@ mod conflicts;
 mod engine;
 mod head_moves;
 mod hunk_universe;
+mod lockfile;
 mod matcher;
 mod operations;
 mod persistence;

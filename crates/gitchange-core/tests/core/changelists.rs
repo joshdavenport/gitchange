@@ -233,24 +233,6 @@ fn state_file_is_pretty_json_with_schema_version_at_the_git_path() {
 }
 
 #[test]
-fn a_held_lockfile_fails_fast_with_lock_contention() {
-    let fixture = RepoFixture::new();
-    let repo = repo(&fixture);
-    repo.create_changelist("feature").unwrap();
-
-    let lock_path = fixture.path().join(".git/gitchange/state.json.lock");
-    fs::write(&lock_path, "").unwrap();
-
-    let err = repo.create_changelist("bugfix").unwrap_err();
-    assert!(matches!(err, Error::LockContention { .. }), "{err:?}");
-
-    // The held lock was not stolen or removed by the failed attempt.
-    assert!(lock_path.exists());
-    fs::remove_file(&lock_path).unwrap();
-    repo.create_changelist("bugfix").unwrap();
-}
-
-#[test]
 fn linked_worktrees_have_independent_state_files() {
     let fixture = RepoFixture::new();
     fixture.write("a.txt", "content\n").commit_all("init");

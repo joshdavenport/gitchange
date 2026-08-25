@@ -21,7 +21,7 @@ pub use diff::{
     ChangeKind, DiffHunk, FileDiff, FileModes, FileSides, HunkLine, ModeDelta, RepoDiffs, SideInfo,
 };
 pub use engine::{Condition, Engine, EngineEvent};
-pub use error::{ApplySite, Error};
+pub use error::{ApplySite, Error, LockHolder};
 pub use matcher::Advisory;
 pub use repo::{OpOutcome, RefreshOutcome, Repo};
 pub use snapshot::{CommitInfo, FileGroup, GitOperation, GroupKind, Head, Snapshot};

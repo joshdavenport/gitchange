@@ -7,7 +7,10 @@ names and the active marker) lives in a single pretty-printed JSON file at
 anchor ref is needed — records contain only text. Writes are atomic
 write-then-rename guarded by a git-convention lockfile
 (`state.json.lock`); a process finding the lock held fails fast with a
-clear error rather than waiting. The file carries a schema version field.
+clear error rather than waiting. The lockfile records the holder's PID, so
+that error separates a live holder — retry — from a leaked lock, the only
+case where removing the file is sound advice; an unreadable PID is assumed
+live. The file carries a schema version field.
 
 Anchors are stored as **plain text, not compressed** — this supersedes ADR
 0001's "compressed" wording. Uncommitted-change metadata is small, and

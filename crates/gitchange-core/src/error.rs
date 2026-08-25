@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::snapshot::GitOperation;
 use crate::vocabulary::holder_label;
@@ -24,12 +24,11 @@ pub enum Error {
     #[error("invalid changelist name: {reason}")]
     InvalidName { reason: String },
 
-    #[error(
-        "gitchange state is locked by another process ({}); \
-         if no gitchange is running, remove the lockfile and retry",
-        path.display()
-    )]
-    LockContention { path: PathBuf },
+    /// Another writer holds the state lockfile (ADR 0002: fail-fast, never
+    /// queued, never stolen). `holder` says which resolution applies —
+    /// frontends branch on it, and the message states it.
+    #[error("{}", lock_contention_message(.path, .holder))]
+    LockContention { path: PathBuf, holder: LockHolder },
 
     /// A git operation is in progress (ADR 0007): the next commit would
     /// conclude it with one changelist's content, so commit refuses.
@@ -105,6 +104,31 @@ pub enum Error {
     Backend(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
 
+/// What holds a lockfile a writer found taken — the resolution
+/// [`Error::LockContention`] carries, so a caller branches on the
+/// classification instead of re-reading the lockfile.
+///
+/// The classification is deliberately asymmetric: only a process id that is
+/// both readable and known to be gone counts as [`Dead`], because advising
+/// removal of a live holder's lock is the one answer that can break another
+/// session's load-mutate-save cycle. PID recycling fails safe in the same
+/// direction — a recycled number makes a stale lock look held, which costs
+/// a retry.
+///
+/// [`Dead`]: LockHolder::Dead
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockHolder {
+    /// The recorded process id is running: retry, never remove.
+    Alive { pid: u32 },
+    /// The recorded process id names no running process, so the lock is
+    /// stale and removing it is the accurate resolution.
+    Dead { pid: u32 },
+    /// No process id could be read — a hold whose write was cut short, a
+    /// lockfile gitchange did not write, or one it could not read. Assumed
+    /// running, the fail-safe direction.
+    Unreadable,
+}
+
 /// The two libgit2 apply calls the apply tripwire watches — where a
 /// hunk-wise apply can be refused and [`Error::ApplyFailed`] fires.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,6 +138,34 @@ pub enum ApplySite {
     /// Commit's payload apply against HEAD's tree while the temp index
     /// is assembled (ADR 0004).
     CommitTempIndex,
+}
+
+/// [`Error::LockContention`]'s message, per holder classification. Only a
+/// holder proven gone is told to remove the lockfile — advice a live holder
+/// would be broken by. The live form names the running process instead and
+/// no path at all: a caller told to retry has no use for one, and naming it
+/// is the invitation. The unreadable form is the exception, because its
+/// retry can go on being refused forever, and then the file is the only
+/// thing left to look at.
+///
+/// The live form says "pid N" rather than naming gitchange, since a
+/// recycled number is exactly the case it cannot rule out.
+fn lock_contention_message(path: &Path, holder: &LockHolder) -> String {
+    match holder {
+        LockHolder::Alive { pid } => {
+            format!("gitchange state is locked by pid {pid}; retry in a moment")
+        }
+        LockHolder::Unreadable => format!(
+            "gitchange state is locked by a process {} records no id for, \
+             so it is assumed to be running; retry in a moment",
+            path.display()
+        ),
+        LockHolder::Dead { pid } => format!(
+            "gitchange state is locked by pid {pid}, which is no longer running: \
+             remove {} and retry",
+            path.display()
+        ),
+    }
 }
 
 /// [`Error::ForeignEntryContent`]'s message: what is in the way, why it

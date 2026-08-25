@@ -348,11 +348,13 @@ dependencies = [
  "crossbeam-channel",
  "git2",
  "gitchange-test-support",
+ "libc",
  "notify",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

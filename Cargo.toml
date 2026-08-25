@@ -30,3 +30,10 @@ serde_json = "1"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 tempfile = "3"
+# The syscalls std has no answer for — core's lockfile-holder liveness
+# check, xtask's peak-RSS probe.
+libc = "0.2"
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_System_Threading",
+] }
