@@ -10,9 +10,11 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::diff::ChangeKind;
-use crate::state::{MembershipRecord, RecordIdentity};
+use crate::state::{MembershipRecord, RecordCounts, RecordIdentity};
 use crate::universe::{ChangedFile, Hunk, HunkIdentity, ranges_overlap};
-use crate::vocabulary::{ARROW, UNASSIGNED, count_noun, holder_label};
+use crate::vocabulary::{
+    ARROW, FOR_THE_NEXT_REFRESH, NO_REVIVAL, UNASSIGNED, count_noun, holder_label,
+};
 
 /// Dormant records prune after 14 days (ADR 0002).
 const DORMANT_TTL_SECS: u64 = 14 * 24 * 60 * 60;
@@ -118,6 +120,18 @@ pub enum Advisory {
         /// The deleted changelist that held the marker.
         changelist: String,
     },
+    /// A forced delete pruned a changelist's records (#149): the one
+    /// thing the records guard exists to stop, so a caller who overrode
+    /// the guard gets it counted back.
+    RecordsReleased {
+        /// The deleted changelist the records belonged to.
+        changelist: String,
+        /// What was pruned, and so which of the two stakes the message
+        /// states: the live count is the hunks released recordless, the
+        /// dormant count is claims on hunks already out of the diff,
+        /// which lose their revival instead (ADR 0002).
+        records: RecordCounts,
+    },
 }
 
 impl Advisory {
@@ -198,6 +212,36 @@ impl Advisory {
             Advisory::ActiveChangelistDeleted { changelist } => {
                 format!("'{changelist}' was the active changelist — {UNASSIGNED} is active now")
             }
+            // What the guard would have refused, reported as what
+            // happened — the same two stakes it states, in the past
+            // tense: released hunks where anything was live, and a lost
+            // revival where the records were dormant and there was
+            // nothing to release. No destination either way: the hunks
+            // are recordless, and where they land is the claiming
+            // refresh's to say.
+            Advisory::RecordsReleased {
+                changelist,
+                records,
+            } if records.live == 0 => {
+                format!(
+                    "dropped {} from '{changelist}' — {NO_REVIVAL}",
+                    records.counted()
+                )
+            }
+            Advisory::RecordsReleased {
+                changelist,
+                records,
+            } => {
+                let dropped = match records.dormant {
+                    0 => String::new(),
+                    dormant => format!(" ({} dropped)", count_noun(dormant, "dormant record")),
+                };
+                format!(
+                    "released {} from '{changelist}'{dropped} — recordless now, \
+                     {FOR_THE_NEXT_REFRESH}",
+                    count_noun(records.live, "hunk")
+                )
+            }
             Advisory::HeadMoveDormancy { path, changelists } => {
                 let list = quoted_list(changelists);
                 format!(
@@ -212,7 +256,7 @@ impl Advisory {
 /// [`holder_label`] so one holder reads the same here and in the commit's
 /// refusal (ADR 0006). These are always real names, never unassigned: a
 /// changelist has to hold a record to be listed.
-fn quoted_list(names: &[String]) -> String {
+pub(crate) fn quoted_list(names: &[String]) -> String {
     names
         .iter()
         .map(|name| holder_label(Some(name)))

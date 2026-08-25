@@ -9,7 +9,7 @@
 
 use std::fs;
 
-use crate::support::RepoFixture;
+use crate::support::{RepoFixture, delete};
 use gitchange_core::{ChangedFile, CommitOptions, Head, Repo, Snapshot};
 
 /// `count` numbered lines, with `edits` as (1-based line, replacement).
@@ -229,8 +229,8 @@ fn every_state_file_write_leaves_no_temp_sibling() {
     .unwrap();
     only_the_state_file("commit");
 
-    repo.delete_changelist("errands").unwrap();
-    only_the_state_file("delete_changelist");
+    delete(&repo, "errands");
+    only_the_state_file("delete_changelists");
 }
 
 #[test]
@@ -291,8 +291,8 @@ fn no_membership_op_writes_a_git_object() {
     repo.switch(Some("errands")).unwrap();
     unchanged("switch");
 
-    repo.delete_changelist("errands").unwrap();
-    unchanged("delete_changelist");
+    delete(&repo, "errands");
+    unchanged("delete_changelists");
 
     // The dormancy the delete leaves behind is re-derived on the next
     // refresh, which rewrites records again — still no objects.

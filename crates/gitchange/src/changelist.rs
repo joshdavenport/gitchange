@@ -1,20 +1,21 @@
 //! The noun command (#149): `git branch`'s grammar wholesale — the bare
-//! listing, create, delete, rename — of which this ticket (#166) builds
-//! the listing and create.
+//! listing, create, delete, rename — of which the built modes are the
+//! listing and create (#166) and delete (#167).
 //!
-//! What lives here is what the argument list means ([`Mode`]) and how the
-//! listing reads ([`print()`]); the repository work is main.rs's, as every
-//! other verb's is.
+//! What lives here is what the argument list means ([`Mode`]), how the
+//! listing reads ([`print()`]), and how a refused delete reads
+//! ([`refusal()`]); the repository work is main.rs's, as every other
+//! verb's is.
 
-use gitchange_core::{Roster, UNASSIGNED, target_line};
+use gitchange_core::{Release, Roster, UNASSIGNED, Undeletable, target_line};
 
 /// Which of the four modes an invocation is. Every other combination of
 /// the flags is unrepresentable — the pairwise conflicts are clap's
 /// (#140), so a mode is chosen by the parse, not validated here.
 ///
-/// The two unbuilt modes carry nothing yet: their values are read by the
-/// tickets that build them (#167's names and force flag, #168's pair),
-/// and a mode is all this ticket's dispatch asks for.
+/// The one unbuilt mode carries nothing yet: its values are read by the
+/// ticket that builds it (#168's pair), and a mode is all the dispatch
+/// asks for until then.
 pub enum Mode {
     /// Bare `changelist`: the listing, and the command's only read.
     List,
@@ -22,8 +23,12 @@ pub enum Mode {
     Create(String),
     /// `-d <name>...`, `-D <name>...`, `-d … -f` — one mode, since `-D`
     /// is sugar for `--delete --force` and `-f` beside it is
-    /// legal-redundant.
-    Delete,
+    /// legal-redundant. Which spelling arrived survives only as the
+    /// [`Release`] it means.
+    Delete {
+        names: Vec<String>,
+        release: Release,
+    },
     /// `-m <old> <new>`.
     Rename,
 }
@@ -38,18 +43,59 @@ impl Mode {
         name: Option<String>,
         delete: Vec<String>,
         force_delete: Vec<String>,
+        force: bool,
         rename: Option<Vec<String>>,
     ) -> Self {
         if let Some(name) = name {
             return Mode::Create(name);
         }
+        // `-D` is `--delete --force`, so its own list forces on its own;
+        // `-f` cannot arrive without one of the two lists filled (#140),
+        // which is why the flag needs no mode of its own here.
         if !delete.is_empty() || !force_delete.is_empty() {
-            return Mode::Delete;
+            let forced = force || !force_delete.is_empty();
+            return Mode::Delete {
+                names: match force_delete.is_empty() {
+                    true => delete,
+                    false => force_delete,
+                },
+                release: match forced {
+                    true => Release::Forced,
+                    false => Release::Guarded,
+                },
+            };
         }
         match rename {
             Some(_) => Mode::Rename,
             None => Mode::List,
         }
+    }
+}
+
+/// A refused delete, in the all-or-nothing shape every mutating verb
+/// refuses in (#122/#145): every offender in argument order, `; `-joined,
+/// each sentence core's own (ADR 0006) — and where the records guard
+/// fired, the override on its own line at the end.
+///
+/// The override is this surface's to spell and no one else's: core states
+/// the mechanism, the CLI names the flag that accepts it. It goes after
+/// the list rather than into it for the reason the staging refusals put
+/// their grammar note there — inside, it would read as one more offender.
+pub fn refusal(offenders: &[Undeletable]) -> String {
+    let guarded = offenders
+        .iter()
+        .any(|offender| matches!(offender, Undeletable::HoldsRecords { .. }));
+    let listed = crate::scope::refusal(
+        &offenders
+            .iter()
+            .map(Undeletable::message)
+            .collect::<Vec<String>>(),
+    );
+    match guarded {
+        true => {
+            format!("{listed}\nrelease them deliberately with 'gitchange changelist -D <name>...'")
+        }
+        false => listed,
     }
 }
 

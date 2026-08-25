@@ -3,8 +3,8 @@
 
 use std::fs;
 
-use crate::support::RepoFixture;
-use gitchange_core::{Error, RESERVED_NAMES, Repo};
+use crate::support::{RepoFixture, delete, done, offenders};
+use gitchange_core::{Error, RESERVED_NAMES, Release, Repo, Undeletable};
 
 fn repo(fixture: &RepoFixture) -> Repo {
     Repo::discover(fixture.path()).unwrap()
@@ -170,7 +170,7 @@ fn deleting_the_active_changelist_leaves_unassigned_active() {
     repo.switch(Some("feature")).unwrap();
     repo.create_changelist("bugfix").unwrap();
 
-    repo.delete_changelist("feature").unwrap();
+    delete(&repo, "feature");
 
     let (names, active) = names_and_active(&repo);
     assert_eq!(names, vec!["bugfix"]);
@@ -185,7 +185,7 @@ fn deleting_an_inactive_changelist_leaves_the_marker_alone() {
     repo.create_changelist("bugfix").unwrap();
     repo.switch(Some("feature")).unwrap();
 
-    repo.delete_changelist("bugfix").unwrap();
+    delete(&repo, "bugfix");
 
     let (names, active) = names_and_active(&repo);
     assert_eq!(names, vec!["feature"]);
@@ -200,7 +200,7 @@ fn deleting_the_last_changelist_leaves_unassigned_active() {
     // Held by the changelist first, so the delete is what moves it.
     repo.switch(Some("feature")).unwrap();
 
-    repo.delete_changelist("feature").unwrap();
+    delete(&repo, "feature");
 
     let (names, active) = names_and_active(&repo);
     assert!(names.is_empty());
@@ -208,12 +208,79 @@ fn deleting_the_last_changelist_leaves_unassigned_active() {
 }
 
 #[test]
-fn delete_unknown_name_is_an_error() {
+fn delete_refuses_an_unrecognised_name_with_the_candidates() {
+    // Not an error but an offender (#149): a delete of several names has
+    // to report every one that failed, and an error carries one.
+    // Reserved names are unrecognised here too — neither is a changelist
+    // a delete could act on (ADR 0016).
     let fixture = RepoFixture::new();
     let repo = repo(&fixture);
+    repo.create_changelist("feature").unwrap();
 
-    let err = repo.delete_changelist("nope").unwrap_err();
-    assert!(matches!(err, Error::UnknownChangelist { name } if name == "nope"));
+    for name in ["nope", "unassigned", "all"] {
+        let refused = repo.delete_changelists(&[name], Release::Guarded).unwrap();
+        assert_eq!(
+            offenders(refused),
+            vec![Undeletable::Unrecognised {
+                name: name.to_owned(),
+                candidates: vec!["feature".to_owned()],
+            }],
+            "'{name}' is not a changelist"
+        );
+    }
+    assert_eq!(names_and_active(&repo).0, vec!["feature"]);
+}
+
+#[test]
+fn delete_validates_every_name_before_deleting_any() {
+    // All-or-nothing against one locked read (#149): one bad name among
+    // good ones deletes nothing, so the retry is the same command
+    // corrected — and every offender is named, so it takes one round trip.
+    let fixture = RepoFixture::new();
+    let repo = repo(&fixture);
+    repo.create_changelist("feature").unwrap();
+    repo.create_changelist("docs").unwrap();
+
+    let refused = repo
+        .delete_changelists(&["feature", "nope", "docs", "typo"], Release::Guarded)
+        .unwrap();
+
+    let names: Vec<String> = offenders(refused)
+        .into_iter()
+        .map(|offender| match offender {
+            Undeletable::Unrecognised { name, .. } => name,
+            other => panic!("unexpected offender: {other:?}"),
+        })
+        .collect();
+    assert_eq!(names, vec!["nope", "typo"], "in argument order");
+    assert_eq!(
+        names_and_active(&repo).0,
+        vec!["feature", "docs"],
+        "a refused delete deleted nothing"
+    );
+}
+
+#[test]
+fn deleting_several_changelists_is_one_op_and_one_echo() {
+    // One invocation is one op (#122), so it says one line however many
+    // names it carried — and a name given twice is one delete, absorbed
+    // here rather than left for every caller to dedupe.
+    let fixture = RepoFixture::new();
+    let repo = repo(&fixture);
+    repo.create_changelist("feature").unwrap();
+    repo.create_changelist("docs").unwrap();
+    repo.create_changelist("keep").unwrap();
+
+    let deleted = done(
+        repo.delete_changelists(&["docs", "feature", "docs"], Release::Guarded)
+            .unwrap(),
+    );
+
+    assert_eq!(
+        deleted.echo.as_deref(),
+        Some("deleted changelists 'docs', 'feature'")
+    );
+    assert_eq!(names_and_active(&repo).0, vec!["keep"]);
 }
 
 #[test]
@@ -243,7 +310,7 @@ fn the_bare_write_ops_echo_the_decision_they_made() {
     let switched = repo.switch(None).unwrap();
     assert_eq!(switched.echo.as_deref(), Some("switched to 'unassigned'"));
 
-    let deleted = repo.delete_changelist("feature-x").unwrap();
+    let deleted = delete(&repo, "feature-x");
     assert_eq!(
         deleted.echo.as_deref(),
         Some("deleted changelist 'feature-x'")
@@ -281,7 +348,7 @@ fn deleting_the_active_changelist_notices_that_the_marker_moved() {
     repo.create_changelist("feature").unwrap();
     repo.switch(Some("feature")).unwrap();
 
-    let deleted = repo.delete_changelist("feature").unwrap();
+    let deleted = delete(&repo, "feature");
 
     assert_eq!(
         deleted.echo.as_deref(),

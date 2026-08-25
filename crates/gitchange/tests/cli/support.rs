@@ -225,6 +225,33 @@ pub fn address(dir: &Path, path: &str, index: usize) -> String {
         .unwrap_or_else(|| panic!("no hunk {index} of '{path}' in:\n{diff}"))
 }
 
+/// Each hunk's owner for `path`, in file order — read back through
+/// `diff --json`, the surface a caller has for the same question. Shared
+/// because membership is a gitchange fact with no git command to check it
+/// against, so every suite that asserts ownership asks this one way.
+pub fn owners(dir: &Path, path: &str) -> Vec<Option<String>> {
+    let output = gitchange(dir, &["diff", "--json", "--no-content", path]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "diff --json {path}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let envelope: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("the envelope is one JSON document");
+    envelope["files"]
+        .as_array()
+        .expect("files")
+        .iter()
+        .find(|file| file["path"] == serde_json::json!(path))
+        .unwrap_or_else(|| panic!("no '{path}' in {envelope}"))["hunks"]
+        .as_array()
+        .expect("hunks")
+        .iter()
+        .map(|hunk| hunk["changelist"].as_str().map(str::to_owned))
+        .collect()
+}
+
 /// The paths the index holds a change for, in git's order — the ground
 /// truth for what a sweep reached.
 pub fn staged_paths(dir: &Path) -> Vec<String> {

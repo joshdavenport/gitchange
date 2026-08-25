@@ -59,6 +59,25 @@ pub fn target_line(active: bool, label: &str) -> String {
 /// lines.
 pub const SEPARATOR: char = '·';
 
+/// What becomes of hunks a delete released, as every line that mentions
+/// them spells it: the records guard's refusal and the forced release's
+/// notice both end on this clause, so the promise a caller may read twice
+/// is one sentence (ADR 0006's one-home rule).
+///
+/// It names the **mechanism and never a destination** (#122 §Forecasts):
+/// where a released hunk lands is context-derived twice over — an
+/// intervening `switch` moves it, and the index-entry-unit rule overrides
+/// it hunk by hunk — so the claiming refresh's own receipt is the only
+/// honest report of where it went.
+pub const FOR_THE_NEXT_REFRESH: &str = "for the next persisting refresh to claim";
+
+/// What a **dormant** record's pruning costs, as the two lines that
+/// mention one spell it. A dormant record claims a hunk that has left the
+/// diff, so its deletion releases nothing — there is nothing there to
+/// release. What it ends is the revival that record was waiting for
+/// (ADR 0002), which is the stake [`FOR_THE_NEXT_REFRESH`] would misstate.
+pub const NO_REVIVAL: &str = "nothing they claimed is restored if it comes back";
+
 /// The reserved name and display label for the unassigned pseudo-
 /// changelist (`CONTEXT.md`'s "Unassigned"): hunks no changelist owns.
 /// Kept as one constant so the name users are barred from and the label

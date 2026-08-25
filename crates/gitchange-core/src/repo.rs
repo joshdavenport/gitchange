@@ -5,12 +5,14 @@ use crate::commit::{self, CommitOptions, CommitOutcome, CommitPayload};
 use crate::diff::{ChangeKind, FileDiff};
 use crate::error::Error;
 use crate::git2_backend::Git2Backend;
-use crate::matcher::{self, Advisory};
+use crate::matcher::{self, Advisory, quoted_list};
 use crate::snapshot::Snapshot;
-use crate::state::{Changelist, State};
+use crate::state::{Changelist, RecordCounts, State};
 use crate::state_file;
 use crate::universe::{self, ChangedFile, Hunk, HunkStage};
-use crate::vocabulary::{ARROW, UNASSIGNED, count_noun, holder_label};
+use crate::vocabulary::{
+    ARROW, FOR_THE_NEXT_REFRESH, NO_REVIVAL, UNASSIGNED, count_noun, holder_label,
+};
 
 /// How far back the snapshot's Commits panel material reaches — a plain
 /// lazygit-equivalent window, not a full history walk.
@@ -102,6 +104,149 @@ pub struct Roster {
     /// The active changelist; `None` is unassigned — capture off
     /// (ADR 0015).
     pub active: Option<String>,
+}
+
+/// Whether a delete may release a changelist's membership records
+/// (#149's records guard). Not a bool at the call site: a delete that
+/// releases another actor's claims is exactly the decision worth reading
+/// in the argument list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Release {
+    /// Refuse while any records exist, live or dormant — the CLI's
+    /// unforced `changelist -d`.
+    Guarded,
+    /// Prune the records and release the hunks, counting what went: the
+    /// CLI's `-f`/`-D`, and the TUI's own delete, whose confirm dialog is
+    /// what this override means there (ADR 0015's parity).
+    Forced,
+}
+
+/// What a delete answered: the receipt of one that ran, or the offenders
+/// of one that refused whole. Two outcomes rather than an error because
+/// only the frontend can dress a refusal — the exit code, the `; `-joined
+/// offender list, the override its own grammar spells — while the facts
+/// behind it are core's (#149).
+#[derive(Debug)]
+pub enum Deletion {
+    /// Every named changelist is gone; the receipt carries the echo and
+    /// the notices for what the deletions decided on their own.
+    Done(OpOutcome),
+    /// Nothing was deleted and nothing was written. Every offender, in
+    /// the order the names arrived, so one refusal is a complete
+    /// instruction.
+    Refused(Vec<Undeletable>),
+}
+
+/// Why one name could not be deleted (#149's two offender classes).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Undeletable {
+    /// No changelist by that name at the locked read. A reserved name is
+    /// simply unrecognised to a delete: `unassigned` is the absence of
+    /// membership (ADR 0016) and `all` a pseudo-view, so neither is
+    /// something a delete could act on.
+    Unrecognised {
+        name: String,
+        /// The real changelists, in user order — what a retry can name.
+        candidates: Vec<String>,
+    },
+    /// It holds membership records and the delete was [`Release::Guarded`].
+    HoldsRecords {
+        name: String,
+        /// What it holds, live and dormant — the counts the refusal
+        /// names, and what decides which stake the refusal states.
+        records: RecordCounts,
+    },
+}
+
+impl Undeletable {
+    /// The canonical sentence for this offender (ADR 0006), which a
+    /// frontend joins into its own refusal and dresses.
+    ///
+    /// The guard's sentence names the counts and the stake, and stops
+    /// there: the override is spelled differently on every surface (a flag
+    /// on the CLI, a confirm dialog in the TUI), so naming one here would
+    /// teach the other's caller the wrong move.
+    ///
+    /// The stake is not one thing. Live records hold hunks that a deletion
+    /// releases recordless, for the next refresh to claim; dormant records
+    /// hold nothing to release — their hunks are already out of the diff —
+    /// and what deletion ends is the revival they were waiting for
+    /// (ADR 0002). So a changelist with anything live states the release,
+    /// and a dormant-only one states the revival it is about to lose.
+    pub fn message(&self) -> String {
+        match self {
+            Undeletable::Unrecognised { name, candidates } => {
+                let known = match candidates.is_empty() {
+                    true => "this repository has no changelists".to_owned(),
+                    // Deliberately not `scope::changelist_scopes`'
+                    // sentence, which is about the CLI's changelist
+                    // *scopes* and so includes unassigned: no mode of the
+                    // noun command has a meaning for a reserved name, so
+                    // this list is the real changelists and reads
+                    // differently on purpose.
+                    false => format!("the changelists are: {}", quoted_list(candidates)),
+                };
+                format!("no changelist named '{name}' — {known}")
+            }
+            Undeletable::HoldsRecords { name, records } => {
+                let stake = match records.live {
+                    0 => format!("deleting it prunes them, so {NO_REVIVAL}"),
+                    _ => format!(
+                        "deleting it prunes them and releases its hunks recordless, \
+                         {FOR_THE_NEXT_REFRESH}"
+                    ),
+                };
+                format!("'{name}' holds {} — {stake}", records.counted())
+            }
+        }
+    }
+}
+
+/// `names` with repeats dropped, first occurrence keeping its place.
+fn distinct<'a>(names: &[&'a str]) -> Vec<&'a str> {
+    let mut distinct: Vec<&'a str> = Vec::new();
+    for name in names {
+        if !distinct.contains(name) {
+            distinct.push(name);
+        }
+    }
+    distinct
+}
+
+/// The names in `named` that cannot be deleted from `state`, in argument
+/// order. Every name is asked, not just the first that fails: an
+/// all-or-nothing refusal is only a complete instruction if it names
+/// every offender.
+fn undeletable(state: &State, named: &[&str], release: Release) -> Vec<Undeletable> {
+    let mut offenders = Vec::new();
+    for name in named {
+        if !state.contains(name) {
+            offenders.push(Undeletable::Unrecognised {
+                name: (*name).to_owned(),
+                candidates: state.changelist_names(),
+            });
+            continue;
+        }
+        let records = state.record_counts(name);
+        if release == Release::Guarded && records.any() {
+            offenders.push(Undeletable::HoldsRecords {
+                name: (*name).to_owned(),
+                records,
+            });
+        }
+    }
+    offenders
+}
+
+/// One echo for the whole delete, however many names it carried: the
+/// invocation is one op (#122), and one op says one line.
+fn deleted_echo(named: &[&str]) -> String {
+    let noun = match named.len() {
+        1 => "changelist",
+        _ => "changelists",
+    };
+    let names: Vec<String> = named.iter().map(|name| holder_label(Some(name))).collect();
+    format!("deleted {noun} {}", names.join(", "))
 }
 
 /// Which of ADR 0005's two refresh forms a recompute pass is running.
@@ -849,27 +994,68 @@ impl Repo {
         }))
     }
 
-    /// Delete a changelist, pruning all of its records (ADR 0016).
-    /// Deleting the active one leaves unassigned active, and says so:
-    /// the marker moving is a decision the caller did not ask for, so it
-    /// rides the receipt as an advisory.
-    pub fn delete_changelist(&self, name: &str) -> Result<OpOutcome, Error> {
-        let mut was_active = false;
-        // Read inside the mutation, so the marker is the one the delete
-        // actually took: the state is loaded under the lock, and a
-        // switch that landed between our decision and the write would
-        // otherwise make this advisory a guess.
+    /// Delete changelists, pruning all of their records (ADR 0016) —
+    /// **all-or-nothing against one locked read** (#149): every name is
+    /// validated against the same state the deletions then run on, and
+    /// any offender refuses the whole call with nothing written. One
+    /// locked cycle is what makes that a guarantee rather than a race:
+    /// validation and deletion cannot see two different states.
+    ///
+    /// [`Release::Guarded`] is the records guard — a changelist holding
+    /// any records, live or dormant, refuses rather than releasing its
+    /// hunks recordless for the next persisting refresh to claim, which
+    /// in a shared tree can land one actor's work under another's name.
+    /// [`Release::Forced`] overrides that guard **only**: an unrecognised
+    /// name still refuses.
+    ///
+    /// A bare state write: no refresh runs (ADR 0005's persisting set is
+    /// unchanged), so the guard counts exactly what the records say — and
+    /// recorded membership is the only membership (ADR 0016), so there is
+    /// nothing for it to miss. Deleting the active changelist leaves
+    /// unassigned active and says so; a forced release counts what it
+    /// released. Both are decisions the caller did not ask for, so both
+    /// ride the receipt as advisories.
+    ///
+    /// A name given twice is one delete: the redundancy is absorbed here,
+    /// where the locked cycle is, so no caller has to dedupe a command
+    /// line before it can be honoured.
+    pub fn delete_changelists(&self, names: &[&str], release: Release) -> Result<Deletion, Error> {
+        let named = distinct(names);
+        let mut refused = Vec::new();
+        let mut advisories = Vec::new();
+        // Everything is read inside the mutation, so every fact the
+        // receipt states is the one the delete acted on: a switch or a
+        // refresh landing between a decision and the write would
+        // otherwise make these counts and this marker a guess.
         let wrote = self.update_state(|state| {
-            was_active = state.active.as_deref() == Some(name);
-            state.delete(name)
+            refused = undeletable(state, &named, release);
+            if !refused.is_empty() {
+                return Ok(());
+            }
+            for name in &named {
+                let records = state.record_counts(name);
+                let was_active = state.active.as_deref() == Some(*name);
+                state.delete(name)?;
+                if records.any() {
+                    advisories.push(Advisory::RecordsReleased {
+                        changelist: (*name).to_owned(),
+                        records,
+                    });
+                }
+                if was_active {
+                    advisories.push(Advisory::ActiveChangelistDeleted {
+                        changelist: (*name).to_owned(),
+                    });
+                }
+            }
+            Ok(())
         })?;
-        let mut outcome = OpOutcome::decided(wrote, || format!("deleted changelist '{name}'"));
-        if was_active {
-            outcome.advisories.push(Advisory::ActiveChangelistDeleted {
-                changelist: name.into(),
-            });
+        if !refused.is_empty() {
+            return Ok(Deletion::Refused(refused));
         }
-        Ok(outcome)
+        let mut receipt = OpOutcome::decided(wrote, || deleted_echo(&named));
+        receipt.advisories = advisories;
+        Ok(Deletion::Done(receipt))
     }
 
     /// Set the active changelist; `None` is unassigned (ADR 0015's

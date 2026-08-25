@@ -7,8 +7,8 @@ use clap::builder::NonEmptyStringValueParser;
 use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand};
 
 use gitchange_core::{
-    Advisory, ChangedFile, GroupKind, HunkContent, LockHolder, OpOutcome, Repo, Snapshot,
-    SweepOutcome, diff_envelope, status_envelope, target_line, target_named,
+    Advisory, ChangedFile, Deletion, GroupKind, HunkContent, LockHolder, OpOutcome, Release, Repo,
+    Snapshot, SweepOutcome, diff_envelope, status_envelope, target_line, target_named,
 };
 
 mod assign;
@@ -374,20 +374,19 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             name,
             delete,
             force_delete,
-            // The delete mode's own flag (#167); which mode this is
-            // does not turn on it, since `-f` cannot arrive without one
-            // of the delete slots filled (#140).
-            force: _,
+            force,
             rename,
-        }) => match changelist::Mode::of(name, delete, force_delete, rename) {
+        }) => match changelist::Mode::of(name, delete, force_delete, force, rename) {
             // A read, and the one read that touches no diff: no lock, so
             // no contention to absorb (#122).
             changelist::Mode::List => list_changelists(),
             changelist::Mode::Create(name) => with_lock_retry(|| create_changelist(&name)),
-            // The stub names the mode, not the command: two of the four
+            changelist::Mode::Delete { names, release } => {
+                with_lock_retry(|| delete_changelists(&names, release))
+            }
+            // The stub names the mode, not the command: three of the four
             // modes run, so "changelist is not implemented" would be a
             // lie to anyone who just listed.
-            changelist::Mode::Delete => not_implemented("changelist --delete"),
             changelist::Mode::Rename => not_implemented("changelist --move"),
         },
         Some(Command::Assign { scope }) => with_lock_retry(|| assign(&scope)),
@@ -823,6 +822,29 @@ fn create_changelist(name: &str) -> anyhow::Result<()> {
     let repo = open_repo()?;
     receipt(repo.create_changelist(name)?);
     Ok(())
+}
+
+/// `changelist -d|-D <name>...` (#149): deletion behind the records
+/// guard, all-or-nothing. Core validates every name against the same
+/// locked read the deletions then run on, so a refused command deleted
+/// nothing and the retry is this command corrected; the refusal is this
+/// surface's, because the exit code and the override's spelling are.
+///
+/// A bare write, like create: no refresh runs, so no capture advisory can
+/// ride the receipt — the only notices are the delete's own decisions, the
+/// marker moving and the records a forced release pruned. The hunks those
+/// records held are recordless now, and the *next* persisting refresh —
+/// possibly another actor's — reports where they landed, once.
+fn delete_changelists(names: &[String], release: Release) -> anyhow::Result<()> {
+    let repo = open_repo()?;
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    match repo.delete_changelists(&names, release)? {
+        Deletion::Done(outcome) => {
+            receipt(outcome);
+            Ok(())
+        }
+        Deletion::Refused(offenders) => anyhow::bail!(changelist::refusal(&offenders)),
+    }
 }
 
 /// A usage error a handler raised: the grammar violations clap cannot

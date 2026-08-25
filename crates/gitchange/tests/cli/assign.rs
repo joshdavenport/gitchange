@@ -20,34 +20,9 @@
 use std::path::Path;
 
 use crate::support::{
-    address, git, gitchange, initialised_repo, merging_repo, owned_repo, seed_state,
+    address, git, gitchange, initialised_repo, merging_repo, owned_repo, owners, seed_state,
     seed_state_raw, write,
 };
-
-/// Each hunk's owner for `path`, in file order — read back through
-/// `diff --json`, the surface a caller has for the same question.
-fn owners(dir: &Path, path: &str) -> Vec<Option<String>> {
-    let output = gitchange(dir, &["diff", "--json", "--no-content", path]);
-    assert_eq!(
-        output.status.code(),
-        Some(0),
-        "diff --json {path}: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let envelope: serde_json::Value =
-        serde_json::from_slice(&output.stdout).expect("the envelope is one JSON document");
-    envelope["files"]
-        .as_array()
-        .expect("files")
-        .iter()
-        .find(|file| file["path"] == serde_json::json!(path))
-        .unwrap_or_else(|| panic!("no '{path}' in {envelope}"))["hunks"]
-        .as_array()
-        .expect("hunks")
-        .iter()
-        .map(|hunk| hunk["changelist"].as_str().map(str::to_owned))
-        .collect()
-}
 
 /// `gitchange assign <args>`, asserted to have succeeded, its stdout echo.
 fn assign(dir: &Path, args: &[&str]) -> String {

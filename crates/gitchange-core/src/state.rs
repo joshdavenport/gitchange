@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::Error;
 use crate::matcher;
 use crate::universe::Hunk;
-use crate::vocabulary::{ALL, UNASSIGNED};
+use crate::vocabulary::{ALL, UNASSIGNED, count_noun};
 
 /// Names claimed by pseudo-views (`CONTEXT.md`): never valid for user
 /// changelists. Built from the same constants frontends print as labels
@@ -181,9 +181,73 @@ impl Default for State {
     }
 }
 
+/// A changelist's membership records, counted by liveness — what the
+/// delete guard names and the forced release reports (#149). Live and
+/// dormant are counted apart because they promise different things: a
+/// live record claims a hunk that is in the diff now, a dormant one a
+/// hunk that would come back (ADR 0002), and a delete prunes both
+/// (ADR 0016).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecordCounts {
+    /// Records claiming a hunk that is in the diff now: the hunks a
+    /// delete would release.
+    pub live: usize,
+    /// Records whose hunk has left the diff and would be restored if it
+    /// came back (ADR 0002): nothing to release, a revival to lose.
+    pub dormant: usize,
+}
+
+impl RecordCounts {
+    /// Whether there are any records at all — the records guard's
+    /// condition, live or dormant alike.
+    pub fn any(&self) -> bool {
+        self.live + self.dormant > 0
+    }
+
+    /// These counts as prose, in the one phrasing every line that names
+    /// them uses (ADR 0006's one-home rule): both numbers when both are
+    /// nonzero, and only the nonzero one otherwise — "1 live record and 0
+    /// dormant records" states a fact nobody asked about, and the guard
+    /// fires on the total anyway.
+    pub fn counted(&self) -> String {
+        match (self.live, self.dormant) {
+            (0, dormant) => count_noun(dormant, "dormant record"),
+            (live, 0) => count_noun(live, "live record"),
+            (live, dormant) => format!(
+                "{} and {}",
+                count_noun(live, "live record"),
+                count_noun(dormant, "dormant record")
+            ),
+        }
+    }
+}
+
 impl State {
-    fn contains(&self, name: &str) -> bool {
+    pub(crate) fn contains(&self, name: &str) -> bool {
         self.changelists.iter().any(|cl| cl.name == name)
+    }
+
+    /// The changelist names in user order — the candidates an
+    /// unrecognised-name refusal quotes back. Real changelists only:
+    /// unassigned is the absence of membership (ADR 0016), so no mode of
+    /// the noun command has anything to do with it.
+    pub(crate) fn changelist_names(&self) -> Vec<String> {
+        self.changelists.iter().map(|cl| cl.name.clone()).collect()
+    }
+
+    /// How many records `name` holds, live and dormant.
+    pub(crate) fn record_counts(&self, name: &str) -> RecordCounts {
+        let mut counts = RecordCounts {
+            live: 0,
+            dormant: 0,
+        };
+        for record in self.records.iter().filter(|r| r.changelist == name) {
+            match record.is_dormant() {
+                true => counts.dormant += 1,
+                false => counts.live += 1,
+            }
+        }
+        counts
     }
 
     fn validate_new_name(&self, name: &str) -> Result<(), Error> {

@@ -1,17 +1,71 @@
-//! `changelist` at the binary seam (#149/#166): the bare listing and
-//! create. Its own module because the noun command's subject is the
-//! changelist roster rather than the change universe — every assertion
-//! here reads the listing, which is both the feature and the way a
-//! creation is observed.
+//! `changelist` at the binary seam (#149/#166/#167): the bare listing,
+//! create, and delete behind the records guard. Its own module because
+//! the noun command's subject is the changelist roster rather than the
+//! change universe — most assertions here read the listing, which is both
+//! the feature and the way a creation or a deletion is observed.
 //!
 //! The listing is the one read that touches no diff at all (a pure state
 //! read), so its write-nothing property is asserted against the state
-//! file's bytes here, as `status`'s is in `status.rs`.
+//! file's bytes here, as `status`'s is in `status.rs` — and so is the
+//! all-or-nothing promise that a refused delete wrote nothing.
+//!
+//! Dormancy is absent: a dormant record's guard case cannot be built
+//! through this seam (it needs a refresh with the hunk gone and another
+//! with it back), so it lands at core's integration seam instead.
+
+use std::path::Path;
 
 use crate::support::{
-    committed_repo, dirty_repo, git, gitchange, repo_holding, seed_state, seed_state_raw,
-    state_path,
+    committed_repo, dirty_repo, git, gitchange, owned_repo, owners, repo_holding, seed_state,
+    seed_state_raw, state_path,
 };
+
+/// `gitchange changelist <args>`, asserted to have succeeded: its stdout
+/// echo and its stderr notices, for the caller to read the fragments it
+/// cares about.
+fn succeeds(dir: &Path, args: &[&str]) -> (String, String) {
+    let output = gitchange(dir, &[&["changelist"], args].concat());
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "gitchange changelist {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    (
+        String::from_utf8(output.stdout).unwrap(),
+        String::from_utf8(output.stderr).unwrap(),
+    )
+}
+
+/// The refusal `gitchange changelist <args>` produces: exit 1, empty
+/// stdout, and the stderr text to read fragments off.
+fn refusal(dir: &Path, args: &[&str]) -> String {
+    let output = gitchange(dir, &[&["changelist"], args].concat());
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "gitchange changelist {args:?} should refuse"
+    );
+    assert_eq!(
+        output.stdout,
+        Vec::<u8>::new(),
+        "a failed command leaves stdout empty (#122)"
+    );
+    String::from_utf8(output.stderr).unwrap()
+}
+
+/// The `notice:` lines of a receipt, in order — the stderr half of the
+/// receipt shape (#122), with the prefix asserted and stripped.
+fn notices(stderr: &str) -> Vec<String> {
+    stderr
+        .lines()
+        .map(|line| {
+            line.strip_prefix("gitchange: notice: ")
+                .unwrap_or_else(|| panic!("not a prefixed notice: {line}"))
+                .to_owned()
+        })
+        .collect()
+}
 
 /// The listing's lines, with the exit code asserted along the way — a
 /// listing that refused is never a listing.
@@ -205,4 +259,231 @@ fn an_existing_name_refuses_loudly() {
         "unexpected stderr: {stderr}"
     );
     assert_eq!(listing(repo.path()), vec!["* feature"]);
+}
+
+#[test]
+fn an_empty_changelist_deletes_ungated_and_force_is_inert() {
+    // No records, nothing to release: the guard has nothing to guard
+    // (#149), so the delete is an ordinary bare write with one echo and
+    // no notices — and `-D` is inert here, releasing nothing and saying
+    // nothing, because force overrides a guard that never fired.
+    for flags in [vec!["-d", "empty"], vec!["-D", "empty"]] {
+        let repo = owned_repo();
+
+        let (stdout, stderr) = succeeds(repo.path(), &flags);
+
+        assert!(
+            stdout.contains("deleted changelist 'empty'"),
+            "{flags:?} stdout: {stdout}"
+        );
+        assert_eq!(stderr, "", "{flags:?} decided nothing else");
+        assert_eq!(
+            listing(repo.path()),
+            vec!["  feature", "  docs", "* unassigned"]
+        );
+    }
+}
+
+#[test]
+fn a_changelist_holding_records_refuses_naming_the_counts_and_the_override() {
+    // The TUI's delete-confirm as a refusal with a named override
+    // (ADR 0015): the counts say what is at stake, the mechanism says
+    // what deletion would do, and `-D` is the way to say yes.
+    let repo = owned_repo();
+    let before = std::fs::read(state_path(repo.path())).unwrap();
+
+    let stderr = refusal(repo.path(), &["-d", "feature"]);
+
+    assert!(
+        stderr.contains("'feature' holds 1 live record"),
+        "the counts are named: {stderr}"
+    );
+    assert!(
+        stderr.contains("releases its hunks recordless")
+            && stderr.contains("for the next persisting refresh to claim"),
+        "the mechanism is named: {stderr}"
+    );
+    assert!(
+        stderr.contains("changelist -D"),
+        "the override is named: {stderr}"
+    );
+    assert!(
+        !stderr.contains("'docs'") && !stderr.contains("unassigned"),
+        "a forecast names no destination (#122): {stderr}"
+    );
+    assert_eq!(
+        std::fs::read(state_path(repo.path())).unwrap(),
+        before,
+        "a refused delete wrote nothing at all"
+    );
+}
+
+#[test]
+fn both_force_spellings_release_the_records_with_a_counting_notice() {
+    // `-D` is sugar for `--delete --force` (git's grammar, borrowed
+    // wholesale), so the two spellings are one op — and the release is
+    // counted on the receipt, never silent.
+    for flags in [vec!["-d", "feature", "-f"], vec!["-D", "feature"]] {
+        let repo = owned_repo();
+
+        let (stdout, stderr) = succeeds(repo.path(), &flags);
+
+        assert!(
+            stdout.contains("deleted changelist 'feature'"),
+            "{flags:?} stdout: {stdout}"
+        );
+        let notices = notices(&stderr);
+        assert_eq!(notices.len(), 1, "{flags:?} notices: {notices:?}");
+        assert!(
+            notices[0].contains("released 1 hunk from 'feature'")
+                && notices[0].contains("for the next persisting refresh to claim"),
+            "{flags:?} notice: {}",
+            notices[0]
+        );
+        assert!(
+            !notices[0].contains("'docs'") && !notices[0].contains("unassigned"),
+            "the notice names the mechanism and no destination: {}",
+            notices[0]
+        );
+        assert_eq!(
+            listing(repo.path()),
+            vec!["  docs", "  empty", "* unassigned"]
+        );
+    }
+}
+
+#[test]
+fn released_hunks_are_claimed_by_the_next_persisting_refresh() {
+    // What the guard exists to warn about, carried out: the release names
+    // no destination because the destination is the *next* refresh's
+    // context — here a `switch` between the two decides it, and that
+    // refresh's own receipt reports the landing.
+    let repo = owned_repo();
+    succeeds(repo.path(), &["-D", "feature"]);
+    assert_eq!(owners(repo.path(), "a.txt"), vec![None, None]);
+
+    assert_eq!(
+        gitchange(repo.path(), &["switch", "docs"]).status.code(),
+        Some(0)
+    );
+    // A mutating verb, so a persisting refresh runs: it captures the
+    // released hunks and says so once.
+    let output = gitchange(repo.path(), &["add", "docs"]);
+    assert_eq!(output.status.code(), Some(0));
+
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("auto-captured hunk at a.txt") && stderr.contains("'docs'"),
+        "the claiming refresh reports the landing: {stderr}"
+    );
+    assert_eq!(
+        owners(repo.path(), "a.txt"),
+        vec![Some("docs".to_owned()), Some("docs".to_owned())]
+    );
+}
+
+#[test]
+fn released_hunks_stay_unassigned_while_capture_is_off() {
+    // The other side of the flow (ADR 0015's capture-off): with
+    // unassigned active nothing claims them, so a release is where the
+    // hunks stop rather than a handover.
+    let repo = owned_repo();
+    succeeds(repo.path(), &["-D", "feature"]);
+
+    let output = gitchange(repo.path(), &["add", "docs"]);
+    assert_eq!(output.status.code(), Some(0));
+
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "",
+        "capture off, so the refresh decided nothing"
+    );
+    assert_eq!(owners(repo.path(), "a.txt"), vec![None, None]);
+}
+
+#[test]
+fn deleting_the_active_changelist_notices_that_unassigned_is_active() {
+    // Capture turning off is a decision the caller did not ask for, so it
+    // is announced (#149) — and it is a notice, not a refusal: an empty
+    // active changelist's deletion endangers nothing but the default.
+    let repo = dirty_repo();
+    seed_state(repo.path(), "feature", &["feature", "docs"]);
+
+    let (stdout, stderr) = succeeds(repo.path(), &["-d", "feature"]);
+
+    assert!(stdout.contains("deleted changelist 'feature'"));
+    let notices = notices(&stderr);
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert!(
+        notices[0].contains("unassigned is active now"),
+        "the notice: {}",
+        notices[0]
+    );
+    assert_eq!(listing(repo.path()), vec!["  docs", "* unassigned"]);
+}
+
+#[test]
+fn a_forced_delete_of_the_active_changelist_carries_both_notices() {
+    let repo = owned_repo();
+    assert_eq!(
+        gitchange(repo.path(), &["switch", "feature"]).status.code(),
+        Some(0)
+    );
+
+    let (_, stderr) = succeeds(repo.path(), &["-D", "feature"]);
+
+    let notices = notices(&stderr);
+    assert_eq!(notices.len(), 2, "{notices:?}");
+    assert!(notices[0].contains("released 1 hunk from 'feature'"));
+    assert!(notices[1].contains("unassigned is active now"));
+}
+
+#[test]
+fn delete_is_all_or_nothing_and_names_every_offender() {
+    // One refusal, every offender, candidates listed (#122's gh shape):
+    // the retry is this command corrected, and it costs one round trip.
+    // A reserved name is simply unrecognised here — no mode of this
+    // command has a meaning for one.
+    let repo = owned_repo();
+    let before = std::fs::read(state_path(repo.path())).unwrap();
+
+    let stderr = refusal(repo.path(), &["-d", "empty", "nope", "unassigned"]);
+
+    assert!(
+        stderr.contains("no changelist named 'nope'")
+            && stderr.contains("no changelist named 'unassigned'"),
+        "every offender is named: {stderr}"
+    );
+    assert!(
+        stderr.contains("the changelists are: 'feature', 'docs', 'empty'"),
+        "the candidates are listed: {stderr}"
+    );
+    assert_eq!(
+        std::fs::read(state_path(repo.path())).unwrap(),
+        before,
+        "the deletable name in the list was not deleted either"
+    );
+    assert_eq!(
+        listing(repo.path()),
+        vec!["  feature", "  docs", "  empty", "* unassigned"]
+    );
+}
+
+#[test]
+fn force_does_not_excuse_an_unrecognised_name() {
+    // Force overrides the records guard only (#149): a typo is still a
+    // typo, and it still takes the whole command down with it.
+    let repo = owned_repo();
+
+    let stderr = refusal(repo.path(), &["-D", "feature", "nope"]);
+
+    assert!(
+        stderr.contains("no changelist named 'nope'"),
+        "unexpected stderr: {stderr}"
+    );
+    assert_eq!(
+        owners(repo.path(), "a.txt"),
+        vec![Some("feature".to_owned()), None],
+        "'feature' still holds its record"
+    );
 }

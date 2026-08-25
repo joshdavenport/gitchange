@@ -23,7 +23,8 @@ use std::time::Instant;
 
 use crossbeam_channel::{Receiver, at, never, select, unbounded};
 use gitchange_core::{
-    CommitOptions, CommitOutcome, Condition, Engine, EngineEvent, OpOutcome, Repo, commit_echo,
+    CommitOptions, CommitOutcome, Condition, Deletion, Engine, EngineEvent, OpOutcome, Release,
+    Repo, Undeletable, commit_echo,
 };
 use ratatui::Terminal;
 use ratatui::backend::Backend;
@@ -255,12 +256,29 @@ fn run_op(repo: &Repo, app: &mut App, op: Op) {
             "Rename changelist failed",
             repo.rename_changelist(&from, &to),
         ),
+        // The confirm dialog *is* this frontend's override of the records
+        // guard (ADR 0015's parity with the CLI's `-D`): the user has
+        // already been warned and said yes, so the op is asked to
+        // release. What it releases lands in the Log as a notice, core's
+        // phrasing like every other.
         Op::DeleteChangelist { name } => {
-            op_outcome(
-                app,
-                "Delete changelist failed",
-                repo.delete_changelist(&name),
-            );
+            const FAILED: &str = "Delete changelist failed";
+            match repo.delete_changelists(&[&name], Release::Forced) {
+                Ok(Deletion::Done(outcome)) => log_outcome(app, outcome),
+                // Forced, so the records guard cannot fire and the only
+                // offender left is a name that vanished between the
+                // dialog and the write — another actor's delete landing
+                // first, in a tree they share.
+                Ok(Deletion::Refused(offenders)) => app.show_error(
+                    FAILED,
+                    offenders
+                        .iter()
+                        .map(Undeletable::message)
+                        .collect::<Vec<String>>()
+                        .join("\n"),
+                ),
+                Err(error) => app.show_error(FAILED, error.to_string()),
+            }
         }
         Op::SetActive { changelist } => op_outcome(
             app,

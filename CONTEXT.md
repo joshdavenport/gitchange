@@ -450,3 +450,19 @@ with one changelist's content. One predicate, one pin; the keybar hides
 `c` while the guard holds and pressing it logs why. Applies to commit
 only; staging is never operation-guarded.
 _Avoid_: merge lock, commit block
+
+**Records guard**:
+Deleting a changelist that holds any **membership record**, live or
+dormant, is refused rather than done quietly: deletion prunes the records
+(ADR 0016) and leaves the hunks recordless, and released hunks do not
+rest — the next persisting **refresh** claims them, so one actor's work
+can land under another's name. An empty changelist deletes ungated. The
+guard has one named override per surface: the CLI's `-f`/`-D`, the TUI's
+delete-confirm (ADR 0015's parity). Live and dormant records are counted
+apart because they carry different stakes: live records hold hunks the
+deletion releases, dormant ones hold a **revival** it ends. The CLI's
+refusal and its forced-release notice name the counts and the claim
+mechanism and never a destination (a **forecast** an intervening `switch`
+would contradict); the TUI's confirm does name the destination, which it
+can, being answered and acted on in one moment (ADR 0016).
+_Avoid_: delete confirm, safety check
