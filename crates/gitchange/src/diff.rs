@@ -123,24 +123,9 @@ fn resolve_token<'a>(
         (false, true) => Ok(Token::Path(token)),
         (false, false) => anyhow::bail!(
             "'{token}' is neither a changelist nor a path — {}",
-            candidates(snapshot)
+            scope::changelist_scopes(snapshot)
         ),
     }
-}
-
-/// The gh-borrowed error shape (#122): an unrecognised name refuses with
-/// the valid ones listed, so a typo costs one round trip. `unassigned` is
-/// among them — it is a legal scope, not a changelist anyone created.
-fn candidates(snapshot: &Snapshot) -> String {
-    let names: Vec<String> = std::iter::once(UNASSIGNED.to_owned())
-        .chain(
-            snapshot
-                .changelists
-                .iter()
-                .map(|changelist| format!("'{}'", changelist.name)),
-        )
-        .collect();
-    format!("the changelist scopes are: {}", names.join(", "))
 }
 
 /// The annotated unified patch: git's patch format, files flat in path

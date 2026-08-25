@@ -239,21 +239,32 @@ fn a_hyphen_named_path_is_a_usage_error() {
 }
 
 // --- add / stage / unstage -------------------------------------------------
+// `add` and its alias are built (#160), so what they do is asserted against
+// fixture repos in `add.rs`; the grammar edges stay here, plus the proof
+// that every parsed form gets as far as looking for a repository.
 
 #[test]
-fn add_every_form_is_a_stub() {
-    assert_stub(&["add", "feature"], "add");
-    assert_stub(&["add", "feature", "src/a.rs"], "add");
-    assert_stub(&["add", "feature", "src/a.rs:h1a2b3c4", "src/b.rs"], "add");
-    assert_stub(&["add", "feature", "src/a.rs", "--containing", "-x"], "add");
-}
-
-#[test]
-fn stage_is_add() {
-    // The alias is vocabulary (git's staging verb); the stub text naming
-    // `add` proves the routing.
-    assert_stub(&["stage", "feature"], "add");
-    assert_stub(&["stage", "feature", "src/a.rs"], "add");
+fn every_add_form_parses_and_reaches_the_repository() {
+    for args in [
+        &["add", "feature"][..],
+        &["add", "feature", "src/a.rs"],
+        &["add", "feature", "src/a.rs:h1a2b3c4", "src/b.rs"],
+        &["add", "feature", "src/a.rs", "--containing", "-x"],
+        // The alias is vocabulary (git's staging verb), not an
+        // abbreviation; that it routes to `add`'s behaviour is asserted
+        // where behaviour is (`add.rs`).
+        &["stage", "feature"],
+        &["stage", "feature", "src/a.rs"],
+    ] {
+        let output = gitchange(args);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        assert_eq!(stdout(&output), "", "{args:?} wrote to stdout");
+        assert!(
+            stderr(&output).contains("not a git repository"),
+            "{args:?}: {}",
+            stderr(&output)
+        );
+    }
 }
 
 #[test]

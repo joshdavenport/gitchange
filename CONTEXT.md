@@ -233,6 +233,22 @@ _Avoid_: stage key and unstage key (as two TUI keys — a presentation
 rule about keybindings, not ops; the CLI's explicit-direction `add` and
 `unstage` verbs are separate ops by design), whole-file stage
 
+**Sweep**:
+A staging op over every hunk in a scope rather than one named hunk: a whole
+changelist (or `unassigned`), or that changelist narrowed to some of its
+**file rows**. Always ownership-scoped — a sweep moves only hunks the named
+changelist owns, which is why the staging verbs need no cross-ownership
+override. Direction is the caller's, not the current state's: the stage
+direction takes `○` and `◑`, the unstage direction takes `●` only. A scope
+already in the target state is satisfied rather than refused, and a
+**stale action** discovered at apply fails soft per hunk with the skips
+counted on the receipt. Both frontends sweep — the **stage toggle** at
+Files-panel and Changelists-panel scope, `add`/`unstage` at the same two
+plus a multi-row argument list.
+_Avoid_: batch, stage-all (that is the commit flow's own offer — it takes
+`○` only, so it is a narrower op, not a sweep); and "sweep" for record
+pruning — ADR 0016's unknown-name prune is not one
+
 **Staged-stale**:
 Per-hunk state `◑`: the index holds an overlapping-but-different version of
 the hunk (staged then edited, or staged then reverted in the worktree) —

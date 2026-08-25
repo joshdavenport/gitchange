@@ -1203,3 +1203,131 @@ fn staging_a_symlink_to_file_swap_writes_the_file_to_the_index() {
         b"target.txt".to_vec()
     );
 }
+
+// --- the staging verbs' sweep (#145) ---------------------------------------
+// `Repo::stage_sweep` is the CLI's primitive: the caller's own persisting
+// refresh hands it the snapshot, so validation and application see one
+// state. What lands here rather than at the binary seam is the fail-soft
+// split, which needs a worktree edit *between* the snapshot and the apply —
+// a mid-command race the binary seam cannot inject (ADR 0008).
+
+#[test]
+fn a_sweep_narrows_to_the_named_rows_and_is_satisfied_when_repeated() {
+    let (fixture, repo) = bulk_fixture();
+    let snapshot = repo.refresh().unwrap().snapshot;
+
+    let swept = repo
+        .stage_sweep(&snapshot, Some("one"), &["b.txt"])
+        .unwrap();
+
+    assert_eq!((swept.moved, swept.skipped), (1, 0));
+    assert_eq!(
+        swept.receipt.echo.as_deref(),
+        Some("staged 1 hunk — b.txt in 'one'")
+    );
+    assert_eq!(
+        fixture.index_content("a.txt").as_deref(),
+        Some(numbered(&[]).as_str()),
+        "`one`'s hunk in the row that was not named stayed out of the index"
+    );
+
+    // Satisfied, not refused: an idempotent retry is always safe (#145).
+    let snapshot = repo.refresh().unwrap().snapshot;
+    let swept = repo
+        .stage_sweep(&snapshot, Some("one"), &["b.txt"])
+        .unwrap();
+
+    assert_eq!((swept.moved, swept.skipped), (0, 0));
+    assert!(
+        !swept.moved_nothing(),
+        "a satisfied scope had nothing to move, which is a success — the zero \
+         it shares with the wholly-stale sweep below is not the same answer"
+    );
+    assert_eq!(
+        swept.receipt.echo.as_deref(),
+        Some("nothing to stage — b.txt in 'one'")
+    );
+}
+
+#[test]
+fn a_sweep_over_several_rows_names_every_one_of_them() {
+    let (_fixture, repo) = bulk_fixture();
+    let snapshot = repo.refresh().unwrap().snapshot;
+
+    let swept = repo
+        .stage_sweep(&snapshot, Some("one"), &["a.txt", "b.txt"])
+        .unwrap();
+
+    assert_eq!(
+        swept.receipt.echo.as_deref(),
+        Some("staged 2 hunks — a.txt, b.txt in 'one'")
+    );
+}
+
+#[test]
+fn a_partly_stale_sweep_counts_its_skips_in_the_echo() {
+    let (fixture, repo) = bulk_fixture();
+    let snapshot = repo.refresh().unwrap().snapshot;
+    // The worktree moves on after the snapshot the sweep validated
+    // against: b.txt's hunk no longer exists in the live tree.
+    fixture.write("b.txt", &numbered(&[(2, "a different b edit")]));
+
+    let swept = repo.stage_sweep(&snapshot, Some("one"), &[]).unwrap();
+
+    assert_eq!((swept.moved, swept.skipped), (1, 1));
+    assert!(
+        !swept.moved_nothing(),
+        "one hunk landed, so the CLI's split answers success with the skips counted"
+    );
+    assert_eq!(
+        swept.receipt.echo.as_deref(),
+        Some("staged 1 of 2 hunks (1 skipped as stale) — 'one'"),
+        "the count is on stdout so a harness that drops stderr still re-reads"
+    );
+    assert_eq!(
+        swept.receipt.advisories,
+        vec![Advisory::StaleHunk {
+            path: "b.txt".into(),
+            new_start: hunks(&snapshot, "b.txt")[0].new_start,
+        }]
+    );
+    assert_eq!(
+        fixture.index_content("a.txt").as_deref(),
+        Some(numbered(&[(2, "edit near top")]).as_str()),
+        "the hunk that was still there went in"
+    );
+    assert_eq!(
+        fixture.index_content("b.txt").as_deref(),
+        Some(numbered(&[]).as_str()),
+        "the stale one applied nothing at all"
+    );
+}
+
+#[test]
+fn a_wholly_stale_sweep_moves_nothing_and_says_which_of_the_two_it_was() {
+    let (fixture, repo) = bulk_fixture();
+    let snapshot = repo.refresh().unwrap().snapshot;
+    fixture
+        .write(
+            "a.txt",
+            &numbered(&[(2, "a different top edit"), (18, "edit near bottom")]),
+        )
+        .write("b.txt", &numbered(&[(2, "a different b edit")]));
+
+    let swept = repo.stage_sweep(&snapshot, Some("one"), &[]).unwrap();
+
+    // Zero moved with skips is what the CLI turns into a refusal; nothing
+    // moved with nothing skipped is the satisfied case above. The counts
+    // are what separates them — the echo's prose is a display.
+    assert_eq!((swept.moved, swept.skipped), (0, 2));
+    assert!(
+        swept.moved_nothing(),
+        "nothing the caller asked for moved, which is the refusing half of \
+         the fail-soft split (#145)"
+    );
+    assert_eq!(swept.receipt.advisories.len(), 2);
+    assert_eq!(
+        fixture.index_content("a.txt").as_deref(),
+        Some(numbered(&[]).as_str())
+    );
+}

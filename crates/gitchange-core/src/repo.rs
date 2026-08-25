@@ -49,6 +49,35 @@ impl OpOutcome {
     }
 }
 
+/// What a staging sweep did: the receipt, plus the counts the caller
+/// branches on. The counts ride out because staleness fails soft per hunk
+/// (ADR 0005) and the split that follows is not the echo's to make — a
+/// sweep where every hunk went stale moved nothing, which is a refusal at
+/// the CLI's exit-code surface (#145), while one where some moved is a
+/// success with skips counted.
+#[derive(Debug)]
+pub struct SweepOutcome {
+    /// The counted echo and the skipped hunks' advisories.
+    pub receipt: OpOutcome,
+    /// Hunks whose index write went through.
+    pub moved: usize,
+    /// Hunks skipped as stale; each one carries an advisory on the
+    /// receipt.
+    pub skipped: usize,
+}
+
+impl SweepOutcome {
+    /// Whether the sweep had work and none of it landed: every hunk in
+    /// scope went stale. The one outcome a fail-soft sweep cannot call a
+    /// success — nothing the caller asked for moved — and so the one the
+    /// CLI answers with a refusal (#145). Deliberately not a satisfied
+    /// scope, where there was nothing to move in the first place; the two
+    /// share a zero and nothing else.
+    pub fn moved_nothing(&self) -> bool {
+        self.moved == 0 && self.skipped > 0
+    }
+}
+
 /// What a persisting refresh produced: the snapshot, plus the automatic
 /// membership decisions that refresh committed to records (ADR 0005) —
 /// delivered once, to the actor who triggered it.
@@ -416,8 +445,8 @@ impl Repo {
     /// [`Repo::stage_hunk`]; the echo names the whole bulk op, with any
     /// stale-hunk advisories alongside.
     pub fn align(&self, changelist: Option<&str>) -> Result<OpOutcome, Error> {
-        let (_, advisories) = self.bulk_apply(
-            BulkScope::changelist(changelist),
+        let (_, _, advisories) = self.bulk_apply(
+            SweepScope::changelist(changelist),
             |stage| stage == HunkStage::StagedStale,
             Self::stage_hunk,
         )?;
@@ -438,15 +467,15 @@ impl Repo {
     /// [`Repo::stage_hunk`]; the echo counts what was staged (`None`
     /// when nothing was), with any stale-hunk advisories alongside.
     pub fn stage_all(&self, changelist: Option<&str>) -> Result<OpOutcome, Error> {
-        let scope = BulkScope::changelist(changelist);
-        let (staged, advisories) = self.bulk_apply(
+        let scope = SweepScope::changelist(changelist);
+        let (staged, skipped, advisories) = self.bulk_apply(
             scope,
             |stage| stage == HunkStage::Unstaged,
             Self::stage_hunk,
         )?;
         // Silent when nothing staged: the offer's caller is mid-flow
         // towards a dialog, and has no use for a nothing-to-do line.
-        let echo = (staged > 0).then(|| bulk_echo("stage", staged, scope));
+        let echo = (staged > 0).then(|| sweep_echo("stage", staged, skipped, scope));
         Ok(OpOutcome { echo, advisories })
     }
 
@@ -458,7 +487,7 @@ impl Repo {
     /// [`Repo::stage_hunk`]; the echo counts what was staged, and says
     /// so when that is nothing.
     pub fn stage_changelist(&self, changelist: Option<&str>) -> Result<OpOutcome, Error> {
-        self.stage_scope(BulkScope::changelist(changelist))
+        self.refreshed_sweep(SweepScope::changelist(changelist), Direction::Stage)
     }
 
     /// The unstage direction of `space` on a changelist: set index :=
@@ -466,7 +495,7 @@ impl Repo {
     /// [`Repo::stage_changelist`], with the same fail-soft, echo and
     /// membership contracts.
     pub fn unstage_changelist(&self, changelist: Option<&str>) -> Result<OpOutcome, Error> {
-        self.unstage_scope(BulkScope::changelist(changelist))
+        self.refreshed_sweep(SweepScope::changelist(changelist), Direction::Unstage)
     }
 
     /// The stage direction of `space` on a Files row (issue #97): the
@@ -481,7 +510,7 @@ impl Repo {
         path: &str,
         changelist: Option<&str>,
     ) -> Result<OpOutcome, Error> {
-        self.stage_scope(BulkScope::file(path, changelist))
+        self.refreshed_sweep(SweepScope::rows(&[path], changelist), Direction::Stage)
     }
 
     /// The unstage direction of `space` on a Files row: set index :=
@@ -492,57 +521,104 @@ impl Repo {
         path: &str,
         changelist: Option<&str>,
     ) -> Result<OpOutcome, Error> {
-        self.unstage_scope(BulkScope::file(path, changelist))
+        self.refreshed_sweep(SweepScope::rows(&[path], changelist), Direction::Unstage)
     }
 
-    /// `space`'s stage direction over any bulk scope: `○` unstaged and
-    /// `◑` staged-stale alike, the same pair per-hunk `space` stages
-    /// (ADR 0003). Wider than [`Repo::stage_all`], which serves the
-    /// commit flow's offer. Fail-soft per hunk like [`Repo::stage_hunk`];
-    /// the echo counts what was staged, and says so when that is nothing.
-    fn stage_scope(&self, scope: BulkScope<'_>) -> Result<OpOutcome, Error> {
-        let (staged, advisories) = self.bulk_apply(
+    /// The CLI's stage sweep (#145): `space`'s stage direction over a
+    /// scope the caller has already validated against `snapshot` — every
+    /// hunk `changelist` owns, narrowed to `paths`' file rows when any are
+    /// named (an empty slice is the whole changelist). `None` is
+    /// unassigned, as everywhere.
+    ///
+    /// Takes the snapshot rather than refreshing behind the caller's back,
+    /// so one invocation runs exactly one persisting refresh: the
+    /// caller's, whose advisories are the caller's to deliver. That is
+    /// what separates this from [`Repo::stage_changelist`], which serves a
+    /// TUI keypress and owns its own refresh.
+    pub fn stage_sweep(
+        &self,
+        snapshot: &Snapshot,
+        changelist: Option<&str>,
+        paths: &[&str],
+    ) -> Result<SweepOutcome, Error> {
+        self.sweep(
+            snapshot,
+            SweepScope::rows(paths, changelist),
+            Direction::Stage,
+        )
+    }
+
+    /// A sweep behind its own persisting refresh — the TUI's `space` at
+    /// changelist and Files-row scope, where the keypress is the whole
+    /// invocation. The counts are dropped: the echo already carries them,
+    /// and the TUI has no exit code to split on.
+    fn refreshed_sweep(
+        &self,
+        scope: SweepScope<'_>,
+        direction: Direction,
+    ) -> Result<OpOutcome, Error> {
+        let snapshot = self.refresh()?.snapshot;
+        validate_changelist(&snapshot, scope.changelist)?;
+        Ok(self.sweep(&snapshot, scope, direction)?.receipt)
+    }
+
+    /// One staging sweep over `snapshot`: `direction`'s hunks in `scope`,
+    /// each applied fail-soft, with the counted echo composed here so no
+    /// frontend spells it (ADR 0006/0007).
+    fn sweep(
+        &self,
+        snapshot: &Snapshot,
+        scope: SweepScope<'_>,
+        direction: Direction,
+    ) -> Result<SweepOutcome, Error> {
+        let (moved, skipped, advisories) = self.apply_over(
+            snapshot,
             scope,
-            |stage| matches!(stage, HunkStage::Unstaged | HunkStage::StagedStale),
-            Self::stage_hunk,
+            |stage| direction.takes(stage),
+            |repo, path, hunk| direction.apply(repo, path, hunk),
         )?;
-        Ok(OpOutcome {
-            echo: Some(bulk_echo("stage", staged, scope)),
-            advisories,
+        Ok(SweepOutcome {
+            receipt: OpOutcome {
+                echo: Some(sweep_echo(direction.verb(), moved, skipped, scope)),
+                advisories,
+            },
+            moved,
+            skipped,
         })
     }
 
-    /// `space`'s unstage direction over any bulk scope: the mirror of
-    /// [`Repo::stage_scope`], over its staged hunks.
-    fn unstage_scope(&self, scope: BulkScope<'_>) -> Result<OpOutcome, Error> {
-        let (unstaged, advisories) = self.bulk_apply(
-            scope,
-            |stage| stage == HunkStage::Staged,
-            Self::unstage_hunk,
-        )?;
-        Ok(OpOutcome {
-            echo: Some(bulk_echo("unstage", unstaged, scope)),
-            advisories,
-        })
+    /// A multi-hunk staging op behind its own persisting refresh, for the ops
+    /// whose hunk selection is narrower than a sweep direction — the
+    /// commit flow's stage-all offer and align (ADR 0004).
+    fn bulk_apply(
+        &self,
+        scope: SweepScope<'_>,
+        include: impl Fn(HunkStage) -> bool,
+        apply: impl Fn(&Self, &str, &Hunk) -> Result<OpOutcome, Error>,
+    ) -> Result<(usize, usize, Vec<Advisory>), Error> {
+        let snapshot = self.refresh()?.snapshot;
+        validate_changelist(&snapshot, scope.changelist)?;
+        self.apply_over(&snapshot, scope, include, apply)
     }
 
-    /// The body every bulk staging op shares: over one snapshot, run
+    /// The body every multi-hunk staging op shares: over one snapshot, run
     /// `apply` on each hunk in `scope` whose staging state `include`
     /// accepts — hunks another changelist owns are never touched, and
     /// conflicted files carry none at all (ADR 0007). Returns how many
-    /// hunks moved, plus the advisories of those that failed soft.
-    fn bulk_apply(
+    /// hunks moved and how many failed soft as stale, plus the latter's
+    /// advisories.
+    fn apply_over(
         &self,
-        scope: BulkScope<'_>,
+        snapshot: &Snapshot,
+        scope: SweepScope<'_>,
         include: impl Fn(HunkStage) -> bool,
         apply: impl Fn(&Self, &str, &Hunk) -> Result<OpOutcome, Error>,
-    ) -> Result<(usize, Vec<Advisory>), Error> {
-        let snapshot = self.refresh()?.snapshot;
-        validate_changelist(&snapshot, scope.changelist)?;
+    ) -> Result<(usize, usize, Vec<Advisory>), Error> {
         let mut moved = 0;
+        let mut skipped = 0;
         let mut advisories = Vec::new();
         for file in &snapshot.files {
-            if scope.path.is_some_and(|path| path != file.path) {
+            if !scope.covers(&file.path) {
                 continue;
             }
             for hunk in file.owned_hunks(scope.changelist) {
@@ -550,12 +626,14 @@ impl Repo {
                     let outcome = apply(self, &file.path, hunk)?;
                     if outcome.advisories.is_empty() {
                         moved += 1;
+                    } else {
+                        skipped += 1;
                     }
                     advisories.extend(outcome.advisories);
                 }
             }
         }
-        Ok((moved, advisories))
+        Ok((moved, skipped, advisories))
     }
 
     /// Assign snapshot hunks of `path` to `target`: an explicit
@@ -690,53 +768,101 @@ impl Repo {
     }
 }
 
-/// A changelist-scoped staging op's echo. `space` on a changelist
-/// always answers (ADR 0007): a count when hunks moved, the quiet
-/// nothing-to-do line when none did. `verb` is the plain form —
-/// `stage`/`unstage`, whose past tense is the same word plus `d`.
-fn bulk_echo(verb: &str, moved: usize, scope: BulkScope<'_>) -> String {
-    let target = scope.target();
-    match moved {
-        0 => format!("nothing to {verb} — {target}"),
-        moved => format!("{verb}d {} — {target}", count_noun(moved, "hunk")),
+/// Which way a staging sweep moves the index, and so which hunks it
+/// takes: stage takes `○` and `◑` alike — the same pair per-hunk `space`
+/// stages (ADR 0003) — and unstage takes `●` only, so a staged version
+/// since edited is never discarded by a sweep (#145). One enum, so the
+/// TUI's sweeps and the CLI's cannot come to disagree about either half.
+#[derive(Debug, Clone, Copy)]
+enum Direction {
+    Stage,
+    Unstage,
+}
+
+impl Direction {
+    fn takes(self, stage: HunkStage) -> bool {
+        match self {
+            Direction::Stage => matches!(stage, HunkStage::Unstaged | HunkStage::StagedStale),
+            Direction::Unstage => stage == HunkStage::Staged,
+        }
+    }
+
+    fn apply(self, repo: &Repo, path: &str, hunk: &Hunk) -> Result<OpOutcome, Error> {
+        match self {
+            Direction::Stage => repo.stage_hunk(path, hunk),
+            Direction::Unstage => repo.unstage_hunk(path, hunk),
+        }
+    }
+
+    /// The echo's plain verb, whose past tense is the same word plus `d`.
+    fn verb(self) -> &'static str {
+        match self {
+            Direction::Stage => "stage",
+            Direction::Unstage => "unstage",
+        }
     }
 }
 
-/// What a bulk staging op ranges over: one changelist's hunks, optionally
-/// narrowed to a single file. The two scopes `space` has above the hunk
-/// (ADR 0003) differ only in that narrowing, so they share one traversal
-/// and one echo shape.
-#[derive(Debug, Clone, Copy)]
-struct BulkScope<'a> {
-    /// `None` is unassigned, as everywhere.
-    changelist: Option<&'a str>,
-    /// `Some` narrows to a Files row — the (changelist, file) cell.
-    path: Option<&'a str>,
+/// A staging op's echo. A sweep always answers (ADR 0007): a count
+/// when hunks moved, the quiet nothing-to-do line when none did. `verb` is
+/// the plain form — `stage`/`unstage`, whose past tense is the same word
+/// plus `d`.
+///
+/// Stale skips ride the count rather than stderr alone, so a harness that
+/// drops stderr still sees on stdout that the sweep was partial and
+/// re-reads (#145). The `of` clause appears only when something was
+/// skipped: with nothing to compare against, `staged 3 of 3 hunks` would
+/// be an arithmetic riddle where `staged 3 hunks` is the fact.
+fn sweep_echo(verb: &str, moved: usize, skipped: usize, scope: SweepScope<'_>) -> String {
+    let target = scope.target();
+    match (moved, skipped) {
+        (0, 0) => format!("nothing to {verb} — {target}"),
+        (moved, 0) => format!("{verb}d {} — {target}", count_noun(moved, "hunk")),
+        (moved, skipped) => format!(
+            "{verb}d {moved} of {} ({skipped} skipped as stale) — {target}",
+            count_noun(moved + skipped, "hunk")
+        ),
+    }
 }
 
-impl<'a> BulkScope<'a> {
+/// What a staging op ranges over: one changelist's hunks, optionally
+/// narrowed to some of its file rows. Every scope `space` and the staging
+/// verbs have above the hunk (ADR 0003, #145) differs only in that
+/// narrowing, so they share one traversal and one echo shape.
+#[derive(Debug, Clone, Copy)]
+struct SweepScope<'a> {
+    /// `None` is unassigned, as everywhere.
+    changelist: Option<&'a str>,
+    /// The Files rows — the (changelist, file) cells — this scope is
+    /// narrowed to. Empty is the whole changelist.
+    paths: &'a [&'a str],
+}
+
+impl<'a> SweepScope<'a> {
     fn changelist(changelist: Option<&'a str>) -> Self {
         Self {
             changelist,
-            path: None,
+            paths: &[],
         }
     }
 
-    fn file(path: &'a str, changelist: Option<&'a str>) -> Self {
-        Self {
-            changelist,
-            path: Some(path),
-        }
+    fn rows(paths: &'a [&'a str], changelist: Option<&'a str>) -> Self {
+        Self { changelist, paths }
+    }
+
+    /// Whether this scope reaches `path` at all.
+    fn covers(&self, path: &str) -> bool {
+        self.paths.is_empty() || self.paths.contains(&path)
     }
 
     /// The scope as the echo names it: `'feature'`, or `a.txt in
-    /// 'feature'` — a file-scoped echo says which changelist it stayed
+    /// 'feature'` — a row-scoped echo says which changelist it stayed
     /// inside, since that is exactly what it did not sweep past.
     fn target(&self) -> String {
         let name = self.changelist.unwrap_or(UNASSIGNED);
-        match self.path {
-            None => format!("'{name}'"),
-            Some(path) => format!("{path} in '{name}'"),
+        match self.paths {
+            [] => format!("'{name}'"),
+            paths => format!("{} in '{name}'", paths.join(", ")),
         }
     }
 }

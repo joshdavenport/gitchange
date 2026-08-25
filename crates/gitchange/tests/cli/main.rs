@@ -17,9 +17,11 @@
 //! | `switch`     | `switch`'s receipt, its refusals, and the active marker  |
 //! | `locking`    | lock contention at the binary seam: live, dead, unread   |
 //! | `diff`       | `diff`'s scope resolution and its two faces              |
+//! | `add`        | `add`'s sweep, its refusals, and its receipt             |
 
 mod support;
 
+mod add;
 mod diff;
 mod grammar;
 mod invocation;

@@ -13,6 +13,7 @@ use gitchange_core::{
 
 mod diff;
 mod scope;
+mod staging;
 
 /// The prefix every diagnostic this binary writes to stderr carries, so
 /// output piped alongside git's own is attributable at a glance.
@@ -353,7 +354,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Some(Command::Refresh) => not_implemented("refresh"),
         Some(Command::Changelist { .. }) => not_implemented("changelist"),
         Some(Command::Assign { .. }) => not_implemented("assign"),
-        Some(Command::Add { .. }) => not_implemented("add"),
+        Some(Command::Add { scope }) => with_lock_retry(|| add(&scope)),
         Some(Command::Unstage { .. }) => not_implemented("unstage"),
         Some(Command::Commit { .. }) => not_implemented("commit"),
         // A read, like `status`: no lock, so no contention to absorb.
@@ -577,12 +578,7 @@ impl DiffFace {
 fn diff(scope: &DiffScope, face: DiffFace) -> anyhow::Result<()> {
     let repo = open_repo()?;
     let snapshot = repo.read_only_refresh()?;
-    // Paths resolve against the worktree, so a bare repository — which has
-    // no changed files to name in the first place — has nothing to resolve
-    // them against.
-    let workdir = repo
-        .workdir()
-        .ok_or_else(|| anyhow::anyhow!("this repository has no worktree"))?;
+    let workdir = workdir(&repo)?;
     let files = diff::select(
         &snapshot,
         scope.token(double_dash_typed()),
@@ -594,6 +590,52 @@ fn diff(scope: &DiffScope, face: DiffFace) -> anyhow::Result<()> {
         DiffFace::Json(content) => println!("{}", diff_envelope(&files, content)),
     }
     Ok(())
+}
+
+/// `add <changelist> [<path>...]` (alias `stage`): index := worktree for
+/// the scope's `○` and `◑` hunks alike — the statement that the worktree
+/// version is the one meant, which is `git add`'s own meaning on a
+/// re-modified file (#145).
+///
+/// One persisting refresh per invocation, and everything downstream reads
+/// its snapshot: validation, so a refusal is a complete instruction about
+/// one state of the repo, and the sweep, so deferred capture feeds the op's
+/// own scope — switch → edit → `add <active>` stages the hunks that
+/// refresh just captured.
+fn add(scope: &StagingScope) -> anyhow::Result<()> {
+    let repo = open_repo()?;
+    let workdir = workdir(&repo)?;
+    let refreshed = repo.refresh()?;
+    // Delivered before anything can refuse, and so exactly once: the
+    // capture is already written, and a validation refusal must not
+    // swallow the decisions this invocation made on the way to it.
+    print_notices(&refreshed.advisories);
+    let sweep = staging::resolve("add", scope, &refreshed.snapshot, &workdir)?;
+    let swept = repo.stage_sweep(
+        &refreshed.snapshot,
+        sweep.changelist.as_deref(),
+        &sweep.rows(),
+    )?;
+    // Staleness at apply fails soft per hunk, but a command that moved
+    // nothing it was asked to move is a refusal (#145) — the split is on
+    // whether any hunk landed, not on whether any was skipped.
+    if swept.moved_nothing() {
+        print_notices(&swept.receipt.advisories);
+        anyhow::bail!(
+            "nothing staged — every hunk in the scope went stale; re-read with \
+             'gitchange diff' and retry"
+        );
+    }
+    receipt(swept.receipt);
+    Ok(())
+}
+
+/// The worktree every path argument resolves against. A bare repository —
+/// which has no changed files to name in the first place — has nothing to
+/// resolve them against.
+fn workdir(repo: &Repo) -> anyhow::Result<PathBuf> {
+    repo.workdir()
+        .ok_or_else(|| anyhow::anyhow!("this repository has no worktree"))
 }
 
 /// Whether the command line carried an explicit `--`. Clap spends the

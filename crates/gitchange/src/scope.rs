@@ -13,7 +13,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use gitchange_core::{ChangedFile, Hunk, HunkId, Snapshot};
+use gitchange_core::{ChangedFile, Hunk, HunkId, Snapshot, UNASSIGNED};
 
 /// One resolved `<path>[:<hunk-id>]` argument: the path in the spelling
 /// every gitchange surface prints (repo-relative, `/`-separated), plus the
@@ -35,6 +35,13 @@ struct Selector {
 }
 
 impl PathArg {
+    /// Whether the argument carried a `<hunk-id>` suffix at all — the
+    /// question a verb asks before deciding whether it is addressing one
+    /// hunk or sweeping a file row (#145).
+    pub fn addresses_a_hunk(&self) -> bool {
+        self.selector.is_some()
+    }
+
     /// The hunk this argument addresses, `None` when it named a path
     /// alone. A not-found, stale, or ambiguous ID refuses — an aged
     /// address fails loud rather than resolving to whatever now sits at
@@ -125,6 +132,23 @@ pub fn resolve_paths<'a>(
     snapshot: &Snapshot,
     workdir: &Path,
 ) -> anyhow::Result<Vec<PathArg>> {
+    let (resolved, offenders) = locate_paths(tokens, snapshot, workdir);
+    if !offenders.is_empty() {
+        anyhow::bail!(offenders.join("; "));
+    }
+    Ok(resolved)
+}
+
+/// [`resolve_paths`] with the refusal left to the caller: what resolved,
+/// and what refused. For a verb with offender classes of its own to report
+/// alongside — the mutating verbs' all-or-nothing validation reports every
+/// offender at once (#145), so path resolution cannot be the one that
+/// bails first.
+pub fn locate_paths<'a>(
+    tokens: impl IntoIterator<Item = &'a str>,
+    snapshot: &Snapshot,
+    workdir: &Path,
+) -> (Vec<PathArg>, Vec<String>) {
     let mut resolved = Vec::new();
     let mut offenders = Vec::new();
     for token in tokens {
@@ -138,10 +162,24 @@ pub fn resolve_paths<'a>(
             Located::Unaddressable(refusal) => offenders.push(refusal),
         }
     }
-    if !offenders.is_empty() {
-        anyhow::bail!(offenders.join("; "));
-    }
-    Ok(resolved)
+    (resolved, offenders)
+}
+
+/// The gh-borrowed error shape (#122): an unrecognised changelist refuses
+/// with the valid ones listed, so a typo costs one round trip.
+/// `unassigned` is among them — it is a legal scope everywhere a
+/// changelist is named, not a changelist anyone created. Shared by every
+/// verb that takes a changelist, so one repo answers one list.
+pub fn changelist_scopes(snapshot: &Snapshot) -> String {
+    let names: Vec<String> = std::iter::once(UNASSIGNED.to_owned())
+        .chain(
+            snapshot
+                .changelists
+                .iter()
+                .map(|changelist| format!("'{}'", changelist.name)),
+        )
+        .collect();
+    format!("the changelist scopes are: {}", names.join(", "))
 }
 
 /// What a token points at. One classification, read two ways — as the
