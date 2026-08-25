@@ -1,14 +1,45 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::{Duration, Instant};
 
 use clap::builder::NonEmptyStringValueParser;
 use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand};
 
-use gitchange_core::{ACTIVE_MARKER, ChangedFile, GroupKind, Repo, target_named};
+use gitchange_core::{ACTIVE_MARKER, ChangedFile, GroupKind, LockHolder, Repo, target_named};
 
 /// The prefix every diagnostic this binary writes to stderr carries, so
 /// output piped alongside git's own is attributable at a glance.
 const DIAG: &str = "gitchange:";
+
+/// How long a mutating command absorbs lock contention before surfacing
+/// it. A shape rather than a tuned constant — long enough that a live
+/// TUI's hold across one write never reaches the caller, short enough
+/// that persistent contention is reported instead of waited out. No flag
+/// tunes it: a `--lock-timeout` would tune around contention rather than
+/// surface it, and retry is neither a guard nor an override (#122).
+const LOCK_RETRY_BUDGET: Duration = Duration::from_secs(2);
+
+/// The gap between attempts, so the common case — a hold measured in
+/// milliseconds — costs one short sleep rather than a fixed penalty.
+const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+
+/// An operational refusal: the text names what to do before retrying,
+/// and stdout stays empty. The failure half of the published exit-code
+/// scheme (#122) with [`TRANSIENT`]; success is `0` and a usage error is
+/// clap's own `2`, neither of which reaches the error mapping.
+const REFUSAL: u8 = 1;
+
+/// Transient lock contention: retry the same command unchanged.
+const TRANSIENT: u8 = 3;
+
+/// What exit `3` tells the caller to do, in words: the code is the
+/// branching surface, and this line is the same contract for a human
+/// reading the terminal. Composed here rather than in core because the
+/// exit-code scheme is the binary's, not the library's — and because
+/// core's own text, which stops at "retry in a moment", has no command
+/// to name. It promises nothing about what was written: the resolution
+/// is the same invocation, and only that.
+const RETRY_UNCHANGED: &str = "run the same command again, unchanged";
 
 #[derive(Parser)]
 // `name` is left to clap, which takes it from the package name.
@@ -259,7 +290,8 @@ impl DiffScope {
 }
 
 fn main() -> ExitCode {
-    // Usage errors exit with code 2 via clap; operational errors map to 1.
+    // Usage errors exit with code 2 via clap; everything else is mapped
+    // from the error by `exit_code`.
     let cli = Cli::parse();
     // The hidden `restore` correction is a usage error, not an operation,
     // so it exits before the operational match — and before the `-C`
@@ -276,8 +308,12 @@ fn main() -> ExitCode {
         // must never fall back to text, since exit 0 on a `--json` call
         // promises the envelope was delivered.
         Some(Command::Status { json: true }) => not_implemented("status --json"),
-        Some(Command::Status { json: false }) => status(),
-        Some(Command::Switch { name }) => switch(&name),
+        // `status` is a read, and a read is not supposed to contend at
+        // all (#122) — but the built one still runs a persisting refresh,
+        // so until #156 flips it to the read-only form it takes the lock
+        // and is retried like any mutation. #156 unwraps it.
+        Some(Command::Status { json: false }) => with_lock_retry(status),
+        Some(Command::Switch { name }) => with_lock_retry(|| switch(&name)),
         Some(Command::Refresh) => not_implemented("refresh"),
         Some(Command::Changelist { .. }) => not_implemented("changelist"),
         Some(Command::Assign { .. }) => not_implemented("assign"),
@@ -290,10 +326,72 @@ fn main() -> ExitCode {
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
-        Err(err) => {
-            eprintln!("{DIAG} {err:#}");
-            ExitCode::from(1)
+        Err(err) => ExitCode::from(report_failure(&err)),
+    }
+}
+
+/// Run a mutating command, absorbing brief lock contention: a contended
+/// attempt sleeps and runs again until the budget is spent, so a live
+/// TUI's hold never surfaces as an error (#122). Reads never come here —
+/// they take no lock and cannot contend.
+///
+/// The retry unit is the whole command, not the lock take: contention can
+/// arrive from any write a command makes, and re-running the command is
+/// exactly what exit `3` asks the caller to do. Re-running is safe while a
+/// command's writes all sit under one lock take, as every op's do today —
+/// contention then refuses before anything is written (ADR 0002:
+/// fail-fast, never queued, never stolen). A command that took the lock
+/// twice would replay its first write here, and would need its own
+/// narrower retry.
+///
+/// Every attempt classifies the holder afresh and only the last one
+/// decides, so no class short-circuits: a live holder that dies mid-budget
+/// leaves the stale lock the dead refusal names, and a stale lock someone
+/// clears mid-budget lets the retry through.
+fn with_lock_retry(op: impl Fn() -> anyhow::Result<()>) -> anyhow::Result<()> {
+    let started = Instant::now();
+    loop {
+        let result = op();
+        let contended = matches!(&result, Err(err) if lock_holder(err).is_some());
+        if !contended || started.elapsed() >= LOCK_RETRY_BUDGET {
+            return result;
         }
+        std::thread::sleep(LOCK_RETRY_INTERVAL);
+    }
+}
+
+/// The lock holder a failed command contended with, if that is what
+/// failed it. The variant survives the trip through `anyhow`, so the
+/// classification core made (ADR 0002) is read back here rather than by
+/// re-reading the lockfile — whose holder may have changed since.
+fn lock_holder(err: &anyhow::Error) -> Option<LockHolder> {
+    match err.downcast_ref::<gitchange_core::Error>() {
+        Some(gitchange_core::Error::LockContention { holder, .. }) => Some(*holder),
+        _ => None,
+    }
+}
+
+/// Say what failed, on stderr, and answer with the exit code that says
+/// what to do about it — one decision, so the text and the code cannot
+/// disagree. stdout is left untouched: a failed command produces no
+/// result.
+///
+/// Lock contention is the one failure that splits across the scheme's two
+/// failure codes, on the holder alone (ADR 0002): a running holder — or
+/// one that cannot be read, which is assumed running — may still release,
+/// so the command is worth running again unchanged, and removal goes
+/// unmentioned because acting on it would break that session's state. A
+/// holder proven gone will never release, so its contention is an
+/// ordinary refusal carrying the one accurate resolution, which core's
+/// message already spells out.
+fn report_failure(err: &anyhow::Error) -> u8 {
+    eprintln!("{DIAG} {err:#}");
+    match lock_holder(err) {
+        Some(LockHolder::Alive { .. } | LockHolder::Unreadable) => {
+            eprintln!("{DIAG} {RETRY_UNCHANGED}");
+            TRANSIENT
+        }
+        Some(LockHolder::Dead { .. }) | None => REFUSAL,
     }
 }
 

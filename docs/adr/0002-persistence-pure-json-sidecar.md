@@ -77,8 +77,17 @@ commit, rebase):
   `git cat-file`.
 - Concurrency is fail-fast, not queued: the lock primitive refuses
   immediately, and a lock is never taken from a live holder. Frontends
-  may retry briefly on contention — the engine does — but no writer
-  waits in line.
+  may retry briefly on contention — the TUI's engine does, and a
+  mutating CLI command re-runs itself for a bounded budget of a couple
+  of seconds — but each take still fails fast and no writer waits in
+  line. The budget has no flag: a timeout knob would tune around
+  persistent contention instead of surfacing it.
+- The holder classification decides how surfaced contention reads on the
+  CLI: a budget spent against a holder alive — or unreadable, which is
+  assumed alive — exits `3`, the transient code whose resolution is the
+  same command again, and never mentions removal; against a holder
+  proven dead it is an ordinary `1` refusal naming the lockfile to
+  remove. Neither ever breaks the lock itself.
 - The 14-day dormant prune bounds state-file growth; stashes older than
   that lose membership on pop — a visible failure (auto-capture to active
   + notification per ADR 0001), never a silent wrong-list assignment.
