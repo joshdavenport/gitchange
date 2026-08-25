@@ -67,16 +67,8 @@ fn status_json_refuses_via_the_stub_path() {
 }
 
 // --- -C --------------------------------------------------------------------
-
-#[test]
-fn dash_c_refuses_until_its_wiring_lands() {
-    // #139 owns `-C`'s semantics. Until it lands, a supplied `-C` must
-    // refuse rather than be accepted and ignored: an ignored `-C` would
-    // silently run the command in the wrong directory. Both positions
-    // clap allows for a global option are covered.
-    assert_stub(&["-C", "/tmp", "refresh"], "-C");
-    assert_stub(&["status", "-C", "/tmp"], "-C");
-}
+// The grammar only; `-C`'s semantics — run as if launched in <dir> — are
+// asserted against fixture repos in `cli.rs`.
 
 #[test]
 fn dash_c_is_single_occurrence() {

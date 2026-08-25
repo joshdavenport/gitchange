@@ -1,7 +1,8 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
+use anyhow::Context as _;
 use clap::builder::NonEmptyStringValueParser;
 use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand};
 
@@ -54,7 +55,7 @@ struct Cli {
     //
     // Git's short, the only spelling git has; single occurrence (clap's
     // default for a `Set` option), so git's repeatable-composing form is
-    // not borrowed. Semantics ride #139 — see `main`'s guard.
+    // not borrowed. Honoured by `enter`, before any command runs.
     #[arg(short = 'C', value_name = "dir", global = true)]
     dir: Option<PathBuf>,
     #[command(subcommand)]
@@ -293,19 +294,31 @@ impl DiffScope {
 
 fn main() -> ExitCode {
     // Usage errors exit with code 2 via clap; everything else is mapped
-    // from the error by `exit_code`.
+    // from the error by `report_failure`.
     let cli = Cli::parse();
     // The hidden `restore` correction is a usage error, not an operation,
-    // so it exits before the operational match — and before the `-C`
-    // guard, as a usage error would with any other command.
+    // so it exits before `run` — and so before `-C` is honoured, as a
+    // usage error would with any other command.
     if let Some(Command::Restore { staged, rest }) = &cli.command {
         return restore(Command::restore_staged(*staged, rest));
     }
-    let result = match cli.command {
-        // Interim guard (#140): until #139 wires `-C`, a supplied value
-        // refuses — an accepted-but-ignored `-C` would run the command in
-        // the wrong directory. #139 removes this arm.
-        _ if cli.dir.is_some() => not_implemented("-C"),
+    match run(cli) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => ExitCode::from(report_failure(&err)),
+    }
+}
+
+/// Everything after a successful parse: take up `-C`'s directory, then
+/// dispatch. `-C` goes first because it is the environment the command
+/// runs in, not a step of the command, so a stub refuses on the directory
+/// before it can refuse as not-implemented. Only the parse itself comes
+/// earlier: usage errors, and clap's `--help`/`--version`, answer without
+/// entering anything (where git would fail on the directory first).
+fn run(cli: Cli) -> anyhow::Result<()> {
+    if let Some(dir) = &cli.dir {
+        enter(dir)?;
+    }
+    match cli.command {
         // The JSON face refuses before the built text path runs: `--json`
         // must never fall back to text, since exit 0 on a `--json` call
         // promises the envelope was delivered.
@@ -323,13 +336,21 @@ fn main() -> ExitCode {
         Some(Command::Unstage { .. }) => not_implemented("unstage"),
         Some(Command::Commit { .. }) => not_implemented("commit"),
         Some(Command::Diff { .. }) => not_implemented("diff"),
-        Some(Command::Restore { .. }) => unreachable!("handled above"),
+        Some(Command::Restore { .. }) => unreachable!("handled in main"),
         None => gitchange_tui::run().map_err(anyhow::Error::from),
-    };
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(err) => ExitCode::from(report_failure(&err)),
     }
+}
+
+/// `-C <dir>`, implemented as git implements it: change the process's
+/// working directory. "Run as if launched in `<dir>`" (#122) is then
+/// literally true rather than emulated — repo discovery, the TUI's own
+/// `current_dir` read, and every cwd-relative argument a command will
+/// ever resolve (paths, `commit -F <file>`) follow without being told, so
+/// no handler can forget to honour the flag. A directory that cannot be
+/// entered is an operational refusal (exit 1): there is no such place to
+/// run from.
+fn enter(dir: &Path) -> anyhow::Result<()> {
+    std::env::set_current_dir(dir).with_context(|| format!("cannot change to '{}'", dir.display()))
 }
 
 /// Run a mutating command, absorbing brief lock contention: a contended

@@ -1,7 +1,7 @@
-//! End-to-end tests of the binary: output and the 0/1/2/3 exit-code
-//! contract (ticket 13, grown to the full published scheme by #136).
-//! Fixtures are built with the git CLI so git2 stays a
-//! gitchange-core-only dependency (ADR 0006).
+//! End-to-end tests of the binary: output, the 0/1/2/3 exit-code contract
+//! (ticket 13, grown to the full published scheme by #136), and the global
+//! `-C` asserted from a foreign cwd (#139). Fixtures are built with the
+//! git CLI so git2 stays a gitchange-core-only dependency (ADR 0006).
 
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
@@ -67,6 +67,23 @@ fn dirty_repo() -> tempfile::TempDir {
     std::fs::write(dir.path().join("untracked.txt"), "hello\n").unwrap();
     dir
 }
+
+/// A directory that is not a repository and holds nothing: the cwd for a
+/// run that must find no repository, and the foreign cwd the `-C` tests
+/// launch from — so that anything those commands find, they can only have
+/// found through `-C`.
+fn elsewhere() -> tempfile::TempDir {
+    tempfile::tempdir().unwrap()
+}
+
+fn path_str(path: &Path) -> &str {
+    path.to_str().expect("tempdir paths are UTF-8")
+}
+
+/// The terminal guard's refusal (#110), pinned once: the bare invocation
+/// reaching it is how a test proves discovery succeeded.
+const TUI_NEEDS_A_TERMINAL: &str = "gitchange: the TUI needs a terminal on stdin and stdout; \
+                                    run 'gitchange --help' for the command-line surface\n";
 
 /// This worktree's state file, spelled once. Tests that seed it and
 /// tests that assert on it read the same path.
@@ -454,7 +471,7 @@ fn status_prints_the_head_move_dormancy_advisory_on_stderr() {
 
 #[test]
 fn status_outside_a_repo_exits_1_with_message_on_stderr() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = elsewhere();
     let output = gitchange(dir.path(), &["status"]);
 
     assert_eq!(output.status.code(), Some(1));
@@ -619,8 +636,137 @@ fn a_dead_hold_outlasting_the_budget_exits_1_naming_the_lockfile() {
 }
 
 #[test]
+fn dash_c_runs_the_command_as_if_launched_there() {
+    // Git's `-C` (#122/#139): repo discovery starts in <dir>, whatever
+    // the cwd. A mutation proves the write lands in <dir>'s repository;
+    // the read that follows, with `-C` in the other position clap allows a
+    // global, proves the same repository is what it saw.
+    let repo = dirty_repo();
+    seed_state(repo.path(), "feature", &["feature", "bugfix"]);
+    let cwd = elsewhere();
+
+    let output = gitchange(
+        cwd.path(),
+        &["-C", path_str(repo.path()), "switch", "bugfix"],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "switched to 'bugfix'\n"
+    );
+
+    let output = gitchange(cwd.path(), &["status", "-C", path_str(repo.path())]);
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(
+        stdout.lines().collect::<Vec<&str>>(),
+        vec![
+            "  feature",
+            "* bugfix",
+            "    ○ M tracked.txt 0/1",
+            "    ○ ? untracked.txt 0/1",
+        ]
+    );
+}
+
+#[test]
+fn dash_c_resolves_against_the_callers_cwd() {
+    // A relative <dir> is relative to where the caller stands, as git's
+    // is: launched from the repository's parent, its bare name reaches it.
+    let repo = dirty_repo();
+    let parent = repo.path().parent().unwrap();
+    let name = repo.path().file_name().unwrap().to_str().unwrap();
+
+    let output = gitchange(parent, &["-C", name, "status"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("tracked.txt"),
+        "the relative -C reached the repository"
+    );
+}
+
+#[test]
+fn dash_c_aims_the_bare_invocation_at_that_worktree() {
+    // From a non-repository cwd the bare invocation fails on discovery;
+    // with `-C` it gets as far as the terminal guard, which is the TUI
+    // having found the repository it was aimed at (#110 fixes the order:
+    // discovery first, then the guard).
+    let repo = dirty_repo();
+    let cwd = elsewhere();
+
+    let output = gitchange(cwd.path(), &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("not a git repository")
+    );
+
+    let output = gitchange(cwd.path(), &["-C", path_str(repo.path())]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        TUI_NEEDS_A_TERMINAL
+    );
+}
+
+#[test]
+fn dash_c_to_a_nonexistent_dir_exits_1_naming_it() {
+    // There is no such place to run from, so this is an operational
+    // refusal (exit 1): stdout empty, the dir named on stderr. A file is
+    // no more a place to run from than nothing is. The refusal runs before
+    // the command does — a stub that would otherwise refuse as
+    // not-implemented never gets the chance — but after the parse: a usage
+    // error is still clap's exit 2, whatever `-C` names.
+    let cwd = elsewhere();
+    let missing = cwd.path().join("nowhere");
+    let missing = path_str(&missing);
+    let file = cwd.path().join("a-file");
+    std::fs::write(&file, "").unwrap();
+    let file = path_str(&file);
+
+    for (dir, command) in [(missing, "status"), (missing, "refresh"), (file, "status")] {
+        let args = &["-C", dir, command];
+        let output = gitchange(cwd.path(), args);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        assert_eq!(output.stdout, Vec::<u8>::new(), "{args:?}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(
+            stderr.starts_with("gitchange: cannot change to ") && stderr.contains(dir),
+            "{args:?}: {stderr}"
+        );
+        assert!(
+            !stderr.contains("not implemented"),
+            "{args:?}: the dir refused before the command ran: {stderr}"
+        );
+    }
+
+    for args in [&["-C", missing, "switch"][..], &["-C", missing, "restore"]] {
+        let output = gitchange(cwd.path(), args);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{args:?}: a usage error precedes the dir: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
 fn unknown_subcommand_exits_2() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = elsewhere();
     let output = gitchange(dir.path(), &["frobnicate"]);
 
     assert_eq!(output.status.code(), Some(2));
@@ -632,7 +778,7 @@ fn bare_invocation_outside_a_repo_exits_1() {
     // repository this message wins over the refusal — the diagnostic
     // names the condition the user can act on. The launched TUI itself
     // is smoke-tested in gitchange-tui.
-    let dir = tempfile::tempdir().unwrap();
+    let dir = elsewhere();
     let output = gitchange(dir.path(), &[]);
 
     assert_eq!(output.status.code(), Some(1));
@@ -658,11 +804,7 @@ fn bare_invocation_without_a_terminal_refuses_before_the_tui() {
         "a refusal renders nothing: not a frame, not an escape byte"
     );
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert_eq!(
-        stderr,
-        "gitchange: the TUI needs a terminal on stdin and stdout; \
-         run 'gitchange --help' for the command-line surface\n"
-    );
+    assert_eq!(stderr, TUI_NEEDS_A_TERMINAL);
 }
 
 #[test]
