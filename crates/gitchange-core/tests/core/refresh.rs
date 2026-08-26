@@ -236,3 +236,129 @@ fn snapshot_head_reports_detached_by_short_id() {
         other => panic!("expected a detached head, got {other:?}"),
     }
 }
+
+// --- the op form ------------------------------------------------------------
+
+/// A file of `count` numbered lines with `edits` applied — enough distance
+/// between two edits that they diff as two hunks rather than one.
+fn numbered(count: usize, edits: &[(usize, &str)]) -> String {
+    (1..=count)
+        .map(|n| {
+            edits
+                .iter()
+                .find(|(line, _)| *line == n)
+                .map(|(_, text)| format!("{text}\n"))
+                .unwrap_or_else(|| format!("line {n}\n"))
+        })
+        .collect()
+}
+
+#[test]
+fn the_refresh_op_counts_its_decisions_in_one_echo() {
+    // The CLI's `refresh` receipt (#153): the echo is composed here, from
+    // the same advisories the caller then prints — so a caller who kept
+    // only stdout still learns that something moved. Fragments, since the
+    // prose is a display: what is pinned is the count and the class.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("a.txt", &numbered(20, &[]))
+        .commit_all("init");
+    let repo = Repo::discover(fixture.path()).unwrap();
+    repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
+    fixture.write("a.txt", &numbered(20, &[(3, "three!"), (18, "eighteen!")]));
+
+    let receipt = repo.refresh_op().unwrap();
+
+    let echo = receipt.echo.expect("two captures are two decisions");
+    assert!(echo.contains("captured 2 hunks"), "unexpected echo: {echo}");
+    assert_eq!(
+        receipt.advisories.len(),
+        2,
+        "each decision is named as well as counted: {:?}",
+        receipt.advisories
+    );
+}
+
+#[test]
+fn the_refresh_op_says_nothing_when_it_decides_nothing() {
+    // Nothing decided is `echo: None` (#122) — the silence the CLI's exit
+    // 0 with empty output is made of. The second call is the subject: the
+    // first one's captures are decisions, and its records are why the
+    // second has nothing left to decide.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("a.txt", &numbered(20, &[]))
+        .commit_all("init");
+    let repo = Repo::discover(fixture.path()).unwrap();
+    repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
+    fixture.write("a.txt", &numbered(20, &[(3, "three!")]));
+    assert!(repo.refresh_op().unwrap().echo.is_some());
+
+    let receipt = repo.refresh_op().unwrap();
+
+    assert_eq!(receipt.echo, None);
+    assert!(receipt.advisories.is_empty());
+}
+
+#[test]
+fn a_revival_is_counted_as_restored() {
+    // The other decision class a refresh makes on its own (ADR 0002): the
+    // hunks a dormant record reclaims, counted by the same echo — so the
+    // receipt states what happened, not merely that capture ran.
+    let mut fixture = RepoFixture::new();
+    fixture
+        .write("a.txt", &numbered(30, &[]))
+        .commit_all("init");
+    let repo = Repo::discover(fixture.path()).unwrap();
+    repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
+    fixture.write("a.txt", &numbered(30, &[(5, "five!"), (20, "twenty!")]));
+    repo.refresh().unwrap();
+    fixture.stash();
+    repo.refresh().unwrap();
+
+    fixture.stash_pop();
+    let receipt = repo.refresh_op().unwrap();
+
+    let echo = receipt.echo.expect("a revival is a decision");
+    assert!(echo.contains("restored 2 hunks"), "unexpected echo: {echo}");
+}
+
+#[test]
+fn an_overlap_left_unassigned_is_counted_too() {
+    // Capture off writes no records (ADR 0016), but an ambiguous overlap
+    // is still a decision: two changelists' claims were dropped, so the
+    // receipt has to say so — and an advisory with no echo beside it would
+    // leave stdout claiming a silent refresh.
+    let fixture = RepoFixture::new();
+    fixture
+        .write("a.txt", &numbered(40, &[]))
+        .commit_all("init");
+    let repo = Repo::discover(fixture.path()).unwrap();
+
+    repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
+    fixture.write("a.txt", &numbered(40, &[(10, "ten!")]));
+    repo.refresh().unwrap();
+    repo.create_changelist("two").unwrap();
+    repo.switch(Some("two")).unwrap();
+    fixture.write("a.txt", &numbered(40, &[(10, "ten!"), (20, "twenty!")]));
+    repo.refresh().unwrap();
+
+    // Capture off, with one fresh hunk bridging both records.
+    repo.switch(None).unwrap();
+    let bridged: Vec<(usize, String)> = (10..=20).map(|n| (n, format!("bridge {n}"))).collect();
+    let bridged: Vec<(usize, &str)> = bridged.iter().map(|(n, at)| (*n, at.as_str())).collect();
+    fixture.write("a.txt", &numbered(40, &bridged));
+
+    let receipt = repo.refresh_op().unwrap();
+
+    let echo = receipt.echo.expect("a dropped claim is a decision");
+    assert!(
+        echo.contains("left 1 hunk unassigned"),
+        "unexpected echo: {echo}"
+    );
+    assert_eq!(receipt.advisories.len(), 1);
+}

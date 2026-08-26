@@ -309,12 +309,13 @@ _Avoid_: commit set, selection
 **Refresh**:
 The single recompute pass: status + diff(HEAD↔index) + diff(HEAD↔worktree)
 → membership matching → persist → one snapshot. Persisting (the engine's,
-and the one inside each mutating op) or read-only (every CLI read): a
-read-only refresh writes nothing, decides nothing, and advises nothing —
-a recordless hunk reports as unassigned (ADR 0005). Atomic and
-last-request-wins; triggered by the debounced watcher, gitchange's own
-mutations, terminal focus, or a manual key. Nothing updates incrementally
-between refreshes.
+the one inside each mutating op, and the CLI's `refresh`, which asks for
+one by name) or read-only (a read whose answer
+reads the change universe): a read-only refresh writes nothing, decides
+nothing, and advises nothing — a recordless hunk reports as unassigned
+(ADR 0005). Atomic and last-request-wins; triggered by the debounced
+watcher, gitchange's own mutations, terminal focus, the TUI's manual key,
+or the CLI's `refresh`. Nothing updates incrementally between refreshes.
 _Avoid_: update, reload, sync
 
 **Snapshot**:

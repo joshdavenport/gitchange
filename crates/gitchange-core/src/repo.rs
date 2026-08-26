@@ -11,7 +11,7 @@ use crate::state::{Changelist, RecordCounts, State};
 use crate::state_file;
 use crate::universe::{self, ChangedFile, Hunk, HunkStage};
 use crate::vocabulary::{
-    ARROW, FOR_THE_NEXT_REFRESH, NO_REVIVAL, UNASSIGNED, count_noun, holder_label,
+    ARROW, FOR_THE_NEXT_REFRESH, NO_REVIVAL, SEPARATOR, UNASSIGNED, count_noun, holder_label,
     unknown_changelist,
 };
 
@@ -295,6 +295,77 @@ fn deleted_echo(named: &[&str]) -> String {
     format!("deleted {noun} {}", names.join(", "))
 }
 
+/// What one persisting refresh decided, as its receipt's single stdout
+/// line (#153): a clause per class of decision, and `None` where it
+/// decided nothing — which is silence, and still a success.
+///
+/// Composed from the refresh's own advisories, so the count and the
+/// notices printed beside it cannot come to disagree about what happened.
+/// That is also the line's job: the advisories go to stderr, so stdout
+/// alone has to say something happened for a caller who kept only that.
+///
+/// The op-raised advisories are matched rather than wildcarded, so an
+/// advisory added later has to decide here whether a refresh can raise it
+/// — and while none of them can, an unclassified one would leave a
+/// receipt with notices and no echo.
+fn refresh_echo(advisories: &[Advisory]) -> Option<String> {
+    let mut captured = 0;
+    let mut unassigned = 0;
+    let mut restored = 0;
+    let mut stranded = 0;
+    for advisory in advisories {
+        match advisory {
+            // Every shape of capture is one hunk claimed: the routine
+            // one, ADR 0009's entry-unit redirect, and an ambiguous
+            // overlap the active changelist resolved.
+            Advisory::AutoCaptured { .. }
+            | Advisory::EntryUnitCapture { .. }
+            | Advisory::AmbiguousOverlap {
+                assigned_to: Some(_),
+                ..
+            } => captured += 1,
+            // The same overlap under capture-off: no record was written,
+            // but a hunk two changelists could claim was left to neither,
+            // which is a decision worth counting.
+            Advisory::AmbiguousOverlap {
+                assigned_to: None, ..
+            } => unassigned += 1,
+            // Per (path, changelist), each carrying its own hunk count.
+            Advisory::DormantRevival { hunks, .. } => restored += hunks,
+            // Per path, an external HEAD move having stranded its records
+            // (ADR 0012).
+            Advisory::HeadMoveDormancy { .. } => stranded += 1,
+            // An op's, never a refresh's: staleness is raised at apply,
+            // and the rest by the state writes that own them.
+            Advisory::StaleHunk { .. }
+            | Advisory::KeptStagedStale { .. }
+            | Advisory::ActiveChangelistDeleted { .. }
+            | Advisory::RecordsReleased { .. } => {}
+        }
+    }
+    let mut clauses = Vec::new();
+    if captured > 0 {
+        clauses.push(format!("captured {}", count_noun(captured, "hunk")));
+    }
+    if restored > 0 {
+        clauses.push(format!("restored {}", count_noun(restored, "hunk")));
+    }
+    if unassigned > 0 {
+        clauses.push(format!(
+            "left {} unassigned",
+            count_noun(unassigned, "hunk")
+        ));
+    }
+    if stranded > 0 {
+        clauses.push(format!(
+            "records went dormant on {}",
+            count_noun(stranded, "path")
+        ));
+    }
+    let separator = format!(" {SEPARATOR} ");
+    (!clauses.is_empty()).then(|| format!("refreshed — {}", clauses.join(&separator)))
+}
+
 /// Which of ADR 0005's two refresh forms a recompute pass is running.
 /// The pipeline is one function: the mode decides whether capture is on
 /// and whether anything is written, and nothing else.
@@ -352,6 +423,28 @@ impl Repo {
     /// come back as advisories for its caller to deliver once.
     pub fn refresh(&self) -> Result<RefreshOutcome, Error> {
         Ok(self.refresh_capturing_index()?.0)
+    }
+
+    /// The op form of the persisting refresh (#153): [`Repo::refresh`]'s
+    /// pass, answered as a receipt rather than a view — the CLI's
+    /// deliberate claim-now, and the op-parity counterpart of the TUI's
+    /// manual refresh key.
+    ///
+    /// The echo counts the decisions the refresh made and the advisories
+    /// name them one by one, so the two halves of the receipt come out of
+    /// the same pass; nothing decided is `echo: None`, which is a silent
+    /// success (#122). The baseline restamp is deliberately not counted:
+    /// it is bookkeeping (ADR 0012), so a refresh that only restamped
+    /// says nothing while still having written.
+    ///
+    /// The snapshot is dropped: a caller that wants the view asks for it
+    /// with a read, and one that wants the claim made asks for this.
+    pub fn refresh_op(&self) -> Result<OpOutcome, Error> {
+        let refreshed = self.refresh()?;
+        Ok(OpOutcome {
+            echo: refresh_echo(&refreshed.advisories),
+            advisories: refreshed.advisories,
+        })
     }
 
     /// The read-only refresh (ADR 0005): the same full recompute against

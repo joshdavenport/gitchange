@@ -367,10 +367,11 @@ fn main() -> ExitCode {
 
 /// Everything after a successful parse: take up `-C`'s directory, then
 /// dispatch. `-C` goes first because it is the environment the command
-/// runs in, not a step of the command, so a stub refuses on the directory
-/// before it can refuse as not-implemented. Only the parse itself comes
-/// earlier: usage errors, and clap's `--help`/`--version`, answer without
-/// entering anything (where git would fail on the directory first).
+/// runs in, not a step of the command, so a directory that cannot be
+/// entered refuses before any command's own work — its repo discovery
+/// included. Only the parse itself comes earlier: usage errors, and clap's
+/// `--help`/`--version`, answer without entering anything (where git would
+/// fail on the directory first).
 fn run(cli: Cli) -> anyhow::Result<()> {
     if let Some(dir) = &cli.dir {
         enter(dir)?;
@@ -379,7 +380,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         // A read: no lock, so no contention to absorb (#122).
         Some(Command::Status { json }) => status(json),
         Some(Command::Switch { name }) => with_lock_retry(|| switch(&name)),
-        Some(Command::Refresh) => not_implemented("refresh"),
+        Some(Command::Refresh) => with_lock_retry(refresh),
         Some(Command::Changelist {
             name,
             delete,
@@ -919,6 +920,26 @@ fn switch(name: &str) -> anyhow::Result<()> {
     }
 }
 
+/// `refresh` (#153): one persisting refresh, asked for deliberately — the
+/// one way the CLI reaches the persisting form by name (ADR 0005
+/// §Read-only refresh), and the claim-now half of the pair `switch
+/// <name>` then `refresh`.
+///
+/// Never required for correctness: every mutation validates against its
+/// own internal refresh (#122), so this exists to make the claim *now*
+/// rather than as a freshness ritual before other commands.
+///
+/// The receipt is the shared path's, and its silences are the point: the
+/// echo counts what the refresh decided, so nothing decided prints
+/// nothing — including the baseline restamp an external HEAD move earns,
+/// which core makes without counting it (ADR 0012). A repeated `refresh`
+/// therefore writes nothing and says nothing, which is what makes the
+/// command safe to over-invoke from a loop or a hook.
+fn refresh() -> anyhow::Result<()> {
+    receipt(open_repo()?.refresh_op()?);
+    Ok(())
+}
+
 /// Bare `changelist` (#149): the roster, rendered. Read-only per #122's
 /// taxonomy and a pure state read besides — nothing in the listing
 /// derives from the change universe, so neither refresh form runs and
@@ -1034,15 +1055,6 @@ impl std::error::Error for UsageError {}
 /// Refuse `message` as a usage error (exit [`USAGE`], stdout untouched).
 fn usage(message: String) -> anyhow::Error {
     anyhow::Error::new(UsageError(message))
-}
-
-/// The stub contract (#140): a designed-but-unbuilt command parses fully
-/// and refuses honestly — exit 1, empty stdout, one prefixed stderr line —
-/// without touching the repository, so it refuses identically inside and
-/// outside one. Exit 0 would lie to scripts; exit 2 would claim a usage
-/// error clap did not raise.
-fn not_implemented(command: &str) -> anyhow::Result<()> {
-    anyhow::bail!("'{command}' is not implemented yet")
 }
 
 /// The hidden `restore` correction — the skeleton's own normative surface

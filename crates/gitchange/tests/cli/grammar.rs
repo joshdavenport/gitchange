@@ -1,9 +1,12 @@
 //! End-to-end tests of the clap tree (#142): every decided command parses,
-//! unbuilt commands refuse as not-implemented (exit 1, empty stdout), and
-//! each declarative usage rule dies as exit 2 before any repo work. Its own
-//! module because nothing here needs a fixture repo: the grammar is
-//! asserted from an empty directory, which is also what proves a stub does
-//! no repo work.
+//! and each declarative usage rule dies as exit 2 before any repo work. Its
+//! own module because nothing here needs a fixture repo: the grammar is
+//! asserted from an empty directory, which is also what proves a usage
+//! error precedes every repo read.
+//!
+//! The stub contract the skeleton shipped with is spent: `refresh` was the
+//! last unbuilt command, so nothing here refuses as not-implemented any
+//! more (#173).
 //!
 //! That empty directory is why the runner below is local rather than
 //! `support::gitchange` — every case here wants a fresh nowhere to run in,
@@ -26,24 +29,6 @@ fn stdout(output: &Output) -> String {
 
 fn stderr(output: &Output) -> String {
     String::from_utf8(output.stderr.clone()).unwrap()
-}
-
-/// The stub contract: valid usage of an unbuilt command exits 1, prints
-/// nothing to stdout, and says so on stderr under the `gitchange:` prefix.
-fn assert_stub(args: &[&str], command: &str) {
-    let output = gitchange(args);
-    assert_eq!(
-        output.status.code(),
-        Some(1),
-        "{args:?}: {}",
-        stderr(&output)
-    );
-    assert_eq!(stdout(&output), "", "{args:?} wrote to stdout");
-    assert_eq!(
-        stderr(&output),
-        format!("gitchange: '{command}' is not implemented yet\n"),
-        "{args:?}"
-    );
 }
 
 /// A declarative usage error: clap's exit 2 with an empty stdout. The
@@ -615,11 +600,6 @@ fn version_exits_0() {
 }
 
 // --- refresh ---------------------------------------------------------------
-
-#[test]
-fn refresh_is_a_stub() {
-    assert_stub(&["refresh"], "refresh");
-}
 
 #[test]
 fn refresh_takes_no_arguments() {

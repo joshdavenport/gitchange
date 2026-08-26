@@ -1,8 +1,7 @@
 //! Everything that happens before a command's own work does, and what
 //! happens when it never gets there: the global `-C` (#139), repository
 //! discovery, the bare invocation's terminal guard (#110), an unknown
-//! subcommand, and the stub contract's promise to touch no repository
-//! (#140).
+//! subcommand.
 //!
 //! Its own module because the subject is the invocation rather than any
 //! one command — the same order of glue runs whichever verb follows, and
@@ -16,7 +15,7 @@ use crate::support::{
     seed_state, state_path,
 };
 
-// --- discovery and the stub contract ---------------------------------------
+// --- discovery -------------------------------------------------------------
 
 #[test]
 fn status_outside_a_repo_exits_1_with_message_on_stderr() {
@@ -35,27 +34,6 @@ fn status_outside_a_repo_exits_1_with_message_on_stderr() {
             "unexpected stderr: {stderr}"
         );
     }
-}
-
-#[test]
-fn a_stub_refuses_identically_inside_a_repo_and_does_no_repo_work() {
-    // The stub contract (#140): no discovery, no lock, no state read — so
-    // inside a repository the refusal is byte-for-byte the one `grammar.rs`
-    // asserts from an empty directory, and a dirty tree that would capture
-    // under a persisting refresh is left without a state file.
-    let repo = dirty_repo();
-    let output = gitchange(repo.path(), &["refresh"]);
-
-    assert_eq!(output.status.code(), Some(1));
-    assert_eq!(output.stdout, Vec::<u8>::new());
-    assert_eq!(
-        String::from_utf8(output.stderr).unwrap(),
-        "gitchange: 'refresh' is not implemented yet\n"
-    );
-    assert!(
-        !state_path(repo.path()).exists(),
-        "the stub touched the repository"
-    );
 }
 
 #[test]
@@ -162,9 +140,9 @@ fn dash_c_to_a_nonexistent_dir_exits_1_naming_it() {
     // There is no such place to run from, so this is an operational
     // refusal (exit 1): stdout empty, the dir named on stderr. A file is
     // no more a place to run from than nothing is. The refusal runs before
-    // the command does — a stub that would otherwise refuse as
-    // not-implemented never gets the chance — but after the parse: a usage
-    // error is still clap's exit 2, whatever `-C` names.
+    // the command does — `refresh`, which would otherwise refresh whatever
+    // repository the cwd is in, never gets the chance — but after the
+    // parse: a usage error is still clap's exit 2, whatever `-C` names.
     let cwd = elsewhere();
     let missing = cwd.path().join("nowhere");
     let missing = path_str(&missing);
@@ -183,7 +161,7 @@ fn dash_c_to_a_nonexistent_dir_exits_1_naming_it() {
             "{args:?}: {stderr}"
         );
         assert!(
-            !stderr.contains("not implemented"),
+            !stderr.contains("not a git repository"),
             "{args:?}: the dir refused before the command ran: {stderr}"
         );
     }

@@ -11,10 +11,11 @@
 //! | Module       | Concern                                                 |
 //! |--------------|---------------------------------------------------------|
 //! | `support`    | the fixture shim — shared by all                         |
-//! | `grammar`    | the clap tree: what parses, what stubs, what is usage    |
+//! | `grammar`    | the clap tree: what parses, and what is a usage error    |
 //! | `invocation` | reaching the command at all: `-C`, discovery, the TUI    |
 //! | `status`     | `status`'s two faces — the text rows and the envelope    |
 //! | `switch`     | the marker: the receipt, the refusals, the claim it skips |
+//! | `refresh`    | the claim-now: the counted receipt, and its silences      |
 //! | `locking`    | lock contention at the binary seam: live, dead, unread   |
 //! | `diff`       | `diff`'s scope resolution and its two faces              |
 //! | `add`        | `add`'s sweep, its refusals, and its receipt             |
@@ -32,6 +33,7 @@ mod diff;
 mod grammar;
 mod invocation;
 mod locking;
+mod refresh;
 mod status;
 mod switch;
 mod unstage;

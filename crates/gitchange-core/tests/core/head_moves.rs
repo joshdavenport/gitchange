@@ -618,3 +618,43 @@ fn an_unresolvable_baseline_degrades_to_all_paths_affected() {
         "the guarded refresh re-stamps a resolvable baseline"
     );
 }
+
+#[test]
+fn the_refresh_receipt_counts_the_dormancy_the_guard_caused() {
+    // The CLI's `refresh` receipt (#153) over this file's subject: the
+    // guard's outcome is a decision like any other, so the echo counts the
+    // paths whose records went dormant as well as the hunks captured. The
+    // recipe is `an_unresolvable_baseline_degrades_to_all_paths_affected`'s,
+    // that being the shortest way to a guarded refresh.
+    let fixture = RepoFixture::new();
+    let head = numbered_lines(20);
+    fixture.write("a.txt", &text(&head)).commit_all("init");
+    let repo = repo(&fixture);
+
+    repo.create_changelist("one").unwrap();
+    repo.switch(Some("one")).unwrap();
+    let mut worktree = head.clone();
+    worktree[9] = "ten-v1".into();
+    fixture.write("a.txt", &text(&worktree));
+    repo.refresh().unwrap();
+
+    repo.create_changelist("two").unwrap();
+    repo.switch(Some("two")).unwrap();
+    patch_state(&fixture, |state| {
+        state.insert(
+            "baseline_head".into(),
+            "0123456789abcdef0123456789abcdef01234567".into(),
+        );
+    });
+    worktree[9] = "ten-v2".into();
+    fixture.write("a.txt", &text(&worktree));
+
+    let receipt = repo.refresh_op().unwrap();
+
+    let echo = receipt.echo.expect("a guarded capture is a decision");
+    assert!(
+        echo.contains("captured 1 hunk") && echo.contains("records went dormant on 1 path"),
+        "unexpected echo: {echo}"
+    );
+    assert_eq!(dormant_owners(&fixture), vec!["one"]);
+}
