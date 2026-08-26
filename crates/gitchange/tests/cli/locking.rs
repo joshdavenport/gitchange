@@ -14,7 +14,7 @@
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use crate::support::{gitchange, lock_path, reaped_pid, repo_holding, state_path};
+use crate::support::{gitchange, lock_path, reaped_pid, repo_holding, state_bytes};
 
 #[test]
 fn a_hold_released_within_the_budget_never_surfaces() {
@@ -41,10 +41,10 @@ fn a_hold_released_within_the_budget_never_surfaces() {
 
     let output = child.wait_with_output().unwrap();
     assert_eq!(output.status.code(), Some(0));
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        "switched to 'bugfix'\n"
-    );
+    // The echo's target, not its prose: core owns the wording (#138), so
+    // the subject here is that the write went through after the wait.
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("'bugfix'"), "unexpected stdout: {stdout}");
     assert_eq!(
         String::from_utf8(output.stderr).unwrap(),
         "",
@@ -59,7 +59,7 @@ fn a_live_hold_outlasting_the_budget_exits_3() {
     // advice would break the live holder's own load-mutate-save cycle.
     let pid = std::process::id();
     let repo = repo_holding(&format!("{pid}\n"));
-    let state_before = std::fs::read(state_path(repo.path())).unwrap();
+    let state_before = state_bytes(repo.path());
 
     let output = gitchange(repo.path(), &["switch", "bugfix"]);
 
@@ -83,7 +83,7 @@ fn a_live_hold_outlasting_the_budget_exits_3() {
         "every diagnostic carries the prefix: {stderr}"
     );
     assert_eq!(
-        std::fs::read(state_path(repo.path())).unwrap(),
+        state_bytes(repo.path()),
         state_before,
         "the refused switch wrote nothing"
     );

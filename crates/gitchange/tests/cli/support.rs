@@ -304,6 +304,20 @@ pub fn state_path(dir: &Path) -> std::path::PathBuf {
     dir.join(".git/gitchange/state.json")
 }
 
+/// The state file's bytes — what a before/after pair compares to assert
+/// that a command wrote nothing. Bytes rather than parsed JSON because
+/// the claim is that the file was not *touched*: a rewrite that happened
+/// to mean the same thing is still a write, and the byte compare is the
+/// only thing that catches it.
+///
+/// Panics where the file is absent, so a fixture that never seeded one
+/// says so rather than comparing two empty vectors and passing. The
+/// "no state file at all" claim is `state_path(…).exists()`, which is a
+/// different assertion and reads as one.
+pub fn state_bytes(dir: &Path) -> Vec<u8> {
+    std::fs::read(state_path(dir)).expect("a seeded state file")
+}
+
 /// Seed a state file directly: a fixture arrives with its changelists
 /// and its marker already placed, rather than paying an invocation per
 /// changelist through `changelist <name>` and a `switch` (#166) — and a

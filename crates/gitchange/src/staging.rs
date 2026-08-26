@@ -242,7 +242,7 @@ fn changelist_scope<'a>(
             teach: None,
         });
     }
-    let offender = match scope::recognised(name, snapshot) {
+    let offender = match scope::recognised(name, &snapshot.changelists) {
         Ok(target) => return Ok(target),
         Err(offender) => offender,
     };

@@ -13,7 +13,7 @@ use std::path::Path;
 
 use crate::support::{
     CAPTURE_PENDING_HINT, committed_repo, dirty_repo, git, gitchange, lock_path, long_file,
-    merging_repo, seed_state, seed_state_raw, state_path, two_hunk_repo, unborn_repo,
+    merging_repo, seed_state, seed_state_raw, state_bytes, state_path, two_hunk_repo, unborn_repo,
 };
 
 /// `status --json`'s document, parsed — every assertion below reads what
@@ -245,7 +245,7 @@ fn status_writes_nothing_and_a_recordless_hunk_reports_unassigned() {
     // for. Read twice, so the second run proves the first wrote nothing.
     let repo = dirty_repo();
     seed_state(repo.path(), "feature", &["feature"]);
-    let before = std::fs::read(state_path(repo.path())).unwrap();
+    let before = state_bytes(repo.path());
 
     for _ in 0..2 {
         let output = gitchange(repo.path(), &["status"]);
@@ -264,7 +264,7 @@ fn status_writes_nothing_and_a_recordless_hunk_reports_unassigned() {
             "context-derived ownership never previews: recordless is unassigned"
         );
         assert_eq!(
-            std::fs::read(state_path(repo.path())).unwrap(),
+            state_bytes(repo.path()),
             before,
             "no capture, no record write, no baseline stamp"
         );
@@ -318,7 +318,7 @@ fn status_never_advises_even_where_the_persisting_form_would() {
   ]
 }"#,
     );
-    let before = std::fs::read(state_path(repo.path())).unwrap();
+    let before = state_bytes(repo.path());
 
     let output = gitchange(repo.path(), &["status"]);
     assert_eq!(output.status.code(), Some(0));
@@ -341,7 +341,7 @@ fn status_never_advises_even_where_the_persisting_form_would() {
         "the ambiguous hunk is not routed, so it stays unassigned"
     );
     assert_eq!(
-        std::fs::read(state_path(repo.path())).unwrap(),
+        state_bytes(repo.path()),
         before,
         "the stale records stand as they were"
     );
@@ -386,7 +386,7 @@ fn status_leaves_a_moved_head_unstamped_and_stranded_records_unclaimed() {
         ),
     );
 
-    let before = std::fs::read(state_path(repo)).unwrap();
+    let before = state_bytes(repo);
 
     let output = gitchange(repo, &["status"]);
     assert_eq!(output.status.code(), Some(0));
@@ -408,7 +408,7 @@ fn status_leaves_a_moved_head_unstamped_and_stranded_records_unclaimed() {
         "the stranded record's hunk is not captured, so it reports unassigned"
     );
     assert_eq!(
-        std::fs::read(state_path(repo)).unwrap(),
+        state_bytes(repo),
         before,
         "no baseline stamp, no dormancy write"
     );
@@ -736,7 +736,7 @@ fn status_json_writes_nothing_either() {
     // state file is byte-identical throughout.
     let repo = dirty_repo();
     seed_state(repo.path(), "feature", &["feature"]);
-    let before = std::fs::read(state_path(repo.path())).unwrap();
+    let before = state_bytes(repo.path());
 
     for _ in 0..2 {
         // `status_json` asserts exit 0 and the empty stderr — no notice
@@ -744,7 +744,7 @@ fn status_json_writes_nothing_either() {
         let envelope = status_json(repo.path());
         assert_eq!(envelope["active"], serde_json::json!("feature"));
         assert_eq!(
-            std::fs::read(state_path(repo.path())).unwrap(),
+            state_bytes(repo.path()),
             before,
             "no capture, no record write, no baseline stamp"
         );

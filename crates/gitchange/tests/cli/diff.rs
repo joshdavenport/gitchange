@@ -17,7 +17,8 @@
 use std::path::Path;
 
 use crate::support::{
-    git, git_command, gitchange, initialised_repo, long_file, seed_state_raw, state_path,
+    git, git_command, gitchange, initialised_repo, long_file, seed_state_raw, state_bytes,
+    state_path,
 };
 
 fn write(dir: &Path, path: &str, contents: &str) {
@@ -816,7 +817,7 @@ fn diff_writes_nothing_and_takes_no_lock() {
   "changelists": [{ "name": "feature" }]
 }"#,
     );
-    let before = std::fs::read(state_path(repo.path())).unwrap();
+    let before = state_bytes(repo.path());
 
     for _ in 0..2 {
         let patch = diff(repo.path(), &[]);
@@ -832,7 +833,7 @@ fn diff_writes_nothing_and_takes_no_lock() {
             "recordless is unassigned on the wire too: {envelope}"
         );
         assert_eq!(
-            std::fs::read(state_path(repo.path())).unwrap(),
+            state_bytes(repo.path()),
             before,
             "no capture, no record write, no baseline stamp"
         );

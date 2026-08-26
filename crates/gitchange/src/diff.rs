@@ -123,7 +123,7 @@ fn resolve_token<'a>(
         (false, true) => Ok(Token::Path(token)),
         (false, false) => anyhow::bail!(
             "'{token}' is neither a changelist nor a path — {}",
-            scope::changelist_scopes(snapshot)
+            scope::changelist_scopes(&snapshot.changelists)
         ),
     }
 }

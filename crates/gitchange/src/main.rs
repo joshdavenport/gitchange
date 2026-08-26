@@ -877,10 +877,46 @@ fn double_dash_typed() -> bool {
 /// is core's echo, not this frontend's: the marker write and the
 /// sentence describing it are composed in one place (ADR 0006/0007), so
 /// a switch reads the same in the Log panel and on stdout.
+///
+/// One bare locked marker write and nothing else (#153): no refresh runs,
+/// so the pending pool stays pending and claim-now composes as `switch
+/// <name>` then `refresh`. The target is therefore never checked here —
+/// the only read a check would need is the one this verb exists not to
+/// make — so an unrecognised name is core's refusal, dressed below with
+/// the candidates it does not carry (#172).
+///
+/// `all` needs no arm of its own: no changelist can hold a reserved name,
+/// so it reaches core as an ordinary name that matches nothing.
 fn switch(name: &str) -> anyhow::Result<()> {
     let repo = open_repo()?;
-    receipt(repo.switch(target_named(name))?);
-    Ok(())
+    let error = match repo.switch(target_named(name)) {
+        Ok(outcome) => {
+            receipt(outcome);
+            return Ok(());
+        }
+        Err(error) => error,
+    };
+    // The candidates are read back after the refusal, rename's shape
+    // (#168): advice for a retry that validates again anyway, never the
+    // nothing-was-written guarantee, which core's locked cycle already
+    // made. Read inside the arm that wants it, so the failure this verb
+    // sees most — lock contention, which fails fast — pays for no second
+    // state read. An unreadable roster answers `None` and falls through to
+    // core's bare sentence: a list nobody could read must not be printed
+    // as an empty one, which would state that the repository has none.
+    let refusal = match &error {
+        gitchange_core::Error::UnknownChangelist { name } => repo
+            .roster()
+            .ok()
+            .map(|roster| scope::unrecognised_refusal(name, &roster.changelists)),
+        _ => None,
+    };
+    match refusal {
+        Some(refusal) => anyhow::bail!(refusal),
+        // Everything else keeps its class, so lock contention still
+        // reaches the retry budget and exit 3 rather than exit 1.
+        None => Err(error.into()),
+    }
 }
 
 /// Bare `changelist` (#149): the roster, rendered. Read-only per #122's
@@ -953,8 +989,9 @@ fn rename_changelist(from: &str, to: &str) -> anyhow::Result<()> {
     // guarantee — that nothing was written — which core's locked cycle
     // already makes; and the retry validates again anyway, so a list read
     // an instant later is the one thing it cannot be wrong about. Every
-    // other verb's candidate sentence comes from a read of its own too
-    // (`scope::changelist_scopes`, off the snapshot).
+    // other verb's candidate sentence comes from a read of its own too —
+    // `scope::changelist_scopes`, off whichever read that verb already
+    // made: the snapshot for the refreshing verbs, the roster for `switch`.
     match changelist::rename_refusal(from, to, &error, || changelist_names(&repo)) {
         Some(refusal) => anyhow::bail!(refusal),
         // Everything else keeps its class, so lock contention still reaches

@@ -19,7 +19,7 @@ use std::path::Path;
 
 use crate::support::{
     committed_repo, dirty_repo, git, gitchange, owned_repo, owners, repo_holding, seed_state,
-    seed_state_raw, state_path,
+    seed_state_raw, state_bytes, state_path,
 };
 
 /// `gitchange changelist <args>`, asserted to have succeeded: its stdout
@@ -141,11 +141,11 @@ fn the_listing_leaves_the_state_file_byte_identical() {
     // capture, no record rewrite, not even a baseline stamp.
     let repo = dirty_repo();
     seed_state(repo.path(), "feature", &["feature"]);
-    let before = std::fs::read(state_path(repo.path())).unwrap();
+    let before = state_bytes(repo.path());
 
     listing(repo.path());
 
-    assert_eq!(std::fs::read(state_path(repo.path())).unwrap(), before);
+    assert_eq!(state_bytes(repo.path()), before);
 }
 
 #[test]
@@ -292,7 +292,7 @@ fn a_changelist_holding_records_refuses_naming_the_counts_and_the_override() {
     // (ADR 0015): the counts say what is at stake, the mechanism says
     // what deletion would do, and `-D` is the way to say yes.
     let repo = owned_repo();
-    let before = std::fs::read(state_path(repo.path())).unwrap();
+    let before = state_bytes(repo.path());
 
     let stderr = refusal(repo.path(), &["-d", "feature"]);
 
@@ -314,7 +314,7 @@ fn a_changelist_holding_records_refuses_naming_the_counts_and_the_override() {
         "a forecast names no destination (#122): {stderr}"
     );
     assert_eq!(
-        std::fs::read(state_path(repo.path())).unwrap(),
+        state_bytes(repo.path()),
         before,
         "a refused delete wrote nothing at all"
     );
@@ -447,7 +447,7 @@ fn delete_is_all_or_nothing_and_names_every_offender() {
     // A reserved name is simply unrecognised here — no mode of this
     // command has a meaning for one.
     let repo = owned_repo();
-    let before = std::fs::read(state_path(repo.path())).unwrap();
+    let before = state_bytes(repo.path());
 
     let stderr = refusal(repo.path(), &["-d", "empty", "nope", "unassigned"]);
 
@@ -461,7 +461,7 @@ fn delete_is_all_or_nothing_and_names_every_offender() {
         "the candidates are listed: {stderr}"
     );
     assert_eq!(
-        std::fs::read(state_path(repo.path())).unwrap(),
+        state_bytes(repo.path()),
         before,
         "the deletable name in the list was not deleted either"
     );
@@ -507,13 +507,13 @@ fn renaming_to_the_name_it_already_has_is_satisfied_in_silence() {
     // no-op is a genuine no-op, not a rewrite of the same bytes.
     let repo = dirty_repo();
     seed_state(repo.path(), "feature", &["feature"]);
-    let before = std::fs::read(state_path(repo.path())).unwrap();
+    let before = state_bytes(repo.path());
 
     let (stdout, stderr) = succeeds(repo.path(), &["-m", "feature", "feature"]);
 
     assert_eq!(stdout, "");
     assert_eq!(stderr, "");
-    assert_eq!(std::fs::read(state_path(repo.path())).unwrap(), before);
+    assert_eq!(state_bytes(repo.path()), before);
 }
 
 #[test]
@@ -562,7 +562,7 @@ fn an_existing_new_name_refuses_naming_the_composition() {
     // spells the destructive half as the explicit op it is, and the retry
     // is two copy-pasteable commands.
     let repo = owned_repo();
-    let before = std::fs::read(state_path(repo.path())).unwrap();
+    let before = state_bytes(repo.path());
 
     let stderr = refusal(repo.path(), &["-m", "feature", "docs"]);
 
@@ -573,7 +573,7 @@ fn an_existing_new_name_refuses_naming_the_composition() {
         "the composition is named: {stderr}"
     );
     assert_eq!(
-        std::fs::read(state_path(repo.path())).unwrap(),
+        state_bytes(repo.path()),
         before,
         "a refused rename wrote nothing"
     );

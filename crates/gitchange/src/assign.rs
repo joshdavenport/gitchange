@@ -320,7 +320,7 @@ fn target_of<'a>(args: &'a AssignScope, snapshot: &Snapshot) -> Result<Option<&'
         );
         return Ok(None);
     };
-    scope::recognised(name, snapshot)
+    scope::recognised(name, &snapshot.changelists)
 }
 
 /// Whether this path may be swept into `target`, or the refusal it earns.

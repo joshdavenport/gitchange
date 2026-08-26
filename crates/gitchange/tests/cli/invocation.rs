@@ -88,10 +88,10 @@ fn dash_c_runs_the_command_as_if_launched_there() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        "switched to 'bugfix'\n"
-    );
+    // The echo's target, not its prose: core owns the wording (#138), and
+    // what this test is about is which repository the write reached.
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("'bugfix'"), "unexpected stdout: {stdout}");
 
     let output = gitchange(cwd.path(), &["status", "-C", path_str(repo.path())]);
     assert_eq!(output.status.code(), Some(0));

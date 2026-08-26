@@ -43,7 +43,7 @@ pub fn target<'a>(name: &'a str, snapshot: &Snapshot) -> anyhow::Result<Option<&
              'gitchange commit <changelist> -m <message>'"
         );
     }
-    scope::recognised(name, snapshot).map_err(|refusal| anyhow::anyhow!(refusal))
+    scope::recognised(name, &snapshot.changelists).map_err(|refusal| anyhow::anyhow!(refusal))
 }
 
 /// Rung 3 of the guard stack (#151), amend's own: the temp index builds

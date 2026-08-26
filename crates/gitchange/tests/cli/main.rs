@@ -14,7 +14,7 @@
 //! | `grammar`    | the clap tree: what parses, what stubs, what is usage    |
 //! | `invocation` | reaching the command at all: `-C`, discovery, the TUI    |
 //! | `status`     | `status`'s two faces — the text rows and the envelope    |
-//! | `switch`     | `switch`'s receipt, its refusals, and the active marker  |
+//! | `switch`     | the marker: the receipt, the refusals, the claim it skips |
 //! | `locking`    | lock contention at the binary seam: live, dead, unread   |
 //! | `diff`       | `diff`'s scope resolution and its two faces              |
 //! | `add`        | `add`'s sweep, its refusals, and its receipt             |
