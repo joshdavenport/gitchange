@@ -3,6 +3,8 @@ name: gitchange-cli-base
 description: Drive gitchange in a shared working tree. Use when asked to use gitchange or when working in a tree where you know other actors are working.
 ---
 
+> Note: We're currently dogfooding gitchange, the CLI tool for managing changelists in a repo, used for isolating your changes amongst any other agents ongoing changes. Tell the user if anything doesn't work or generally go as you expected.
+
 # gitchange in a shared tree
 
 Other actors — humans, other agents — edit the same working tree. gitchange
