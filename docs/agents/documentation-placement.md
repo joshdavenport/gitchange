@@ -18,6 +18,7 @@ record of anything.
 | `CONTEXT.md` | The glossary: the project's own vocabulary, including the synonyms it avoids | `/domain-modeling` resolves terms into it as they settle; every output that names a domain concept uses its wording (see `domain.md`) |
 | `docs/agents/` | Operating direction for agents: tracker conventions, triage labels, sandboxes, the benchmark harness, this file | Followed on the session it is read, so wrong direction fails visibly rather than quietly |
 | `README.md` | The user-facing contract — requirements, the minimum git version | Users hold it to account |
+| `skills/` | The product's agent-facing skill: what an agent driving the CLI in a shared tree is taught, and — by absence — what it is not (spec #125). Carried as three verbosities of one content (`-base`, `-spartan`, `-verbose`) while which one agents run best on is being evaluated (#176); a teach-list change edits all three | The ladder-walk test pins the cross-rung property the skill teaches; a refusal reword that breaks the chain fails the suite and flags the skill for re-edit |
 
 Generated tool output is a narrower fourth case: `docs/perf/` holds what
 `cargo xbench --out docs/perf` writes (see `benchmarks.md`). It is in the tree

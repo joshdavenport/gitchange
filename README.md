@@ -5,7 +5,9 @@ changelists that can be staged and committed independently.
 
 Vocabulary, invariants, and design decisions live in [CONTEXT.md](CONTEXT.md)
 and [docs/adr/](docs/adr/); agent-facing workflow docs in
-[docs/agents/](docs/agents/).
+[docs/agents/](docs/agents/). Agents driving the CLI in a shared tree load
+the skill under [skills/](skills/) — one skill in three verbosities, under
+evaluation; pick one.
 
 ## The claim model
 
