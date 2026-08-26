@@ -22,6 +22,7 @@
 //! | `unstage`    | the mirror: the `●`-only sweep and its kept-`◑` notices  |
 //! | `assign`     | membership: the path sweep, the ownership guard, release |
 //! | `changelist` | the noun command: the bare listing, and create           |
+//! | `ladder`     | the escalation ladder: that the rungs chain              |
 
 mod support;
 
@@ -32,6 +33,7 @@ mod commit;
 mod diff;
 mod grammar;
 mod invocation;
+mod ladder;
 mod locking;
 mod refresh;
 mod status;

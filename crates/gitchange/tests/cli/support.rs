@@ -247,6 +247,17 @@ pub fn owners(dir: &Path, path: &str) -> Vec<Option<String>> {
     );
     let envelope: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("the envelope is one JSON document");
+    hunks_of(&envelope, path)
+        .iter()
+        .map(|hunk| hunk["changelist"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// One file's hunks in a `--json` read's envelope, in file order — the walk
+/// every suite reading the machine face makes before it asks its own
+/// question of each hunk. Panics where the file is absent, so a scope that
+/// selected nothing says so rather than answering an empty list.
+pub fn hunks_of<'a>(envelope: &'a serde_json::Value, path: &str) -> &'a [serde_json::Value] {
     envelope["files"]
         .as_array()
         .expect("files")
@@ -255,9 +266,6 @@ pub fn owners(dir: &Path, path: &str) -> Vec<Option<String>> {
         .unwrap_or_else(|| panic!("no '{path}' in {envelope}"))["hunks"]
         .as_array()
         .expect("hunks")
-        .iter()
-        .map(|hunk| hunk["changelist"].as_str().map(str::to_owned))
-        .collect()
 }
 
 /// The paths the index holds a change for, in git's order — the ground
