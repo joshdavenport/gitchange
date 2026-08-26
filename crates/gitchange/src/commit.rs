@@ -94,7 +94,7 @@ pub fn refuse_foreign_head(
 /// Rungs 1 to 3 fire earlier by construction, in three homes of their
 /// own: the operation guard, read off the refresh's snapshot and enforced
 /// again by core at the commit itself; foreign content, which core raises
-/// deriving the payload; and [`foreign_head`], which the handler asks
+/// deriving the payload; and [`refuse_foreign_head`], which the handler asks
 /// between them and this. Holding the order across those homes is the
 /// handler's job; what lives here is the part that is the CLI's own
 /// policy, where ADR 0015 maps the TUI's warn-and-confirms onto refusals
