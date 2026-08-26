@@ -84,8 +84,11 @@ is exactly the other changelists' staged hunks, so derived staged state
   `{ oid, changelist }` in the state file, written in the same locked
   update as the records, with `unassigned` as the name where that was the
   scope. This is the reference the CLI amend guard checks (§Amend); an
-  amend re-records it, and renaming the changelist rewrites its name in
-  the record.
+  amend re-records it, renaming the changelist rewrites its name in
+  the record, and **deleting the changelist clears the record** — the
+  name can be recreated, and the changelist that comes back is not the
+  one that made that commit, so a surviving record would satisfy the
+  amend guard on a stranger's commit.
 
 ## Amend
 
@@ -93,7 +96,7 @@ is exactly the other changelists' staged hunks, so derived staged state
 editing, hooks run, `--no-verify` applies, the same guards and
 bookkeeping — plus one guard and one refusal of amend's own:
 
-- **The attribution guard (CLI only).** The temp index builds on HEAD's
+- **The foreign-head guard (CLI only).** The temp index builds on HEAD's
   tree, so amending while HEAD is another actor's changelist commit
   folds the payload into their commit — the cross-contamination ADR
   0015's loud-CLI rule exists to prevent — and commits carry no

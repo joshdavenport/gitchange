@@ -235,6 +235,64 @@ fn rename_rewrites_the_last_commit_record() {
     assert!(!repo.head_is_own_last_commit(Some("feature")).unwrap());
 }
 
+#[test]
+fn delete_clears_the_last_commit_record_it_names() {
+    // ADR 0004 §Aftermath: a deleted name can be recreated, and the
+    // changelist that comes back is not the one that made the commit — so
+    // a surviving record would satisfy the CLI's foreign-head guard on a
+    // stranger's commit, at an unchanged HEAD.
+    let fixture = RepoFixture::new();
+    fixture.write("a.txt", "one\n").commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("feature").unwrap();
+    repo.switch(Some("feature")).unwrap();
+    fixture.write("a.txt", "two\n").stage("a.txt");
+    repo.refresh().unwrap();
+    repo.commit(
+        Some("feature"),
+        CommitMessage::Given("feature: two"),
+        &CommitOptions::default(),
+        None,
+    )
+    .unwrap();
+    assert!(repo.head_is_own_last_commit(Some("feature")).unwrap());
+
+    repo.delete_changelists(&["feature"], Release::Guarded)
+        .unwrap();
+    repo.create_changelist("feature").unwrap();
+
+    assert!(
+        !repo.head_is_own_last_commit(Some("feature")).unwrap(),
+        "the record went with the changelist that made the commit"
+    );
+}
+
+/// Another changelist's record survives a delete: what the delete clears
+/// is the record naming *it*, not the field.
+#[test]
+fn delete_leaves_another_changelists_last_commit_record_alone() {
+    let fixture = RepoFixture::new();
+    fixture.write("a.txt", "one\n").commit_all("init");
+    let repo = repo(&fixture);
+    repo.create_changelist("feature").unwrap();
+    repo.create_changelist("docs").unwrap();
+    repo.switch(Some("feature")).unwrap();
+    fixture.write("a.txt", "two\n").stage("a.txt");
+    repo.refresh().unwrap();
+    repo.commit(
+        Some("feature"),
+        CommitMessage::Given("feature: two"),
+        &CommitOptions::default(),
+        None,
+    )
+    .unwrap();
+
+    repo.delete_changelists(&["docs"], Release::Guarded)
+        .unwrap();
+
+    assert!(repo.head_is_own_last_commit(Some("feature")).unwrap());
+}
+
 /// Every stored record as (path, owner, dormant), in file order — read off
 /// the persisted shape (ADR 0002), which is where a rename's rewrite either
 /// happened or did not.

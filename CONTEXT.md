@@ -296,8 +296,10 @@ _Avoid_: hunk body, change range
 **Commit payload**:
 What committing a changelist commits: its staged hunks as index content,
 snapshotted by a synchronous refresh — the TUI's at confirm time, the
-CLI's inside the one invocation, which is also the snapshot its guards
-read. Staged-stale hunks never enter it silently, and an empty payload is
+CLI's inside the one invocation, which is also the snapshot its payload
+guards read; the amend guard alone reads a fact no snapshot carries, the
+state file's last-commit record.
+Staged-stale hunks never enter it silently, and an empty payload is
 never filled silently; each frontend answers both in its own register
 (ADR 0015): the TUI warns and confirms, and offers stage-all-and-commit,
 while the CLI refuses and names the override (`--allow-staged-stale`) or

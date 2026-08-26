@@ -804,12 +804,6 @@ fn assign(scope: &AssignScope) -> anyhow::Result<()> {
 /// and the commit that follows runs once: replaying it would replay a
 /// commit that already exists.
 fn commit(args: &CommitArgs) -> anyhow::Result<()> {
-    // Interim (#170): `--amend` is this batch's third ticket (#171),
-    // which deletes this. Ahead of the repository, so the unbuilt mode
-    // refuses exactly as the skeleton's stubs do (#140).
-    if args.amend {
-        return not_implemented("commit --amend");
-    }
     let repo = open_repo()?;
     let refreshed = with_lock_retry(|| Ok(repo.commit_refresh()?))?;
     // Delivered before anything can refuse, and so exactly once: the
@@ -830,6 +824,15 @@ fn commit(args: &CommitArgs) -> anyhow::Result<()> {
     // Rung 2, foreign content: core's refusal already names every holder
     // and the one-op resolution (ADR 0004), so it needs no dressing here.
     let prepared = repo.prepare_commit(&refreshed, target)?;
+    // Rung 3, the foreign head — amend's own. Apart from the rungs below
+    // only because it speaks ahead of them; the fact it reads is the
+    // state file's last-commit record, which is why it takes a thunk
+    // rather than the snapshot every other rung is validated against.
+    if let Some(refusal) =
+        commit::refuse_foreign_head(args, target, || repo.head_is_own_last_commit(target))?
+    {
+        anyhow::bail!(refusal);
+    }
     // Rungs 4 to 6, the CLI's own.
     if let Some(refusal) = commit::refuse(&prepared, args) {
         anyhow::bail!(refusal);

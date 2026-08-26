@@ -367,6 +367,13 @@ impl State {
     /// another actor's. All of the changelist's records are pruned, live
     /// and dormant (ADR 0016): its hunks are released recordless, to
     /// flow under ADR 0001's uniform rule on the next refresh.
+    ///
+    /// A last-commit record naming it goes too (ADR 0004 §Aftermath). The
+    /// name can be recreated, and the changelist that comes back is not
+    /// the one that made that commit — so a surviving record would let its
+    /// first amend fold a payload into a stranger's commit with the
+    /// foreign-head guard satisfied. Nothing else is lost with it: the
+    /// record is only ever read for a name an amend can still target.
     pub fn delete(&mut self, name: &str) -> Result<(), Error> {
         if !self.contains(name) {
             return Err(Error::UnknownChangelist { name: name.into() });
@@ -376,6 +383,13 @@ impl State {
         if self.active.as_deref() == Some(name) {
             self.active = None;
         }
+        if self
+            .last_commit
+            .as_ref()
+            .is_some_and(|last| last.changelist == name)
+        {
+            self.last_commit = None;
+        }
         Ok(())
     }
 
@@ -383,6 +397,14 @@ impl State {
     /// longer exists (a hand-edited file, or a delete racing a refresh's
     /// unlocked read): pruned wholesale, like [`State::delete`] — a
     /// deleted changelist must never claim hunks again (ADR 0016).
+    ///
+    /// Membership records only, deliberately, where [`State::delete`]
+    /// clears the last-commit record too: this runs on a refresh's own
+    /// copy of the state, which persists only when records or the
+    /// baseline stamp move (ADR 0005's self-loop filter, ADR 0012) — and
+    /// a moved stamp means a moved HEAD, which the record's oid already
+    /// fails against. So clearing it here would be a branch nothing can
+    /// observe; the rule lives at the delete, which always writes.
     pub(crate) fn prune_records_of_unknown_changelists(&mut self) {
         let known: Vec<String> = self.changelists.iter().map(|cl| cl.name.clone()).collect();
         self.records

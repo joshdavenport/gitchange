@@ -388,12 +388,12 @@ fn staging_verbs_containing_has_three_non_declarative_usage_errors() {
 // --- commit ----------------------------------------------------------------
 
 #[test]
-fn commit_every_non_amend_form_parses_and_reaches_the_repository() {
-    // The spine is built (#170), so from an empty directory each form
-    // gets as far as discovery and refuses there — which is what proves
-    // the shape parsed rather than dying as usage. What each guard says,
-    // and what each message source delivers, is asserted against fixture
-    // repos in `commit.rs`.
+fn commit_every_form_parses_and_reaches_the_repository() {
+    // The whole verb is built (#170, #171), so from an empty directory
+    // each form gets as far as discovery and refuses there — which is
+    // what proves the shape parsed rather than dying as usage. What each
+    // guard says, and what each message source delivers, is asserted
+    // against fixture repos in `commit.rs`.
     for args in [
         &["commit", "feature", "-m", "msg"][..],
         &["commit", "feature", "--message", "msg"],
@@ -413,6 +413,19 @@ fn commit_every_non_amend_form_parses_and_reaches_the_repository() {
             "--allow-staged-stale",
             "--allow-foreign-head",
         ],
+        // Amend's three message sources: `--no-edit` is legal only here,
+        // and `-m`/`-F` replace what HEAD carries.
+        &["commit", "feature", "--amend", "--no-edit"],
+        &["commit", "feature", "-m", "msg", "--amend"],
+        &["commit", "feature", "-F", "msg.txt", "--amend"],
+        &[
+            "commit",
+            "feature",
+            "-m",
+            "msg",
+            "--amend",
+            "--allow-foreign-head",
+        ],
     ] {
         let output = gitchange(args);
         assert_eq!(output.status.code(), Some(1), "{args:?}");
@@ -423,31 +436,6 @@ fn commit_every_non_amend_form_parses_and_reaches_the_repository() {
             stderr(&output)
         );
     }
-}
-
-/// `--amend` is the batch's third ticket (#171): the mode parses and
-/// refuses as unbuilt, naming itself, exactly as the skeleton's stubs do.
-#[test]
-fn commit_amend_is_a_stub() {
-    assert_stub(
-        &["commit", "feature", "--amend", "--no-edit"],
-        "commit --amend",
-    );
-    assert_stub(
-        &["commit", "feature", "-m", "msg", "--amend"],
-        "commit --amend",
-    );
-    assert_stub(
-        &[
-            "commit",
-            "feature",
-            "-m",
-            "msg",
-            "--amend",
-            "--allow-foreign-head",
-        ],
-        "commit --amend",
-    );
 }
 
 #[test]

@@ -1,7 +1,7 @@
-//! End-to-end tests of `commit`'s spine (#170): target validation, the
-//! guard stack in its fixed order, the three message sources, and the
-//! receipt. Ground truth is git's own account of what happened — `git
-//! log`, `git show`, `git diff --cached` — never gitchange's.
+//! End-to-end tests of `commit` (#170, #171): target validation, the
+//! guard stack in its fixed order, `--amend`, the three message sources,
+//! and the receipt. Ground truth is git's own account of what happened —
+//! `git log`, `git show`, `git diff --cached` — never gitchange's.
 //!
 //! The runner is this module's own rather than `support::gitchange`
 //! because `commit` is the one verb that shells out to git: the binary's
@@ -9,15 +9,13 @@
 //! built with, or a developer with a global `commit.gpgsign` sees these
 //! fail and CI never does. It also carries stdin, which `-F -` needs.
 //!
-//! `--amend` and the foreign-head guard are the batch's third ticket
-//! (#171); the mode's unbuilt refusal is pinned in `grammar.rs`.
-//!
 //! Two things this seam cannot answer stay at core's (ADR 0008), where
-//! both are already pinned: the record aftermath, which no git command
-//! reports, and the mode-hunk carve-out from the foreign-content guard —
-//! a mode hunk commits no content, so asserting it needs the payload
-//! rather than the commit (core's `commit::temp_index`,
-//! `a_mode_only_payload_commits_past_a_split_entry`).
+//! both are already pinned: the record aftermath — which no git command
+//! reports, so the amend cases below read the last-commit record only
+//! through the guard's own outcome — and the mode-hunk carve-out from
+//! the foreign-content guard, where a mode hunk commits no content, so
+//! asserting it needs the payload rather than the commit (core's
+//! `commit::temp_index`, `a_mode_only_payload_commits_past_a_split_entry`).
 
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
@@ -367,6 +365,315 @@ fn the_operation_guard_speaks_before_foreign_content() {
     assert!(!stderr.contains("cannot commit notes.txt"), "{stderr}");
 }
 
+// --- rung 3: --amend and the foreign head -----------------------------------
+
+/// The rung-3 refusal, asserted whole: the wording is one string in
+/// `commit::refuse_foreign_head`, so it is one assertion here rather than
+/// a fragment repeated per case.
+fn assert_foreign_head(stderr: &str, target: &str) {
+    assert!(
+        stderr.contains(&format!(
+            "HEAD is not the commit gitchange last made for {target}"
+        )),
+        "{stderr}"
+    );
+}
+
+/// `owned_repo` carried to the state an amend needs: `'feature'`'s own
+/// gitchange commit at HEAD, a second hunk of its own staged for the
+/// amend to fold in, and `'docs'` staged work standing by in the live
+/// index.
+///
+/// `a.txt`'s other hunk survives the first commit unassigned — capture is
+/// off in this fixture — so it is assigned before it is staged.
+fn amendable_repo() -> tempfile::TempDir {
+    let dir = owned_repo();
+    let repo = dir.path();
+    succeeds(repo, &["add", "feature"]);
+    commit(repo, &["feature", "-m", "the first half"]);
+    succeeds(repo, &["assign", "a.txt", "--to", "feature"]);
+    succeeds(repo, &["add", "feature"]);
+    succeeds(repo, &["add", "docs"]);
+    dir
+}
+
+#[test]
+fn the_amended_tip_is_heads_content_plus_the_payload() {
+    let dir = amendable_repo();
+    let repo = dir.path();
+    let before = commit_count(repo);
+
+    let echo = commit(repo, &["feature", "--amend", "--no-edit"]);
+
+    assert_eq!(
+        commit_count(repo),
+        before,
+        "the tip was replaced, not added to"
+    );
+    assert!(echo.contains(&head_short(repo)), "{echo}");
+    let landed = git(repo, &["show", "HEAD", "--", "a.txt"]);
+    assert!(
+        landed.contains("+first edited"),
+        "HEAD's own content is still there: {landed}"
+    );
+    assert!(
+        landed.contains("+last edited"),
+        "the payload joined it: {landed}"
+    );
+    assert_eq!(head_paths(repo), vec!["a.txt"]);
+    assert_eq!(
+        staged_paths(repo),
+        vec!["b.txt"],
+        "'docs' still has its hunk staged, needing no restoring"
+    );
+}
+
+/// The loop ADR 0004 §Amend leaves unguarded: an amend re-records, so
+/// HEAD stays the changelist's own last commit however many times it
+/// moves.
+#[test]
+fn amend_after_amend_passes() {
+    let dir = amendable_repo();
+    let repo = dir.path();
+    commit(repo, &["feature", "--amend", "--no-edit"]);
+
+    write(repo, "a.txt", "rewritten\n");
+    succeeds(repo, &["assign", "a.txt", "--to", "feature"]);
+    succeeds(repo, &["add", "feature"]);
+    let echo = commit(repo, &["feature", "--amend", "-m", "the whole of it"]);
+
+    assert!(echo.contains("committed"), "{echo}");
+    assert_eq!(head_message(repo), "the whole of it");
+    assert_eq!(git(repo, &["show", "HEAD:a.txt"]), "rewritten");
+}
+
+#[test]
+fn no_record_yet_refuses() {
+    // A repo that has never committed through gitchange: HEAD is
+    // somebody's, and nothing says whose.
+    let dir = one_hunk_repo();
+
+    let stderr = refusal(dir.path(), &["feature", "--amend", "--no-edit"]);
+
+    assert_foreign_head(&stderr, "'feature'");
+    assert!(stderr.contains("--allow-foreign-head"), "{stderr}");
+    assert!(stderr.contains("commit without '--amend'"), "{stderr}");
+    assert_eq!(commit_count(dir.path()), 1, "nothing was committed");
+}
+
+#[test]
+fn another_changelists_commit_refuses() {
+    let dir = amendable_repo();
+    let repo = dir.path();
+    // 'docs' commits last, so HEAD is its commit and the record is its
+    // name — amending 'feature' now would fold 'feature''s payload in.
+    commit(repo, &["docs", "-m", "the other half"]);
+
+    let stderr = refusal(repo, &["feature", "--amend", "--no-edit"]);
+
+    assert_foreign_head(&stderr, "'feature'");
+    assert_eq!(head_message(repo), "the other half", "nothing was amended");
+}
+
+#[test]
+fn a_commit_made_outside_gitchange_refuses() {
+    let dir = amendable_repo();
+    let repo = dir.path();
+    write(repo, "outside.txt", "elsewhere\n");
+    git(repo, &["add", "outside.txt"]);
+    git(repo, &["commit", "-q", "--no-verify", "-m", "outside"]);
+
+    let stderr = refusal(repo, &["feature", "--amend", "--no-edit"]);
+
+    assert_foreign_head(&stderr, "'feature'");
+    assert_eq!(head_message(repo), "outside", "nothing was amended");
+}
+
+/// A deleted name can be recreated, and what comes back is not the
+/// changelist that made the commit — so the delete clears the record
+/// (ADR 0004 §Aftermath) and the guard sees the stranger's commit it is.
+#[test]
+fn a_deleted_then_recreated_name_refuses() {
+    let dir = amendable_repo();
+    let repo = dir.path();
+    succeeds(repo, &["changelist", "-D", "feature"]);
+    succeeds(repo, &["changelist", "feature"]);
+    succeeds(repo, &["assign", "a.txt", "--to", "feature"]);
+    succeeds(repo, &["add", "feature"]);
+
+    let stderr = refusal(repo, &["feature", "--amend", "--no-edit"]);
+
+    assert_foreign_head(&stderr, "'feature'");
+}
+
+#[test]
+fn the_foreign_head_flag_amends_head_as_it_stands() {
+    let dir = one_hunk_repo();
+    let repo = dir.path();
+
+    let echo = commit(
+        repo,
+        &["feature", "--amend", "--no-edit", "--allow-foreign-head"],
+    );
+
+    assert!(echo.contains("committed"), "{echo}");
+    assert_eq!(commit_count(repo), 1, "the tip was replaced");
+    assert_eq!(head_message(repo), "init", "--no-edit kept what HEAD had");
+    assert_eq!(git(repo, &["show", "HEAD:tracked.txt"]), "two");
+}
+
+#[test]
+fn the_foreign_head_flag_is_inert_where_the_guard_would_not_fire() {
+    let dir = amendable_repo();
+    let repo = dir.path();
+
+    // On an own-record amend, and on a commit that is no amend at all.
+    let amended = commit(
+        repo,
+        &["feature", "--amend", "--no-edit", "--allow-foreign-head"],
+    );
+    assert!(amended.contains("committed"), "{amended}");
+    let committed = commit(
+        repo,
+        &["docs", "-m", "the other half", "--allow-foreign-head"],
+    );
+    assert!(committed.contains("'docs'"), "{committed}");
+    assert_eq!(commit_count(repo), 3);
+}
+
+// --- rung 3's place in the stack --------------------------------------------
+
+#[test]
+fn the_foreign_head_guard_speaks_before_the_unassigned_gate() {
+    let dir = unassigned_payload_repo();
+
+    let stderr = refusal(
+        dir.path(),
+        &["unassigned", "--amend", "--no-edit", "--allow-unassigned"],
+    );
+
+    assert_foreign_head(&stderr, "unassigned");
+
+    // And without the gate's override too: rung 3 speaks either way.
+    let bare = refusal(dir.path(), &["unassigned", "--amend", "--no-edit"]);
+    assert_foreign_head(&bare, "unassigned");
+    assert!(!bare.contains("skips the assign step"), "{bare}");
+}
+
+#[test]
+fn the_foreign_head_guard_speaks_before_staged_stale() {
+    let dir = stale_repo();
+    let repo = dir.path();
+    let stale = address(repo, "tracked.txt", 0);
+
+    let stderr = refusal(repo, &["feature", "--amend", "--no-edit"]);
+
+    assert_foreign_head(&stderr, "'feature'");
+    assert!(!stderr.contains(&stale), "{stderr}");
+}
+
+#[test]
+fn the_foreign_head_guard_speaks_before_the_empty_payload() {
+    let dir = owned_repo();
+
+    let stderr = refusal(dir.path(), &["feature", "--amend", "--no-edit"]);
+
+    assert_foreign_head(&stderr, "'feature'");
+    assert!(!stderr.contains("no staged hunks"), "{stderr}");
+}
+
+/// The other direction of the same order (#151: the first in order
+/// speaks). Rungs 1 and 2 are core's conditions and rung 3 the CLI's, so
+/// nothing but this holds them in one sequence.
+#[test]
+fn the_operation_guard_speaks_before_the_foreign_head() {
+    // Mid-merge and no record at all: both conditions hold.
+    let dir = merging_repo_with_a_changelist();
+
+    let stderr = refusal(dir.path(), &["feature", "--amend", "--no-edit"]);
+
+    assert!(stderr.contains("merge in progress"), "{stderr}");
+    assert!(!stderr.contains("gitchange last made"), "{stderr}");
+}
+
+#[test]
+fn foreign_content_speaks_before_the_foreign_head() {
+    let dir = split_entry_repo(false);
+
+    let stderr = refusal(dir.path(), &["art", "--amend", "--no-edit"]);
+
+    assert!(stderr.contains("cannot commit notes.txt"), "{stderr}");
+    assert!(!stderr.contains("gitchange last made"), "{stderr}");
+}
+
+// --- rung 6 under --amend: reword stays git's job ---------------------------
+
+#[test]
+fn an_empty_amend_payload_names_add_and_raw_git() {
+    let dir = amendable_repo();
+    let repo = dir.path();
+    // The amend consumes the payload, so the next one has none — which is
+    // what a reword looks like from here.
+    commit(repo, &["feature", "--amend", "--no-edit"]);
+
+    let stderr = refusal(repo, &["feature", "--amend", "--no-edit"]);
+
+    assert!(stderr.contains("no staged hunks"), "{stderr}");
+    assert!(stderr.contains("gitchange add feature"), "{stderr}");
+    assert!(stderr.contains("git commit --amend"), "{stderr}");
+    assert_eq!(commit_count(repo), 2, "nothing was committed");
+}
+
+/// The plain refusal stays plain: raw git is amend's resolution, and a
+/// commit that is no amend has no reword to be mistaken for.
+#[test]
+fn an_empty_payload_without_amend_names_git_nothing() {
+    let dir = owned_repo();
+
+    let stderr = refusal(dir.path(), &["feature", "-m", "nothing yet"]);
+
+    assert!(!stderr.contains("git commit --amend"), "{stderr}");
+}
+
+// --- the overrides composed -------------------------------------------------
+
+#[test]
+fn an_unassigned_amend_composes_both_overrides_and_re_records() {
+    let dir = unassigned_payload_repo();
+    let repo = dir.path();
+    commit(
+        repo,
+        &["unassigned", "-m", "the pool", "--allow-unassigned"],
+    );
+    // A second unassigned hunk, in an entry nobody else holds.
+    write(repo, "keep.txt", "changed\n");
+    git(repo, &["add", "keep.txt"]);
+
+    let echo = commit(
+        repo,
+        &[
+            "unassigned",
+            "--amend",
+            "--no-edit",
+            "--allow-unassigned",
+            "--allow-foreign-head",
+        ],
+    );
+
+    assert!(echo.contains("unassigned"), "{echo}");
+    assert_eq!(head_paths(repo), vec!["keep.txt", "sub/c.txt"]);
+    // The amend re-recorded under `unassigned`, which is what lets the
+    // next one pass the guard with no override at all — the record is
+    // not readable at this seam, but its effect is.
+    write(repo, "extra.txt", "more\n");
+    git(repo, &["add", "extra.txt"]);
+    let again = commit(
+        repo,
+        &["unassigned", "--amend", "--no-edit", "--allow-unassigned"],
+    );
+    assert!(again.contains("committed"), "{again}");
+}
+
 // --- rung 4: the unassigned gate --------------------------------------------
 
 /// `owned_repo` with the unassigned pool staged: `sub/c.txt` and
@@ -576,6 +883,36 @@ fn dash_f_dash_reads_stdin() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(head_message(repo), "from stdin\n\nwith a body");
+}
+
+/// `--no-edit` is the only source that carries no message: core omits
+/// `-F` and forwards the flag, so git keeps what HEAD already had.
+#[test]
+fn no_edit_keeps_heads_message_on_amend() {
+    let dir = amendable_repo();
+    let repo = dir.path();
+
+    commit(repo, &["feature", "--amend", "--no-edit"]);
+
+    assert_eq!(head_message(repo), "the first half");
+}
+
+#[test]
+fn dash_m_and_dash_f_replace_heads_message_on_amend() {
+    let dir = amendable_repo();
+    let repo = dir.path();
+
+    commit(repo, &["feature", "--amend", "-m", "the whole of it"]);
+    assert_eq!(head_message(repo), "the whole of it");
+
+    let elsewhere = tempfile::tempdir().unwrap();
+    let message = elsewhere.path().join("message.txt");
+    std::fs::write(&message, "from a file\n").unwrap();
+    write(repo, "extra.txt", "more\n");
+    git(repo, &["add", "extra.txt"]);
+    succeeds(repo, &["assign", "extra.txt", "--to", "feature"]);
+    commit(repo, &["feature", "--amend", "-F", path_str(&message)]);
+    assert_eq!(head_message(repo), "from a file");
 }
 
 // --- hooks ------------------------------------------------------------------

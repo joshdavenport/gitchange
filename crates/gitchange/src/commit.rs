@@ -14,7 +14,7 @@ use std::io::Read as _;
 
 use anyhow::Context as _;
 use gitchange_core::{
-    ALL, CommitMessage, PreparedCommit, Snapshot, UNASSIGNED, count_noun, holder_label,
+    ALL, CommitMessage, Error, PreparedCommit, Snapshot, UNASSIGNED, count_noun, holder_label,
 };
 
 use crate::CommitArgs;
@@ -46,18 +46,59 @@ pub fn target<'a>(name: &'a str, snapshot: &Snapshot) -> anyhow::Result<Option<&
     scope::recognised(name, snapshot).map_err(|refusal| anyhow::anyhow!(refusal))
 }
 
+/// Rung 3 of the guard stack (#151), amend's own: the temp index builds
+/// on HEAD's tree, so amending while HEAD is somebody else's commit folds
+/// this payload into it — and commits carry no provenance to check
+/// afterwards. The refusal is worded for all three shapes of the hazard at
+/// once (another changelist's commit, a commit made outside gitchange, no
+/// record yet), because what HEAD *is* instead is not a thing the state
+/// file knows.
+///
+/// Apart from [`refuse`] only because of where it sits in the order —
+/// ahead of rung 4's gate — never because it is a different kind of thing;
+/// the whole rung, condition and text, is here.
+///
+/// `head_is_own` is [`gitchange_core::Repo::head_is_own_last_commit`],
+/// taken as a thunk because it is the one rung whose fact is not on the
+/// snapshot the others read: a second state read, worth not making where
+/// the answer cannot matter. That laziness is also what makes the override
+/// inert — it short-circuits before the read rather than in an arm of its
+/// own.
+///
+/// CLI-only by decision (ADR 0004 §Amend): a policy guard against agent
+/// misfire, the same CLI-stricter-than-TUI split as rung 4's gate, and the
+/// TUI's amend stays gate-free — one human's stated intent.
+pub fn refuse_foreign_head(
+    args: &CommitArgs,
+    target: Option<&str>,
+    head_is_own: impl FnOnce() -> Result<bool, Error>,
+) -> anyhow::Result<Option<String>> {
+    if !args.amend || args.allow_foreign_head || head_is_own()? {
+        return Ok(None);
+    }
+    // Phrased around the record rather than as a possessive: a quoted
+    // name takes `'s` as `'feature''s`, which reads as a quoting mistake.
+    Ok(Some(format!(
+        "HEAD is not the commit gitchange last made for {} — amending would fold this payload \
+         into whatever commit it is; commit without '--amend', or pass '--allow-foreign-head' \
+         to amend HEAD as it stands",
+        holder_label(target)
+    )))
+}
+
 /// Rungs 4 to 6 of the guard stack (#151) in their fixed order: the first
 /// condition that holds speaks, complete within its rung, and `None` lets
 /// the commit through. One refusal per invocation, so fixing what the
 /// text names is always forward progress.
 ///
-/// Rungs 1 and 2 fire earlier by construction, both on conditions core
-/// owns: the operation guard, read off the refresh's snapshot and
-/// enforced again by core at the commit itself, and foreign content,
-/// which core raises deriving the payload. Rung 3 is amend's (#171).
-/// Holding the order across those homes is the handler's job; what lives
-/// here is the part that is the CLI's own policy, where ADR 0015 maps the
-/// TUI's warn-and-confirms onto refusals with named overrides.
+/// Rungs 1 to 3 fire earlier by construction, in three homes of their
+/// own: the operation guard, read off the refresh's snapshot and enforced
+/// again by core at the commit itself; foreign content, which core raises
+/// deriving the payload; and [`foreign_head`], which the handler asks
+/// between them and this. Holding the order across those homes is the
+/// handler's job; what lives here is the part that is the CLI's own
+/// policy, where ADR 0015 maps the TUI's warn-and-confirms onto refusals
+/// with named overrides.
 ///
 /// Every override names the condition it excuses and is inert when that
 /// condition is absent, so a flag left in a retried command can never
@@ -101,8 +142,18 @@ pub fn refuse(prepared: &PreparedCommit, args: &CommitArgs) -> Option<String> {
     // broadens the payload. Rungs 5 and 6 never co-occur — a `◑` hunk is
     // itself payload.
     if prepared.payload.is_empty() {
+        // Under `--amend` the same condition means something the plain
+        // reading misses: an empty payload is what a *reword* looks like,
+        // and reword stays git's job (ADR 0004 §Amend) — gitchange's
+        // commit filters a payload, and a reword has none to filter. So
+        // the amend arm names the second resolution rather than leaving a
+        // caller to stage something it does not want staged.
+        let reword = match args.amend {
+            true => ", or reword the commit with raw 'git commit --amend'",
+            false => "",
+        };
         return Some(format!(
-            "{} has no staged hunks to commit — stage some with 'gitchange add {}'",
+            "{} has no staged hunks to commit — stage some with 'gitchange add {}'{reword}",
             holder_label(target),
             invocation(target),
         ));
