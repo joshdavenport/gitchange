@@ -85,20 +85,26 @@ inheritance, dormant revival) shows; context-derived ownership (capture,
 entry-unit join) never previews — a recordless hunk reports as unassigned.
 
 Who runs which: the engine's refreshes persist, as do the refreshes inside
-every mutating op (assign, stage, commit) — the op's receipt carries the
-advisories its refresh produced. Every read-only CLI invocation whose
-answer reads the change universe (`status`, `diff`; with or without
-`--json`) refreshes read-only: a glance at the tree never moves
-membership. The bare `changelist` listing reads the state file alone — the
-names and the marker derive from no diff — so it runs neither form,
-reaching the same guarantee by doing less; it therefore answers wherever
-the state file is readable, including a repository whose universe cannot
-be built. The CLI reaches the persisting form only
-by name: `gitchange refresh` is the manual refresh key's CLI form — one
-deliberate persisting refresh whose receipt carries its advisories. Deferred capture is the accepted cost:
-with no TUI running, a new hunk stays unassigned until the next mutation's
-persisting refresh captures it, so that mutation's receipt can advise
-decisions unrelated to its target.
+every op that moves hunks (assign, stage and unstage, commit) — the op's
+receipt carries the advisories its refresh produced. A write that moves no
+hunks runs neither form: `switch` and changelist create/delete/rename
+touch the state file's own fields and decide no membership, so a refresh
+would have nothing to commit. Every read-only CLI invocation whose answer
+reads the change universe (`status`, `diff`; with or without `--json`)
+refreshes read-only: a glance at the tree never moves membership. The bare
+`changelist` listing reads the state file alone — the names and the marker
+derive from no diff — so it too runs neither form, reaching the same
+guarantee by doing less; it therefore answers wherever the state file is
+readable, including a repository whose universe cannot be built. So the
+mechanism follows one test on both sides: a refresh runs where the change
+universe is read, and it persists where membership is decided. The CLI's
+only *standalone* persisting refresh is `gitchange refresh` — the manual
+refresh key's CLI form, one deliberate persisting refresh whose receipt
+carries its advisories; every other the CLI runs is one a hunk-moving op
+runs for itself. Deferred capture is the accepted cost: with no TUI
+running, a new hunk stays unassigned until the next hunk-moving op's
+persisting refresh captures it, so that op's receipt can advise decisions
+unrelated to its target.
 
 There is no advisory journal. An advisory rides the output of the refresh
 that made the decision, once, to the one actor who triggered it: the facts
