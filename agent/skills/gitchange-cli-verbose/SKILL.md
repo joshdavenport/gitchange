@@ -1,6 +1,6 @@
 ---
 name: gitchange-cli-verbose
-description: Drive gitchange from the command line in a shared working tree — assign hunks to a changelist, stage and commit it, recover from a refusal.
+description: Drive gitchange in a shared working tree. Use when asked to use gitchange or when working in a tree where you know other actors are working.
 ---
 
 # gitchange in a shared tree
@@ -25,7 +25,7 @@ step 3 while you work.
 
 1. **Open on `unassigned`.** Run `gitchange status --json` and read `active`.
    If it is not `null`, run `gitchange switch unassigned`. The **active
-   changelist** is the one that *captures*: every hunk-moving command (`assign`,
+   changelist** is the one that _captures_: every hunk-moving command (`assign`,
    `add`, `unstage`, `commit`) first runs a refresh, and that refresh claims
    every recordless hunk in the tree — anyone's — for the active changelist.
    With `unassigned` active, capture is off and the refresh claims nothing.
@@ -40,9 +40,9 @@ step 3 while you work.
    Surface it to the human rather than adopting the changelist: two actors
    sharing one changelist is the attribution race again, at changelist scope.
 3. **Assign as you go.** After each edit, `gitchange assign <path> --to
-   <changelist>`. This is the happy path — one command, zero reads — and it
+<changelist>`. This is the happy path — one command, zero reads — and it
    succeeds whenever the path's hunks are unassigned or already yours. Assign
-   *immediately*, never in a batch at the end: a path assign is a **membership
+   _immediately_, never in a batch at the end: a path assign is a **membership
    sweep**, it takes every hunk in the file, and it stays safe only while a
    file's unassigned pool is near-empty — which immediate assignment is what
    keeps true. The longer hunks sit unassigned, the more other actors' hunks
@@ -50,12 +50,12 @@ step 3 while you work.
    refusal here means climb the escalation ladder below.
 4. **Stage, then commit, with gitchange verbs.** `gitchange add <changelist>`
    stages every hunk the changelist owns; `gitchange commit
-   <changelist> -m "…"` commits what it has staged and nothing else. Then
+<changelist> -m "…"` commits what it has staged and nothing else. Then
    `gitchange changelist -d <changelist>`. One vocabulary throughout:
    `assign … --to` → `add` → `commit`, the add-then-commit shape you know
    from git, with gitchange verbs.
 5. **Read, don't wonder.** `gitchange status --json` and `gitchange diff
-   --json` answer "what else is going on here". Foreign hunks and foreign
+--json` answer "what else is going on here". Foreign hunks and foreign
    changelists are expected context in a shared tree, not confusion: the
    changelist names say what is happening even when they cannot say why.
    Assign into, commit, or delete only the changelist you created.
@@ -75,12 +75,12 @@ the next rung, so read it rather than reasoning about what it might mean.
    `'src/daemon.rs' holds hunks owned by 'session-rework'`. The whole path is
    named because the whole path is the scope; the evident move is to narrow.
 2. **Narrow by a line you wrote.** `gitchange assign <path> --containing
-   "<distinctive line>" --to <changelist>`. gitchange matches the text
+"<distinctive line>" --to <changelist>`. gitchange matches the text
    against each hunk's changed lines and does the diffing for you. Exactly
    one match moves. Zero or several matches refuse, and the refusal lists
-   candidate hunk IDs as composed addresses — that list *is* the resolution:
+   candidate hunk IDs as composed addresses — that list _is_ the resolution:
    retry naming the ones that are yours, pasted verbatim, `gitchange assign
-   <path>:<id> <path>:<id> --to <changelist>`. If the one match is a hunk
+<path>:<id> <path>:<id> --to <changelist>`. If the one match is a hunk
    another changelist owns, the refusal names that owner: that is the human
    rung.
 3. **Re-read ground truth.** When the candidates alone do not tell you which
@@ -109,7 +109,7 @@ from something gitchange printed.
   `-C <repo-root>`, is what makes a copied address resolve verbatim.
 - **Validation.** A hunk ID is an address into one snapshot, not a durable
   identity: when the hunk's content changes, the ID changes. `gitchange diff
-  <path>:<id>` before acting on a copied address; an ID from an aged snapshot
+<path>:<id>` before acting on a copied address; an ID from an aged snapshot
   fails loud as not-found, and the refusal names the path to re-read. A
   mis-composed address fails loud too: a missing `/<n>` is refused as
   ambiguous with the candidates listed. Nothing ever acts on an aged address
@@ -138,7 +138,7 @@ Three distinct conditions, each with its own move. When you meet the word
   the index holds an overlapping-but-different version of it — staged then
   edited, or staged then reverted in the worktree. Committing now would
   commit content that is not what you see. `gitchange add <changelist>
-  <path>:<id>` sets index := worktree. When `index_only` is `true`, the
+<path>:<id>` sets index := worktree. When `index_only` is `true`, the
   content exists only in the index — the worktree has reverted — so `add`
   discards it; read the hunk's `lines` first to decide whether that is what
   you want.

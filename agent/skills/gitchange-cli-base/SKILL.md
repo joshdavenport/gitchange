@@ -1,6 +1,6 @@
 ---
 name: gitchange-cli-base
-description: Drive gitchange from the command line in a shared working tree — assign hunks to a changelist, stage and commit it, recover from a refusal.
+description: Drive gitchange in a shared working tree. Use when asked to use gitchange or when working in a tree where you know other actors are working.
 ---
 
 # gitchange in a shared tree
@@ -19,16 +19,16 @@ Work from the repo root, or pass `-C <repo-root>` on every command.
    hunks under that name.
 2. **Create an intent-named changelist.** `gitchange changelist fix-login-race`
    — the name is what other actors read to learn what you are doing. `already
-   exists` is an error to surface to the human, never a changelist to adopt.
+exists` is an error to surface to the human, never a changelist to adopt.
 3. **Assign as you go.** After each edit, `gitchange assign <path> --to
-   <changelist>`. The happy path is one command and zero reads. Immediate
+<changelist>`. The happy path is one command and zero reads. Immediate
    assignment keeps a file's unassigned pool near-empty, which is what keeps
    the path-level sweep safe; a batch at the end is what a contested path
    looks like. A refusal means climb the escalation ladder below.
 4. **Stage, then commit, with gitchange verbs.** `gitchange add <changelist>`
    stages everything the changelist owns; `gitchange commit <changelist> -m
-   "…"` commits what it has staged. Then `gitchange changelist -d
-   <changelist>`. One vocabulary throughout: `assign … --to` → `add` →
+"…"` commits what it has staged. Then `gitchange changelist -d
+<changelist>`. One vocabulary throughout: `assign … --to` → `add` →
    `commit`.
 5. **Read, don't wonder.** `status --json` and `diff --json` answer "what else
    is going on here". Foreign changes are expected context: the changelist
@@ -47,11 +47,11 @@ then to the human, never around in retries.
    another changelist owns. The refusal names the owner and the contested
    path.
 2. Narrow by a distinctive line you wrote: `gitchange assign <path>
-   --containing "<line>" --to <changelist>`. gitchange does the matching.
+--containing "<line>" --to <changelist>`. gitchange does the matching.
    Exactly one match moves. Zero or several matches refuse and list the
-   candidate hunk IDs as composed addresses — the list *is* the resolution:
+   candidate hunk IDs as composed addresses — the list _is_ the resolution:
    retry naming the ones that are yours, pasted verbatim, `gitchange assign
-   <path>:<id> <path>:<id> --to <changelist>`. If the one match is a hunk another
+<path>:<id> <path>:<id> --to <changelist>`. If the one match is a hunk another
    changelist owns, the refusal names that owner: stop.
 3. Re-read ground truth when the listed candidates are not enough to choose:
    `gitchange diff --json <path>`, then address the hunks that are yours.

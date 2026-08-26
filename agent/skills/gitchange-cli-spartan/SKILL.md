@@ -1,6 +1,6 @@
 ---
 name: gitchange-cli-spartan
-description: Drive gitchange from the command line in a shared working tree — assign hunks to a changelist, stage and commit it, recover from a refusal.
+description: Drive gitchange in a shared working tree. Use when asked to use gitchange or when working in a tree where you know other actors are working.
 ---
 
 # gitchange in a shared tree
@@ -11,7 +11,7 @@ refusal is the next instruction. Run from the repo root or pass `-C <root>`.
 ## Flow
 
 1. `gitchange status --json`; if `active` is not `null`, `gitchange switch
-   unassigned`. Never switch to a real changelist — every mutation's refresh
+unassigned`. Never switch to a real changelist — every mutation's refresh
    would claim other actors' unassigned hunks under it.
 2. `gitchange changelist <intent-name>`. `already exists` → surface to the
    human, never adopt.
@@ -62,7 +62,7 @@ hunk among a file's `hunks` means its `text` hunks are members.
   version. `add <cl> <path>:<id>` sets index := worktree. `index_only: true`
   → content exists only in the index; `add` discards it. Read `lines` first.
 - **Stale action** (receipt: `skipped as stale` / `changed since the last
-  refresh`): snapshot aged; that hunk skipped, the rest moved. Re-read, retry.
+refresh`): snapshot aged; that hunk skipped, the rest moved. Re-read, retry.
 - **Dormant record** (a HEAD move's `notice:` that records went dormant): the
   hunk vanished from the diff, its record kept for revival. Matching outcome,
   not an error. Nothing to do.
